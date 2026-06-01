@@ -204,14 +204,36 @@ const PORT_DEFS = {
 };
 
 // ─────────────────────────────────────────────────────────────────
-//  LOG PARSER  — handles both [STATUS] (legacy) and [DS] (compact)
+//  KLR 8048 PORT DEFINITIONS
 // ─────────────────────────────────────────────────────────────────
+const KLR_PORT_DEFS = {
+  P1: [
+    {bit:7, name:'ADC_CH2',   dir:'IN',  desc:'ADC input channel 2'},
+    {bit:6, name:'ADC_CH1',   dir:'IN',  desc:'ADC input channel 1'},
+    {bit:5, name:'FULL_LOAD', dir:'OUT', desc:'Full-load / WOT flag output → DME TPS ch6'},
+    {bit:4, name:'ADC_CH0',   dir:'IN',  desc:'ADC input channel 0'},
+    {bit:3, name:'ADC_A2',    dir:'OUT', desc:'ADC mux address bit 2'},
+    {bit:2, name:'ADC_A1',    dir:'OUT', desc:'ADC mux address bit 1'},
+    {bit:1, name:'ADC_A0',    dir:'OUT', desc:'ADC mux address bit 0'},
+    {bit:0, name:'ADC_START', dir:'OUT', desc:'ADC start conversion'},
+  ],
+  P2: [
+    {bit:7, name:'IGN_OUT',   dir:'OUT', desc:'Ignition coil output → DME ign input (processed spark signal)'},
+    {bit:6, name:'IGN_OUT_N', dir:'OUT', desc:'Ignition coil output active-low complement'},
+    {bit:5, name:'CV_PWM',    dir:'OUT', desc:'Coil voltage PWM control'},
+    {bit:4, name:'KNOCK_DET', dir:'IN',  desc:'Knock detector comparator input'},
+    {bit:3, name:'P2_3',      dir:'?',   desc:'P2.3 — function TBD'},
+    {bit:2, name:'P2_2',      dir:'?',   desc:'P2.2 — function TBD'},
+    {bit:1, name:'P2_1',      dir:'?',   desc:'P2.1 — function TBD'},
+    {bit:0, name:'P2_0',      dir:'?',   desc:'P2.0 — function TBD'},
+  ],
+};
 
 // Parse compact dashboard snapshot line:
 //   [DS] <time_ms>,<256-hex-iram>,<p1hex><p2hex><p3hex>
 function parseDsLine(line) {
   // Strip "[DS] " prefix
-  const body = line.replace(/^\[DS\]\s*/,'').trim();
+  const body = line.replace(/^(?:DME:\s*)?\[DS\]\s*/,'').trim();
   const parts = body.split(',');
   if (parts.length < 3) return null;
   const t    = parseInt(parts[0]);
@@ -289,7 +311,7 @@ function parseStatusLine(line) {
 function parsePhaseLine(line) {
   const tm = line.match(/t=(\d+)\s*ms/);
   if (!tm) return null;
-  const msg = line.replace(/^\[PHASE\]\s*t=\d+\s*ms\s*/,'').trim();
+  const msg = line.replace(/^(?:DME:\s*)?\[PHASE\]\s*t=\d+\s*ms\s*/,'').trim();
   let category = 'info';
   if (/FUEL CUT/i.test(msg))               category = 'fuelcut';
   else if (/COLD.START/i.test(msg))        category = 'cold';
@@ -307,9 +329,10 @@ function parseLog(text) {
   const snapshots = [], phases = [];
   for (const line of text.split('\n')) {
     const t = line.trim();
-    if (t.startsWith('[DS]'))          { const s = parseDsLine(t);      if (s) snapshots.push(s); }
-    else if (t.startsWith('[STATUS]')) { const s = parseStatusLine(t);  if (s) snapshots.push(s); }
-    else if (t.startsWith('[PHASE]'))  { const p = parsePhaseLine(t);   if (p) phases.push(p);    }
+    if (t.startsWith('[DS]') || t.startsWith('DME: [DS]'))             { const s = parseDsLine(t);      if (s) snapshots.push(s); }
+    else if (t.startsWith('[STATUS]'))                                  { const s = parseStatusLine(t);  if (s) snapshots.push(s); }
+    else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t);   if (p) phases.push(p);    }
+    else if (t.startsWith('DME: [STATUS]'))                            { const s = parseStatusLine(t.replace(/^DME: /,'')); if (s) snapshots.push(s); }
   }
   // Annotate each snapshot with last valid raw temp bytes so Overview
   // can carry-forward across mid-scan raw ADC artifacts.
@@ -322,11 +345,123 @@ function parseLog(text) {
     s._prevCoolant = lastCoolantRaw;
     s._prevAir     = lastAirRaw;
   }
+  phases.sort((a, b) => a.t - b.t);
   return { snapshots, phases };
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  HELPERS
+//  KLR LOG PARSER
+//  Parses [KLR] snapshot lines emitted by i8048_tb.v
+//
+//  Format: [KLR] <time_ms>,<128hex_64bytes_ram>,<p1hex><p2hex>,<ign><ignout><fl>
+//    time_ms  : simulated ms
+//    128hex   : 64 bytes of 8048 RAM as 128 hex chars
+//    p1,p2    : port bytes
+//    ign      : T1 input (DME tach)
+//    ignout   : p2[7] ignition output
+//    fl       : p1[5] full-load flag
+// ─────────────────────────────────────────────────────────────────
+function parseKLRLog(text) {
+  const snapshots = [], phases = [], status = [];
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+
+    // ── [KLR] hex snapshot ──────────────────────────────────
+    if (t.startsWith('KLR: [DS]')) {
+      const parts = t.slice('KLR: [DS]'.length).trim().split(',');
+      if (parts.length < 2) continue;
+      const time = parseInt(parts[0]);
+      if (isNaN(time)) continue;
+      const hex = parts[1].trim();
+      const snap = { t: time, ram: {} };
+      for (let i = 0; i < Math.min(hex.length / 2, 128); i++) {
+        const bs = hex.slice(i * 2, i * 2 + 2);
+        if (bs && !/x/i.test(bs)) {
+          const v = parseInt(bs, 16); if (!isNaN(v)) snap.ram[i] = v;
+        }
+      }
+      // Ports field may contain X for unknown bits e.g. "X76X"
+      // Parse each nibble separately — skip only the unknown nibbles
+      if (parts[2]) {
+        const pf = parts[2].trim();
+        // P1 = first two chars, P2 = next two chars
+        // A nibble is valid if it's 0-9 or a-f; X/x means unknown
+        const parsePartial = (hi, lo) => {
+          const hv = /^[0-9a-fA-F]$/.test(hi) ? parseInt(hi, 16) : null;
+          const lv = /^[0-9a-fA-F]$/.test(lo)  ? parseInt(lo, 16)  : null;
+          if (hv === null && lv === null) return null;
+          // Fill unknown nibble with 0 and mark as partial
+          return { val: ((hv ?? 0) << 4) | (lv ?? 0), partial: hv===null||lv===null };
+        };
+        const p1r = parsePartial(pf[0], pf[1]);
+        const p2r = parsePartial(pf[2], pf[3]);
+        if (p1r !== null) { snap.p1 = p1r.val; snap.p1partial = p1r.partial; }
+        if (p2r !== null) { snap.p2 = p2r.val; snap.p2partial = p2r.partial; }
+      }
+      if (parts[3]) snap.extra = parts[3].trim();
+      snapshots.push(snap);
+
+    // ── KLR: [STATUS] text line ─────────────────────────────
+    } else if (t.startsWith('KLR: [STATUS]')) {
+      const body = t.slice('KLR: [STATUS]'.length).trim();
+      const tm = body.match(/t=(\d+)\s*ms/);
+      if (!tm) continue;
+      const s = { t: parseInt(tm[1]) };
+      // Named fields
+      const fields = ['pc','mb','SP','irq','ign_out','full_load','CV_PWM','tps_raw','tps_deg','timer_val'];
+      for (const f of fields) {
+        const m = body.match(new RegExp(f + '=(\\w+)'));
+        if (m && m[1] !== 'x' && m[1] !== 'xx') s[f] = parseInt(m[1], 16);
+      }
+      // knock — may be 'x'
+      const km = body.match(/knock=(\w+)/);
+      if (km) s.knock = km[1] === 'x' ? null : parseInt(km[1], 16);
+      // Registers R0/R2/R4/R5
+      for (const r of ['R0','R2','R4','R5']) {
+        const m = body.match(new RegExp(r + '=(\\w+)'));
+        if (m && m[1] !== 'x') s[r] = parseInt(m[1], 16);
+      }
+      // ram[n] values
+      s.ramVals = {};
+      for (const m of body.matchAll(/ram\[(\d+)\]=([0-9a-fA-F]+)/g))
+        s.ramVals[parseInt(m[1])] = parseInt(m[2], 16);
+      status.push(s);
+
+    // ── KLR: [PHASE] timing event ───────────────────────────
+    } else if (t.startsWith('KLR: [PHASE]')) {
+      const body = t.slice('KLR: [PHASE]'.length).trim();
+      const tm = body.match(/t=(\d+)\s*ms/);
+      if (!tm) continue;
+      const msg = body.replace(/t=\d+\s*ms\s*/, '').trim();
+      // Extract timing measurements
+      const dm = msg.match(/delay_from_ign_in=([\d.]+)\s*(us|ms)/);
+      const pm = msg.match(/pulse_width=([\d.]+)\s*(us|ms)/);
+      const delay_us = dm ? parseFloat(dm[1]) * (dm[2] === 'ms' ? 1000 : 1) : null;
+      const pulse_ms = pm ? parseFloat(pm[1]) * (pm[2] === 'us' ? 0.001 : 1) : null;
+      // Timing-only lines (no parenthetical context) — merge into previous entry
+      const isTiming = (dm || pm) && !/\(/.test(msg);
+      if (isTiming && phases.length > 0) {
+        const prev = phases[phases.length - 1];
+        if (delay_us != null) prev.delay_us = delay_us;
+        if (pulse_ms != null) prev.pulse_ms = pulse_ms;
+      } else {
+        const p = { t: parseInt(tm[1]), msg, cat: 'klr' };
+        if (delay_us != null) p.delay_us = delay_us;
+        if (pulse_ms != null) p.pulse_ms = pulse_ms;
+        p.asserted   = /asserted/i.test(msg);
+        p.deasserted = /deasserted/i.test(msg);
+        phases.push(p);
+      }
+
+    // ── DME [PHASE] — bare or DME: prefixed (combined log) ───
+    } else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]')) {
+      const p = parsePhaseLine(t);
+      if (p) phases.push(p);
+    }
+  }
+  phases.sort((a, b) => a.t - b.t);
+  return { snapshots, phases, status };
+}
 // ─────────────────────────────────────────────────────────────────
 const h2  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(2,'0') : '--';
 const h4  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(4,'0') : '----';
@@ -382,12 +517,17 @@ const S = {
   title:{fontFamily:"'Orbitron','Courier New',monospace",fontSize:'15px',fontWeight:900,
          color:C.textBright,letterSpacing:'0.08em',textShadow:`0 0 12px ${C.textBright}66`,margin:0},
   sub:{color:'#88bb88',fontSize:'9px',letterSpacing:'0.2em',marginTop:'1px'},
-  tabBar:{display:'flex',gap:'2px',background:C.panelBg,borderBottom:`1px solid ${C.border}`,
-          padding:'4px 12px 0',flexShrink:0},
-  tab:a=>({padding:'5px 14px',cursor:'pointer',fontFamily:'inherit',fontSize:'11px',
-           letterSpacing:'0.1em',border:'none',outline:'none',
+  tabBar:{background:C.panelBg,borderBottom:`1px solid ${C.border}`,flexShrink:0},
+  tabRow:{display:'flex',gap:'2px',padding:'4px 10px 0'},
+  tabRowKlr:{display:'flex',gap:'2px',padding:'2px 10px 0',borderTop:`1px solid #0a2a0a`},
+  tab:a=>({padding:'4px 12px',cursor:'pointer',fontFamily:'inherit',fontSize:'10px',
+           letterSpacing:'0.08em',border:'none',outline:'none',
            background:a?'#0d2e0d':'transparent',color:a?C.textBright:C.textDim,
            borderTop:a?`1px solid ${C.textBright}`:'1px solid transparent',transition:'all .15s'}),
+  tabKlr:a=>({padding:'4px 12px',cursor:'pointer',fontFamily:'inherit',fontSize:'10px',
+              letterSpacing:'0.08em',border:'none',outline:'none',
+              background:a?'#001a22':'transparent',color:a?'#44aaff':C.textDim,
+              borderTop:a?`1px solid #44aaff`:'1px solid transparent',transition:'all .15s'}),
   content:{padding:'10px',flex:1,overflow:'auto'},
   panel:{background:C.panelBg,border:`1px solid ${C.border}`,borderRadius:'2px',
          padding:'10px',marginBottom:'10px'},
@@ -427,6 +567,10 @@ export default function DMEDashboard() {
   const [logText, setLogText]   = useState('');
   const [logFileName, setLogFileName] = useState('');
   const [data, setData]         = useState({ snapshots:[], phases:[] });
+  const [klrData, setKlrData]     = useState({ snapshots:[], phases:[], status:[] });
+  const [klrIdx, setKlrIdx]       = useState(0);
+  const [klrPlaying, setKlrPlaying] = useState(false);
+  const [klrPlaySpeed, setKlrPlaySpeed] = useState(100);
   const [idx, setIdx]           = useState(0);
   const [tab, setTab]           = useState('overview');
   const [tooltip, setTooltip]   = useState(null);
@@ -449,6 +593,18 @@ export default function DMEDashboard() {
     }, playSpeed);
     return () => clearInterval(id);
   }, [playing, playSpeed, data.snapshots.length]);
+
+  // KLR playback engine — steps through KLR phases (events)
+  useEffect(() => {
+    if (!klrPlaying || !klrData.phases?.length) return;
+    const id = setInterval(() => {
+      setKlrIdx(i => {
+        if (i >= klrData.phases.length - 1) { setKlrPlaying(false); return i; }
+        return i + 1;
+      });
+    }, klrPlaySpeed);
+    return () => clearInterval(id);
+  }, [klrPlaying, klrPlaySpeed, klrData.phases?.length]);
 
   useEffect(() => {
     const lnk = document.createElement('link');
@@ -476,20 +632,31 @@ export default function DMEDashboard() {
         document.title = `DME 951 — ${testName}`;
         setLogFileName(fname);
         setLogText(text);
-        const parsed = parseLog(text);
-        setData(parsed);
+        const dme = parseLog(text);
+        const klr = parseKLRLog(text);
+        setData(dme);
+        setKlrData(klr);
         setIdx(0);
+        setKlrIdx(0);
         setPlaying(false);
-        if (parsed.snapshots.length || parsed.phases.length) setShowLog(false);
+        setKlrPlaying(false);
+        if (dme.snapshots.length || dme.phases.length ||
+            klr.snapshots.length || klr.phases.length) setShowLog(false);
       })
       .catch(err => console.warn('[DME951] ?log= fetch failed:', err));
   }, []);
 
-  const handleLoad = useCallback(() => {
-    const parsed = parseLog(logText);
-    setData(parsed);
+  const handleLoadAll = useCallback(() => {
+    const dme = parseLog(logText);
+    const klr = parseKLRLog(logText);
+    setData(dme);
+    setKlrData(klr);
     setIdx(0);
-    if (parsed.snapshots.length || parsed.phases.length) setShowLog(false);
+    setKlrIdx(0);
+    setPlaying(false);
+    setKlrPlaying(false);
+    if (dme.snapshots.length || dme.phases.length ||
+        klr.snapshots.length || klr.phases.length) setShowLog(false);
   }, [logText]);
 
   // Drag-drop onto textarea
@@ -514,18 +681,18 @@ export default function DMEDashboard() {
   const chartData = useMemo(() => {
     let lastCoolant = null, lastAir = null, lastAfm = null;
     return data.snapshots.map(s => {
+      const ir = s.iram ?? {};
       // Show 0ms when fuel is cut (FuelOffCoast = iram[23h].5)
-      const fuel = ((s.iram[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3);
+      const fuel = ((ir[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3);
       // Use only reference-sensor RPM — null = gap in chart (pre-sync)
       const rpm  = s.refRpm ?? s.explicitRpm ?? null;
       // Temperature: carry forward last valid reading to bridge ADC-scan artifacts.
-      const rawCoolant = ntcToC(s.iram[0x13]);
-      const rawAir     = ntcToC(s.iram[0x12]);
+      const rawCoolant = ntcToC(ir[0x13]);
+      const rawAir     = ntcToC(ir[0x12]);
       if (rawCoolant !== null) lastCoolant = rawCoolant;
       if (rawAir     !== null) lastAir     = rawAir;
       // AFM delta: difference from previous snapshot AFM value.
-      // iram[53h] is always == iram[10h] at snapshot time so we compute it here.
-      const afmNow   = s.iram[0x10] ?? null;
+      const afmNow   = ir[0x10] ?? null;
       const afmDelta = (afmNow !== null && lastAfm !== null) ? afmNow - lastAfm : 0;
       if (afmNow !== null) lastAfm = afmNow;
       return {
@@ -533,15 +700,15 @@ export default function DMEDashboard() {
         fuel,
         rpm,
         coolant:   lastCoolant,
-        lmbdLn:    s.iram[0x19] ?? null,
-        lmbdNln:   s.iram[0x1A] ?? null,
-        isv:       s.iram[0x7F] ?? null,
-        dwell:   rpm != null && rpm >= 40 && s.iram[0x2F] != null
-                   ? +(s.iram[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
+        lmbdLn:    ir[0x19] ?? null,
+        lmbdNln:   ir[0x1A] ?? null,
+        isv:       ir[0x7F] ?? null,
+        dwell:   rpm != null && rpm >= 40 && ir[0x2F] != null
+                   ? +(ir[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
                    : null,
         afm:       afmNow,
         afm_delta: afmDelta,
-        tps:       s.iram[0x16] ?? null,
+        tps:       ir[0x16] ?? null,
       };
     });
   }, [data.snapshots]);
@@ -558,32 +725,32 @@ export default function DMEDashboard() {
     return {
       fuel:    mm(s => +fuelMs(s).toFixed(3),    v => v.toFixed(3)),
       rpm:     mm(s => snapRpm(s) || null,        v => v.toString()),
-      isv:     mm(s => s.iram[0x7F]??null,        v => h2(v)),
-      dwell:   mm(s => { const ht=s.iram[0x2F]; const r=s.refRpm??s.explicitRpm; return (ht!=null&&r>=40) ? +(ht*60000/(r*HT_PER_REV)).toFixed(2) : null; }, v=>`${v}ms`),
-      coolant: mm(s => ntcToC(s.iram[0x13]),         v=>`${v}°C`),
-      airtemp: mm(s => ntcToC(s.iram[0x12]),         v=>`${v}°C`),
-      batt:    mm(s => s.iram[0x11]!=null ? +(s.iram[0x11]*0.05263+2.132).toFixed(1) : null, v=>`${v}V`),
-      afm:     mm(s => s.iram[0x10]??null,        v => h2(v)),
-      tps:     mm(s => s.iram[0x16]??null,        v => h2(v)),
-      wdog:    mm(s => s.iram[0x2A]??null,        v => h2(v)),
+      isv:     mm(s => s.iram?.[0x7F]??null,        v => h2(v)),
+      dwell:   mm(s => { const ht=s.iram?.[0x2F]; const r=s.refRpm??s.explicitRpm; return (ht!=null&&r>=40) ? +(ht*60000/(r*HT_PER_REV)).toFixed(2) : null; }, v=>`${v}ms`),
+      coolant: mm(s => ntcToC(s.iram?.[0x13]),         v=>`${v}°C`),
+      airtemp: mm(s => ntcToC(s.iram?.[0x12]),        v=>`${v}°C`),
+      batt:    mm(s => s.iram?.[0x11]!=null ? +(s.iram[0x11]*0.05263+2.132).toFixed(1) : null, v=>`${v}V`),
+      afm:     mm(s => s.iram?.[0x10]??null,        v => h2(v)),
+      tps:     mm(s => s.iram?.[0x16]??null,        v => h2(v)),
+      wdog:    mm(s => s.iram?.[0x2A]??null,        v => h2(v)),
     };
   }, [data.snapshots]);
 
   // True once any snapshot has FLAGS21.bit1 set — never goes false.
   // Prevents AFR display flickering from snapshot timing artifacts.
   const clEverActive = useMemo(() =>
-    data.snapshots.some(s => ((s.iram[0x21] ?? 0) >> 1) & 1),
+    data.snapshots.some(s => ((s.iram?.[0x21] ?? 0) >> 1) & 1),
   [data.snapshots]);
 
-  const TABS = ['overview','ports','iram','charts','phase','diag'];
+  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase'];
 
   return (
     <div style={S.root}>
       {/* ── HEADER ─────────────────────────────────────────── */}
       <div style={S.hdr}>
         <div>
-          <div style={S.title}>▶ 89 DME 951 — SIMULATION DEBUG CONSOLE</div>
-          <div style={S.sub}>BOSCH MOTRONIC · INTEL 8051 · PORSCHE 944 TURBO</div>
+          <div style={S.title}>▶ PORSCHE 951 DME AND KLR — SIMULATION DEBUG CONSOLE</div>
+          <div style={S.sub}>BOSCH MOTRONIC · INTEL 8051 + 8048 · PORSCHE 944 TURBO</div>
           {logFileName && (
             <div style={{color:'#66ddaa',fontSize:'10px',marginTop:'3px',
                          fontFamily:"'Courier New',monospace",letterSpacing:'0.05em'}}>
@@ -601,13 +768,35 @@ export default function DMEDashboard() {
         </div>
       </div>
 
-      {/* ── TABS ───────────────────────────────────────────── */}
+      {/* ── TABS — two rows ─────────────────────────────────── */}
       <div style={S.tabBar}>
-        {TABS.map(t=>(
-          <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
-            {t.toUpperCase()}
-          </button>
-        ))}
+        {/* Row 1 — DME tabs */}
+        <div style={S.tabRow}>
+          {['overview','ports','iram','charts','phase','diag'].map(t=>(
+            <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
+              {t==='overview'?'DME OVERVIEW':
+               t==='ports'   ?'DME PORTS'  :
+               t==='iram'    ?'DME IRAM'   :
+               t==='charts'  ?'DME CHARTS' :
+               t==='phase'   ?'DME PHASE'  :
+               t==='diag'    ?'DME DIAG'   :
+               t.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        {/* Row 2 — KLR tabs */}
+        <div style={S.tabRowKlr}>
+          {['klr','klr_ports','klr_iram','klr_charts','klr_phase'].map(t=>(
+            <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}>
+              {t==='klr'       ?'KLR OVERVIEW':
+               t==='klr_ports' ?'KLR PORTS'   :
+               t==='klr_iram'  ?'KLR IRAM'    :
+               t==='klr_charts'?'KLR CHARTS'  :
+               t==='klr_phase' ?'KLR PHASE'   :
+               t.toUpperCase()}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* ── TAB CONTENT ────────────────────────────────────── */}
@@ -615,15 +804,24 @@ export default function DMEDashboard() {
         {tab==='overview' && <OverviewTab snap={snap} iram={iram}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
           minmax={minmax} clEverActive={clEverActive} />}
-        {tab==='ports'    && <PortsTab snap={snap} />}
+        {tab==='ports'    && <PortsTab snap={snap}
+            logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
+            logLoaded={data.snapshots.length>0} />}
         {tab==='iram'     && <IRAMTab iram={iram} tooltip={tooltip} setTooltip={setTooltip} />}
         {tab==='charts'   && <ChartsTab chartData={chartData} currentT={snap.t} />}
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
+        {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
+            logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
+            logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
+        {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
+        {tab==='klr_charts' && <KLRChartsTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
       </div>
 
       {/* ── TIME SCRUBBER + PLAYBACK ────────────────────────── */}
-      {data.snapshots.length>0 && (
+      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase'].includes(tab) && (
         <div style={S.scrubber}>
           {/* Play / Pause */}
           <button onClick={()=>setPlaying(p=>!p)}
@@ -676,6 +874,47 @@ export default function DMEDashboard() {
         </div>
       )}
 
+      {/* ── KLR PLAYBACK SCRUBBER — KLR tabs only ──────────── */}
+      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase'].includes(tab) && (
+        <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
+          <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
+          <button onClick={()=>setKlrPlaying(p=>!p)}
+            style={{...S.btn(klrPlaying?'p':'s'), minWidth:'60px', fontSize:'9px',
+                    borderColor: klrPlaying ? '#44aaff' : C.border,
+                    color: klrPlaying ? '#44aaff' : C.textDim,
+                    boxShadow: klrPlaying ? `0 0 8px #44aaff44` : 'none'}}>
+            {klrPlaying ? '⏸ PAUSE' : '▶ PLAY'}
+          </button>
+          <button onClick={()=>{setKlrPlaying(false);setKlrIdx(i=>Math.max(0,i-1));}}
+            style={{...S.btn('s'),padding:'5px 8px'}} title="Step back">◀</button>
+          <button onClick={()=>{setKlrPlaying(false);setKlrIdx(i=>Math.min(klrData.phases.length-1,i+1));}}
+            style={{...S.btn('s'),padding:'5px 8px'}} title="Step forward">▶</button>
+          <button onClick={()=>{setKlrPlaying(false);setKlrIdx(0);}}
+            style={{...S.btn('s'),padding:'5px 8px'}} title="Rewind">⏮</button>
+          <select value={klrPlaySpeed} onChange={e=>setKlrPlaySpeed(+e.target.value)}
+            style={{background:'#030c08',border:`1px solid #004433`,color:C.textDim,
+                    fontFamily:'inherit',fontSize:'9px',padding:'3px 4px',cursor:'pointer'}}>
+            <option value={500}>0.2×</option>
+            <option value={200}>0.5×</option>
+            <option value={100}>1×</option>
+            <option value={50}>2×</option>
+            <option value={20}>5×</option>
+            <option value={10}>10×</option>
+            <option value={1}>MAX</option>
+          </select>
+          <input type="range" min={0} max={klrData.phases.length-1} value={klrIdx}
+            onChange={e=>{setKlrPlaying(false);setKlrIdx(+e.target.value);}}
+            style={{flex:1, accentColor:'#44aaff', cursor:'pointer'}}/>
+          <span style={{color:'#44aaff',fontSize:'12px',whiteSpace:'nowrap',minWidth:'90px',
+                        textAlign:'right',textShadow:`0 0 8px #44aaff66`}}>
+            t={klrData.phases[klrIdx]?.t ?? '---'} ms
+          </span>
+          <span style={{color:C.textDim,fontSize:'9px',whiteSpace:'nowrap'}}>
+            {klrIdx+1}/{klrData.phases.length}
+          </span>
+        </div>
+      )}
+
       {/* ── LOG INPUT MODAL ─────────────────────────────────── */}
       {showLog && (
         <div style={S.logOverlay}>
@@ -691,16 +930,21 @@ export default function DMEDashboard() {
             <textarea ref={logRef} style={S.ta} value={logText}
               onChange={e=>setLogText(e.target.value)}
               onDrop={handleDrop} onDragOver={e=>e.preventDefault()}
-              placeholder={"[STATUS] t=1003 ms  prpm(37)=0x15  fuel_hb(4B)=0x03  fuel_lb(4A)=0xbb  ...\n[PHASE] t=569 ms  ENGINE SYNC\n...\n\nPaste your complete log (or a combined STATUS+PHASE file) here."}
+              placeholder={"DME: [DS] ... (DME snapshot)\nKLR: [DS] ... (KLR snapshot)\nDME: [PHASE] / KLR: [PHASE] ...\n\nPaste your .dash.log file here or drag and drop."}
             />
             <div style={{color:C.textDim,fontSize:'9px',marginTop:'4px',marginBottom:'14px'}}>
-              Accepts full .log, _status.log, or _phase.log files
+              Supports combined DME+KLR logs (<code>DME: [DS]</code> / <code>[KLR]</code>),
+              DME-only logs (<code>[DS]</code> / <code>[STATUS]</code>), and legacy formats.
+              All data is parsed in one pass.
             </div>
-            <div style={{display:'flex',gap:'8px',justifyContent:'flex-end'}}>
-              {(data.snapshots.length>0||data.phases.length>0) && (
+            <div style={{display:'flex',gap:'8px',justifyContent:'flex-end',flexWrap:'wrap'}}>
+              {(data.snapshots.length > 0 || data.phases.length > 0 ||
+                klrData.snapshots.length > 0) && (
                 <button style={S.btn('s')} onClick={()=>setShowLog(false)}>CANCEL</button>
               )}
-              <button style={S.btn('p')} onClick={handleLoad}>PARSE & LOAD →</button>
+              <button style={S.btn('p')} onClick={handleLoadAll}>
+                PARSE &amp; LOAD →
+              </button>
             </div>
           </div>
         </div>
@@ -923,13 +1167,9 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
 // ─────────────────────────────────────────────────────────────────
 //  PORTS TAB
 // ─────────────────────────────────────────────────────────────────
-function PortsTab({ snap }) {
-  const portVals = {
-    P1: snap?.p1,
-    P2: snap?.p2,
-    P3: snap?.p3,
-  };
-  const hasLive = snap?.p1 !== undefined;
+function PortsTab({ snap, logHasPorts, logLoaded }) {
+  const portVals = { P1: snap?.p1, P2: snap?.p2, P3: snap?.p3 };
+  const hasLive  = snap?.p1 !== undefined;
   const portDescs = {
     P1: 'ANALOG I/O — injector, ignition, O2 sensor',
     P2: 'ADDRESS BUS / ADC CHANNEL SELECT',
@@ -937,7 +1177,7 @@ function PortsTab({ snap }) {
   };
   return (
     <div>
-      {!hasLive && (
+      {logLoaded && !logHasPorts && (
         <div style={{color:C.amber,fontSize:'10px',marginBottom:'8px',
                      padding:'6px 10px',border:`1px solid ${C.amber}44`,
                      background:'#1a1000'}}>
@@ -1322,7 +1562,7 @@ function IRAMTooltip({ tip }) {
 function ChartsTab({ chartData, currentT }) {
   if (!chartData.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
-      No STATUS data loaded — use LOAD LOG to parse a log file
+      No snapshot data loaded — use LOAD LOG to parse a log file
     </div>
   );
 
@@ -1626,6 +1866,798 @@ function DiagTab({ iram, snap }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── KLRTab ────────────────────────────────────────────────────────
+function KLRTab({ klrData, currentT }) {
+  if (!klrData || (klrData.snapshots.length === 0 && klrData.phases.length === 0 && (!klrData.status || klrData.status.length === 0))) {
+    return (
+      <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
+        No KLR data loaded — use <strong style={{color:C.textBright}}>PARSE &amp; LOAD</strong> with a combined log containing{' '}
+        <code style={{color:'#44aaff'}}>[KLR]</code> or <code style={{color:'#44aaff'}}>KLR: [STATUS]</code> lines
+      </div>
+    );
+  }
+
+  // ── Latest status snapshot ──────────────────────────────────
+  const latestStatus = klrData.status?.filter(s => s.t <= (currentT ?? Infinity)).slice(-1)[0];
+  const latestSnap   = klrData.snapshots?.filter(s => s.t <= (currentT ?? Infinity)).slice(-1)[0];
+  const ram = latestSnap?.ram ?? {};
+
+  // ── IGN events up to currentT ──────────────────────────────
+  const ignEvents = klrData.phases?.filter(p => p.cat === 'klr' && p.t <= (currentT ?? Infinity)) ?? [];
+  const lastAssert   = [...ignEvents].reverse().find(p => p.asserted);
+  const lastDeassert = [...ignEvents].reverse().find(p => p.deasserted);
+
+  // ── Counts ─────────────────────────────────────────────────
+  const totalFires = ignEvents.filter(p => p.asserted).length;
+  const delays     = ignEvents.filter(p => p.delay_us != null).map(p => p.delay_us);
+  const pulses     = ignEvents.filter(p => p.pulse_ms != null).map(p => p.pulse_ms);
+  const avgDelay   = delays.length ? (delays.reduce((a,b)=>a+b,0)/delays.length).toFixed(2) : '--';
+  const avgPulse   = pulses.length ? (pulses.reduce((a,b)=>a+b,0)/pulses.length).toFixed(3) : '--';
+
+  const sig = [
+    { l:'IGN OUT',    v: latestStatus?.ign_out != null ? (latestStatus.ign_out?'HIGH':'LOW') : '--',
+      col: latestStatus?.ign_out ? C.red : '#44aaff' },
+    { l:'FULL LOAD',  v: latestStatus?.full_load != null ? (latestStatus.full_load?'YES':'NO') : '--',
+      col: latestStatus?.full_load ? C.amber : C.textBright },
+    { l:'KNOCK',      v: latestStatus?.knock != null ? `0x${h2(latestStatus.knock)}` : 'N/A',
+      col: '#cc66ff' },
+    { l:'CV PWM',     v: latestStatus?.CV_PWM != null ? (latestStatus.CV_PWM?'ON':'OFF') : '--',
+      col: '#66ffaa' },
+    { l:'TIMER',      v: latestStatus?.timer_val != null ? `0x${h2(latestStatus.timer_val)}` : '--',
+      col: C.textBright },
+    { l:'IGN FIRES',  v: totalFires, col: '#ff8844' },
+    { l:'AVG DELAY',  v: `${avgDelay}μs`, col: '#44cccc' },
+    { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
+  ];
+
+  const regs = latestStatus ? [
+    ['PC', latestStatus.pc != null ? `0x${latestStatus.pc.toString(16).toUpperCase()}` : '--'],
+    ['R0', latestStatus.R0 != null ? h2(latestStatus.R0) : '--'],
+    ['R2', latestStatus.R2 != null ? h2(latestStatus.R2) : '--'],
+    ['R4', latestStatus.R4 != null ? h2(latestStatus.R4) : '--'],
+    ['R5', latestStatus.R5 != null ? h2(latestStatus.R5) : '--'],
+    ['IRQ', latestStatus.irq != null ? String(latestStatus.irq) : '--'],
+    ['MB',  latestStatus.mb  != null ? String(latestStatus.mb)  : '--'],
+    ['SP',  latestStatus.SP  != null ? String(latestStatus.SP)  : '--'],
+  ] : [];
+
+  // Merge ram vals from status ramVals into ram display
+  const ramDisplay = { ...ram };
+  if (latestStatus?.ramVals) Object.assign(ramDisplay, latestStatus.ramVals);
+
+  return (
+    <div>
+      {/* ── Signal metrics ─────────────────────────────────── */}
+      <div style={{display:'grid', gridTemplateColumns:'repeat(8,1fr)', gap:'5px', marginBottom:'8px'}}>
+        {sig.map(s => (
+          <div key={s.l} style={S.metric}>
+            <div style={S.metricLbl}>{s.l}</div>
+            <div style={{...S.metricVal, color:s.col, fontSize:'12px', margin:'2px 0'}}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{marginBottom:'8px'}}>
+        {/* ── Last IGN event ─────────────────────────────── */}
+        <div style={S.panel}>
+          <div style={S.panelTitle}>LAST IGNITION EVENT</div>
+          {lastAssert ? (
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'4px'}}>
+              {[
+                ['Event time', `${lastAssert.t} ms`],
+                ['Delay from ign_in', lastAssert.delay_us != null ? `${lastAssert.delay_us.toFixed(2)} μs` : '--'],
+                ['Pulse width', lastDeassert?.pulse_ms != null ? `${lastDeassert.pulse_ms.toFixed(3)} ms` : '--'],
+                ['Total IGN fires', `${totalFires}  (avg ${avgDelay}μs delay)`],
+              ].map(([l,v]) => (
+                <div key={l} style={{padding:'3px 6px', borderBottom:`1px solid ${C.border}`, fontSize:'10px'}}>
+                  <span style={{color:C.textDim}}>{l}: </span>
+                  <span style={{color:C.textBright}}>{v}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{color:C.textDim, fontSize:'10px', padding:'8px'}}>
+              No IGN events yet at t={currentT ?? '---'}ms
+            </div>
+          )}
+
+          {/* ── 8048 Registers ───────────────────────────── */}
+          {regs.length > 0 && (
+            <>
+              <div style={{...S.panelTitle, marginTop:'8px'}}>8048 REGISTERS</div>
+              <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'2px'}}>
+                {regs.map(([l,v]) => (
+                  <div key={l} style={{display:'flex', justifyContent:'space-between',
+                                       padding:'2px 5px', borderBottom:`1px solid ${C.border}`, fontSize:'10px'}}>
+                    <span style={{color:C.textDim}}>{l}</span>
+                    <span style={{color:C.textBright}}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── IGN event log ──────────────────────────────────── */}
+      <div style={S.panel}>
+        <div style={S.panelTitle}>KLR IGNITION EVENT LOG — {ignEvents.length} events</div>
+
+        {/* Timeline bar */}
+        {ignEvents.length > 0 && (() => {
+          const maxT = klrData.phases[klrData.phases.length-1]?.t || 1;
+          const pct = currentT != null ? (currentT/maxT)*100 : null;
+          return (
+            <div style={{position:'relative',height:'24px',background:'#040904',
+                         border:`1px solid ${C.border}`,borderRadius:'2px',
+                         overflow:'hidden',marginBottom:'8px'}}>
+              {ignEvents.filter(p=>p.asserted).map((p,i) => (
+                <div key={i} title={`${p.t}ms — ${p.msg}`}
+                     style={{position:'absolute',left:`${(p.t/maxT)*100}%`,
+                             top:0,width:'2px',height:'100%',background:'#ff8844',opacity:.9}}/>
+              ))}
+              {pct!=null&&<div style={{position:'absolute',left:`${pct}%`,top:0,
+                                       width:'1px',height:'100%',background:C.textBright}}/>}
+            </div>
+          );
+        })()}
+
+        <div style={{maxHeight:'280px', overflow:'auto'}}>
+          {[...ignEvents].reverse().slice(0, 80).map((p,i) => (
+            <div key={i} style={{display:'flex', alignItems:'baseline', gap:'8px',
+                                  padding:'2px 6px', marginBottom:'1px', fontSize:'10px',
+                                  borderLeft:`3px solid ${p.asserted?'#ff8844':'#44aaff'}`,
+                                  background:C.panelBg}}>
+              <span style={{color:p.asserted?'#ff8844':'#44aaff', minWidth:'65px'}}>{p.t} ms</span>
+              <span style={{color:C.text, flex:1}}>{p.msg}</span>
+              {p.delay_us != null && (
+                <span style={{color:'#44cccc', fontSize:'9px'}}>{p.delay_us.toFixed(2)}μs</span>
+              )}
+              {p.pulse_ms != null && (
+                <span style={{color:'#cc66ff', fontSize:'9px'}}>{p.pulse_ms.toFixed(3)}ms</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── KLRChartsTab ──────────────────────────────────────────────────
+// Charts for KLR knock controller signals over simulation time.
+//
+// Data sources:
+//   klrData.phases (KLR: [PHASE]) → IGN delay, IGN pulse width
+//   klrData.status (KLR: [STATUS]) → CV_PWM, knock
+//   klrData.snapshots ([KLR]) → p1/p2 port state
+//
+// Each chart uses Recharts ResponsiveContainer with the same
+// green-on-black theme as the DME charts tab.
+function KLRChartsTab({ klrData, currentT }) {
+  const empty = !klrData ||
+    (klrData.phases?.length === 0 && klrData.status?.length === 0 && klrData.snapshots?.length === 0);
+
+  if (empty) return (
+    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
+      No KLR data — use <strong style={{color:C.textBright}}>PARSE &amp; LOAD</strong> with a combined log
+    </div>
+  );
+
+  // ── Build chart datasets ──────────────────────────────────
+  // IGN delay and pulse width — one point per asserted/deasserted event pair
+  const ignDelayData = (klrData.phases ?? [])
+    .filter(p => p.asserted && p.delay_us != null)
+    .map(p => ({ t: p.t, delay: +p.delay_us.toFixed(2) }));
+
+  const ignPulseData = (klrData.phases ?? [])
+    .filter(p => p.deasserted && p.pulse_ms != null)
+    .map(p => ({ t: p.t, pulse: +p.pulse_ms.toFixed(3) }));
+
+  // CV_PWM and knock from STATUS lines
+  const statusData = (klrData.status ?? []).map(s => ({
+    t: s.t,
+    cv_pwm: s.CV_PWM ?? null,
+    knock:  s.knock  ?? null,
+  }));
+
+  // ign_out state from [KLR] snapshots or status
+  const ignOutData = [
+    ...(klrData.snapshots ?? []).map(s => ({
+      t: s.t,
+      ign_out: s.p2 != null ? ((s.p2 >> 7) & 1) : null,
+      full_load: s.p1 != null ? ((s.p1 >> 5) & 1) : null,
+    })),
+    ...(klrData.status ?? []).map(s => ({
+      t: s.t,
+      ign_out:   s.ign_out   ?? null,
+      full_load: s.full_load ?? null,
+    })),
+  ].sort((a,b) => a.t - b.t);
+
+  const ax = { fill: C.textDim, fontSize: 9, fontFamily: "'Courier New',monospace" };
+  const tt = { contentStyle: { background:'#060e06', border:'1px solid #0d2e0d',
+               color: C.text, fontSize:'10px', fontFamily:'inherit' },
+               labelFormatter: t => `t=${t}ms` };
+
+  const charts = [
+    {
+      title: 'IGN DELAY FROM IGN_IN (μs)',
+      data:  ignDelayData,
+      key:   'delay',
+      col:   '#ff8844',
+      unit:  'μs',
+      dom:   [0, 'auto'],
+      note:  'Time from DME tach pulse to KLR spark — knock retard increases this',
+      empty: ignDelayData.length === 0,
+    },
+    {
+      title: 'IGN PULSE WIDTH (ms)',
+      data:  ignPulseData,
+      key:   'pulse',
+      col:   '#44cccc',
+      unit:  'ms',
+      dom:   [0, 'auto'],
+      note:  'KLR ignition coil dwell / spark duration',
+      empty: ignPulseData.length === 0,
+    },
+    {
+      title: 'CV_PWM (coil voltage PWM)',
+      data:  statusData,
+      key:   'cv_pwm',
+      col:   '#66ffaa',
+      unit:  '',
+      dom:   [-0.1, 1.1],
+      note:  'Coil voltage pulse-width modulation output state',
+      empty: statusData.every(d => d.cv_pwm == null),
+    },
+    {
+      title: 'KNOCK OUTPUT',
+      data:  statusData,
+      key:   'knock',
+      col:   '#cc66ff',
+      unit:  'hex',
+      dom:   [0, 'auto'],
+      note:  'KLR knock detection output value',
+      empty: statusData.every(d => d.knock == null),
+    },
+  ];
+
+  return (
+    <div>
+      {/* Info banner when limited data */}
+      {(ignDelayData.length === 0 && ignPulseData.length === 0) && (
+        <div style={{...S.panel, color:C.amber, fontSize:'10px', marginBottom:'8px'}}>
+          ⚠ IGN delay and pulse width require <code>KLR: [PHASE]</code> lines in the log.
+          CV_PWM and knock require <code>KLR: [STATUS]</code> lines.
+        </div>
+      )}
+
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px'}}>
+        {charts.map(c => (
+          <div key={c.title} style={S.panel}>
+            <div style={S.panelTitle}>{c.title}</div>
+            {c.empty ? (
+              <div style={{height:'130px', display:'flex', alignItems:'center',
+                           justifyContent:'center', color:C.textDim, fontSize:'10px'}}>
+                No data
+              </div>
+            ) : (
+              <>
+                <ResponsiveContainer width="100%" height={130}>
+                  <LineChart data={c.data} margin={{top:2,right:6,bottom:0,left:0}}>
+                    <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
+                    <XAxis dataKey="t" tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+                    <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
+                    <Tooltip {...tt} formatter={v=>[v, c.unit]}/>
+                    {currentT != null &&
+                      <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
+                    <Line type="monotone" dataKey={c.key} stroke={c.col}
+                          dot={c.data.length < 100}
+                          strokeWidth={c.data.length < 50 ? 1.5 : 1}
+                          connectNulls={false}/>
+                  </LineChart>
+                </ResponsiveContainer>
+                <div style={{color:C.textDim, fontSize:'8px', marginTop:'2px'}}>{c.note}</div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* IGN OUT + FULL LOAD step chart */}
+      {ignOutData.some(d => d.ign_out != null) && (
+        <div style={S.panel}>
+          <div style={S.panelTitle}>IGN OUT &amp; FULL LOAD STATES</div>
+          <ResponsiveContainer width="100%" height={120}>
+            <LineChart data={ignOutData} margin={{top:2,right:6,bottom:0,left:0}}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
+              <XAxis dataKey="t" tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+              <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
+              <Tooltip {...tt}/>
+              {currentT != null &&
+                <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
+              <Line type="stepAfter" dataKey="ign_out"   stroke="#ff4444" dot={false}
+                    strokeWidth={1.5} connectNulls={false} name="IGN OUT"/>
+              <Line type="stepAfter" dataKey="full_load" stroke={C.amber} dot={false}
+                    strokeWidth={1.5} connectNulls={false} name="FULL LOAD"/>
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{display:'flex', gap:'12px', marginTop:'3px', fontSize:'9px'}}>
+            <span style={{color:'#ff4444'}}>▬ IGN OUT (p2[7])</span>
+            <span style={{color:C.amber}}>▬ FULL LOAD (p1[5])</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── KLRPhaseTab ───────────────────────────────────────────────────
+function KLRPhaseTab({ klrData, klrIdx }) {
+  const allPhases  = klrData?.phases ?? [];
+  const klrPhases  = allPhases.filter(p => p.cat === 'klr');
+
+  if (klrPhases.length === 0) return (
+    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
+      No KLR phase data — log needs <code style={{color:'#44aaff'}}>KLR: [PHASE]</code> lines
+    </div>
+  );
+
+  const currentT = allPhases[klrIdx]?.t ?? 0;
+  const maxT     = klrPhases[klrPhases.length-1]?.t || 1;
+  const pctT     = (currentT / maxT) * 100;
+
+  const klrColor = p => p.asserted ? '#ff8844' : p.deasserted ? '#44aaff' : '#44cccc';
+
+  return (
+    <div>
+      {/* ── Timeline bar ──────────────────────────────────────── */}
+      <div style={{...S.panel, padding:'10px'}}>
+        <div style={S.panelTitle}>KLR EVENT TIMELINE — {klrPhases.length} events</div>
+        <div style={{position:'relative',height:'36px',background:'#040904',
+                     borderRadius:'2px',overflow:'hidden',border:`1px solid ${C.border}`}}>
+          {klrPhases.map((p,i)=>(
+            <div key={i} title={`${p.t}ms — ${p.msg}`} style={{
+              position:'absolute', left:`${(p.t/maxT)*100}%`,
+              top:0, width:'2px', height:'100%',
+              background: klrColor(p), opacity:0.85, cursor:'pointer',
+            }}/>
+          ))}
+          <div style={{
+            position:'absolute', left:`${pctT}%`, top:0,
+            width:'1px', height:'100%',
+            background:C.textBright, boxShadow:`0 0 5px ${C.textBright}`,
+          }}/>
+        </div>
+        <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginTop:'8px'}}>
+          <span style={{fontSize:'9px',color:'#ff8844',letterSpacing:'0.05em'}}>▌ IGN ASSERTED</span>
+          <span style={{fontSize:'9px',color:'#44aaff',letterSpacing:'0.05em'}}>▌ IGN DEASSERTED</span>
+          <span style={{fontSize:'9px',color:'#44cccc',letterSpacing:'0.05em'}}>▌ OTHER</span>
+        </div>
+      </div>
+
+      {/* ── Event list ────────────────────────────────────────── */}
+      <div style={S.panel}>
+        <div style={S.panelTitle}>ALL KLR EVENTS</div>
+        <div style={{maxHeight:'420px',overflow:'auto'}}>
+          {klrPhases.map((p,i)=>{
+            const past  = p.t <= currentT;
+            const col   = klrColor(p);
+            const isCur = allPhases.indexOf(p) === klrIdx;
+            return (
+              <div key={i} style={{
+                display:'flex', alignItems:'baseline', gap:'10px',
+                padding:'4px 8px', marginBottom:'1px',
+                borderLeft:`3px solid ${past?col:'#1a2e1a'}`,
+                background: isCur ? '#0a1a0a' : (past ? C.panelBg : '#050c05'),
+                outline: isCur ? `1px solid ${col}` : 'none',
+              }}>
+                <span style={{
+                  color: past?col:C.textDim,
+                  fontFamily:"'Orbitron',monospace", fontSize:'10px',
+                  minWidth:'72px', whiteSpace:'nowrap',
+                }}>{p.t} ms</span>
+                <span style={{color:past?col:C.textDim, fontSize:'11px', flex:1}}>{p.msg}</span>
+                {p.delay_us != null && (
+                  <span style={{color:'#44cccc',fontSize:'9px',whiteSpace:'nowrap'}}>
+                    {p.delay_us.toFixed(2)} μs
+                  </span>
+                )}
+                {p.pulse_ms != null && (
+                  <span style={{color:'#cc66ff',fontSize:'9px',whiteSpace:'nowrap'}}>
+                    {p.pulse_ms.toFixed(3)} ms
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── KLRPortsTab ───────────────────────────────────────────────────
+function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
+  // Get port values from latest [KLR] snapshot at or before klrIdx
+  const phases   = klrData?.phases ?? [];
+  const currentT = phases[klrIdx]?.t ?? Infinity;
+  const snaps    = klrData?.snapshots ?? [];
+  const snap     = snaps.filter(s => s.t <= currentT).slice(-1)[0];
+
+  // Also check status lines
+  const status   = klrData?.status ?? [];
+  const stat     = status.filter(s => s.t <= currentT).slice(-1)[0];
+
+  // Prefer [KLR] hex snapshot ports; fall back to STATUS ign_out/full_load
+  const p1val = snap?.p1 ?? null;
+  const p2val = snap?.p2 ?? null;
+
+  const hasLive    = p1val !== null || p2val !== null;
+  const hasPartial = snap?.p1partial || snap?.p2partial;
+  const portVals   = { P1: p1val, P2: p2val };
+
+  const portDescs = {
+    P1: 'ADC MUX CONTROL · FULL LOAD FLAG',
+    P2: 'IGNITION OUTPUT · KNOCK · CV PWM',
+  };
+
+  return (
+    <div>
+      {logLoaded && !logHasPorts && (
+        <div style={{color:C.amber,fontSize:'10px',marginBottom:'8px',
+                     padding:'6px 10px',border:`1px solid ${C.amber}44`,background:'#1a1000'}}>
+          ⚠ No live port values — requires [KLR] hex snapshot lines in the log.
+          KLR: [STATUS] lines show signal names only.
+        </div>
+      )}
+      {logLoaded && logHasPorts && hasPartial && (
+        <div style={{color:C.textDim,fontSize:'10px',marginBottom:'8px',
+                     padding:'4px 10px',border:`1px solid ${C.border}`,background:C.panelBg2}}>
+          ⚠ Some port nibbles are unknown (X) in this snapshot — affected bits shown as ?
+        </div>
+      )}
+
+      {/* Status-derived signal banner */}
+      {stat && (
+        <div style={{display:'flex',gap:'8px',marginBottom:'8px',flexWrap:'wrap'}}>
+          {[
+            ['IGN OUT',   stat.ign_out,   '#ff8844'],
+            ['FULL LOAD', stat.full_load,  C.amber],
+            ['CV PWM',    stat.CV_PWM,    '#66ffaa'],
+            ['KNOCK',     stat.knock,     '#cc66ff'],
+          ].filter(([,v])=>v!=null).map(([l,v,col])=>(
+            <div key={l} style={{...S.metric, flex:'0 0 auto', minWidth:'90px'}}>
+              <div style={S.metricLbl}>{l}</div>
+              <div style={{...S.metricVal,color: v?col:C.textDim,fontSize:'12px'}}>
+                {typeof v==='number'?`0x${h2(v)}`:v?'HIGH':'LOW'}
+              </div>
+            </div>
+          ))}
+          <div style={{...S.metric,flex:'0 0 auto',minWidth:'80px'}}>
+            <div style={S.metricLbl}>t</div>
+            <div style={{...S.metricVal,fontSize:'12px'}}>{stat.t} ms</div>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+        {Object.entries(KLR_PORT_DEFS).map(([pName,bits])=>{
+          const portByte = portVals[pName];
+          const hasVal   = portByte !== null && portByte !== undefined;
+          return (
+            <div key={pName} style={S.panel}>
+              <div style={S.panelTitle}>
+                {pName} — {portDescs[pName]}
+                {hasVal && (
+                  <span style={{marginLeft:'10px',color:'#44aaff',
+                                fontFamily:"'Orbitron',monospace",fontSize:'11px'}}>
+                    0x{h2(portByte)} &nbsp; {b8(portByte)}
+                  </span>
+                )}
+              </div>
+              {bits.map(b=>{
+                const bitVal = hasVal ? ((portByte >> b.bit) & 1) : null;
+                const isSet  = bitVal === 1;
+                const dirCol = b.dir==='IN'  ? C.blue
+                             : b.dir==='OUT' ? '#66ffaa'
+                             : C.amber;
+                return (
+                  <div key={b.bit} style={{
+                    display:'grid',
+                    gridTemplateColumns:'24px 24px 80px 1fr',
+                    gap:'6px', alignItems:'center',
+                    padding:'4px 6px', borderBottom:`1px solid ${C.border}`,
+                    background: isSet ? '#0a1a22' : 'transparent',
+                  }}>
+                    <span style={{color:C.textDim,fontSize:'9px'}}>{pName}.{b.bit}</span>
+                    <span style={{
+                      width:'18px',height:'18px',lineHeight:'18px',
+                      textAlign:'center',borderRadius:'2px',
+                      fontSize:'12px',fontWeight:'bold',display:'inline-block',
+                      background: bitVal===null ? 'transparent'
+                                : isSet ? `${dirCol}33` : '#080f08',
+                      color:       bitVal===null ? C.textDim
+                                : isSet ? dirCol : '#335533',
+                      border:`1px solid ${bitVal===null?C.border:isSet?dirCol:'#1a3a1a'}`,
+                      boxShadow: isSet ? `0 0 5px ${dirCol}66` : 'none',
+                    }}>
+                      {bitVal===null ? '?' : bitVal}
+                    </span>
+                    <span style={{
+                      padding:'1px 4px',fontSize:'8px',borderRadius:'2px',
+                      background: b.dir==='IN'?'#0a1a2a':b.dir==='OUT'?'#0a1f0a':'#1a1a0a',
+                      color:dirCol,textAlign:'center',whiteSpace:'nowrap',
+                    }}>{b.dir}</span>
+                    <div>
+                      <span style={{color:isSet?dirCol:'#44aaff',fontSize:'10px',fontWeight:'bold'}}>
+                        {b.name}
+                      </span>
+                      <span style={{color:C.textDim,fontSize:'9px',marginLeft:'6px'}}>
+                        {b.desc}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── KLRIRAMTab ────────────────────────────────────────────────────
+// Displays the full 128-byte 8048 RAM dump from the KLR: [DS] snapshot
+// nearest to the current KLR scrubber position, plus any named
+// locations available from KLR: [STATUS] ramVals.
+function KLRIRAMTab({ klrData, klrIdx }) {
+  const [sub, setSub] = useState('grid');
+
+  const phases   = klrData?.phases ?? [];
+  const currentT = phases[klrIdx]?.t ?? Infinity;
+
+  // Nearest [KLR] hex snapshot at or before currentT
+  const snaps = klrData?.snapshots ?? [];
+  const snap  = snaps.filter(s => s.t <= currentT).slice(-1)[0];
+  const ram   = snap?.ram ?? {};
+
+  // Accumulate ALL ramVals from STATUS lines up to currentT
+  // (multiple lines may add different addresses)
+  const allStatus = (klrData?.status ?? []).filter(s => s.t <= currentT);
+  const ramFromStatus = {};
+  for (const s of allStatus)
+    if (s.ramVals) Object.assign(ramFromStatus, s.ramVals);
+
+  // Merge: hex snapshot takes priority, then STATUS ramVals
+  const ramMerged = { ...ramFromStatus, ...ram };
+
+  // KLR 8048 RAM labels — from bin/memory_byte_map.hex (30 labelled locations)
+  const KNOWN = {
+    0x00: 'interrupt_info',
+    0x02: 'num_timer_ints',
+    0x03: 'mult_in',
+    0x05: 'dec_interrupts',
+    0x06: 'speed_count',
+    0x07: 'timer_period',
+    0x24: 'eng_speed',
+    0x2E: 'battery_volts',
+    0x2F: 'knock_raw',
+    0x31: 'knock_test_out',
+    0x33: 'blink',
+    0x38: 'scratch',
+    0x39: 'TPS Voltage',
+    0x3A: 'throttle_degrees',
+    0x3B: 'TPS_Scaling',
+    0x3C: 'throttle_raw_sensor',
+    0x3E: 'WOT_angle',
+    0x43: 'TPS_Cycling',
+    0x44: 'rpm_range',
+    0x45: 'mac_knock_thresh',
+    0x46: 'integrated_knock_val',
+    0x47: 'knock_det_threshold',
+    0x48: 'throttle_position_threshold',
+    0x4A: 'cycle_count_before_restore',
+    0x4B: 'max_timing_retart',
+    0x4C: 'boost_threshold',
+    0x4E: 'cycle_count_before_pulling_boost',
+    0x50: 'cycle_count_before_restore_boost',
+    0x7A: 'knk_thres',
+  };
+
+  const hasHex    = Object.keys(ram).length > 0;
+  const hasStatus = Object.keys(ramFromStatus).length > 0;
+  const hasData   = Object.keys(ramMerged).length > 0;
+
+  const SUBTABS = [
+    { key:'grid',      label:'RAM GRID' },
+    { key:'known',     label:'KNOWN' },
+    { key:'adc',       label:'ADC INPUTS' },
+    { key:'status',    label:'STATUS VALUES' },
+  ];
+
+  const logLoaded = (klrData?.snapshots?.length > 0) || (klrData?.status?.length > 0);
+  if (!logLoaded) return (
+    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
+      No KLR RAM data — load a log with <code style={{color:'#44aaff'}}>KLR: [DS]</code> or{' '}
+      <code style={{color:'#44aaff'}}>KLR: [STATUS]</code> lines
+    </div>
+  );
+
+  return (
+    <div>
+      {/* Source banner */}
+      <div style={{display:'flex',gap:'6px',marginBottom:'6px',fontSize:'9px',color:C.textDim}}>
+        {hasHex    && <span style={{color:'#66ffaa'}}>● HEX SNAPSHOT  {Object.keys(ram).length} bytes</span>}
+        {hasStatus && <span style={{color:'#44aaff'}}>● STATUS LINES  {Object.keys(ramFromStatus).length} addresses</span>}
+        <span style={{marginLeft:'auto'}}>t≤{currentT===Infinity?'---':currentT}ms</span>
+      </div>
+
+      {/* Subtabs */}
+      <div style={{display:'flex',gap:'2px',marginBottom:'6px',borderBottom:`1px solid ${C.border}`,paddingBottom:'0'}}>
+        {SUBTABS.map(t=>(
+          <button key={t.key} style={S.tabKlr(sub===t.key)} onClick={()=>setSub(t.key)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── RAM GRID (all 64 bytes) ─────────────────────────── */}
+      {sub==='grid' && (
+        <div style={S.panel}>
+          <div style={S.panelTitle}>
+            8048 RAM — 128 BYTES &nbsp;
+            <span style={{color:C.textDim,fontSize:'8px'}}>hover for details · blue = known location</span>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(16,1fr)',gap:'2px',marginBottom:'2px'}}>
+            {Array.from({length:16},(_,i)=>(
+              <div key={i} style={{textAlign:'center',color:C.textDim,fontSize:'8px'}}>+{i.toString(16).toUpperCase()}</div>
+            ))}
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(16,1fr)',gap:'2px'}}>
+            {Array.from({length:128},(_,addr)=>{
+              const val   = ramMerged[addr];
+              const hasV  = val !== undefined;
+              const known = KNOWN[addr];
+              const fromSnap   = ram[addr] !== undefined;
+              const fromStat   = ramFromStatus[addr] !== undefined && !fromSnap;
+              return (
+                <div key={addr}
+                  title={`ram[${addr}] (0x${addr.toString(16).toUpperCase().padStart(2,'0')}) = ${hasV?'0x'+h2(val)+' ('+val+'d)':'unknown'}${known?' — '+known:''}${fromStat?' [STATUS]':fromSnap?' [HEX]':''}`}
+                  style={{
+                    background: hasV ? (known?'#001a22':'#0a150a') : '#060d06',
+                    border:`1px solid ${hasV?(known?'#44aaff':'#1a3a1a'):C.border}`,
+                    borderRadius:'2px',padding:'3px 2px',textAlign:'center',cursor:'default',
+                  }}>
+                  <div style={{color:C.textDim,fontSize:'7px'}}>{addr.toString(16).toUpperCase().padStart(2,'0')}h</div>
+                  <div style={{color:hasV?(known?'#44aaff':C.textBright):'#335533',fontSize:'10px',fontWeight:'bold'}}>
+                    {hasV?h2(val):'--'}
+                  </div>
+                  {known && (
+                    <div style={{color:'#44aaff',fontSize:'6px',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
+                      {known}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── KNOWN LOCATIONS ─────────────────────────────────── */}
+      {sub==='known' && (
+        <div style={S.panel}>
+          <div style={S.panelTitle}>KNOWN KLR RAM LOCATIONS &nbsp;
+            <span style={{color:C.textDim,fontSize:'8px'}}>blue border = has value · dim = no data yet</span>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:'4px',marginTop:'6px'}}>
+            {Object.entries(KNOWN).map(([addr,name])=>{
+              const a   = +addr;
+              const val = ramMerged[a];
+              const hasV = val !== undefined;
+              const addrHex = a.toString(16).toUpperCase().padStart(2,'0');
+              return (
+                <div key={addr}
+                  title={`ram[${a}] (0x${addrHex}h) = ${hasV?'0x'+h2(val)+' ('+val+'d)':'no data'}`}
+                  style={{
+                    background: hasV ? '#001a22' : '#060d06',
+                    border:`1px solid ${hasV?'#44aaff':C.border}`,
+                    borderRadius:'4px',padding:'5px 6px',
+                  }}>
+                  <div style={{color:'#44aaff',fontSize:'9px',fontWeight:'bold',
+                               overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
+                    {name}
+                  </div>
+                  <div style={{color:C.textDim,fontSize:'7px',marginBottom:'3px'}}>
+                    0x{addrHex}h
+                  </div>
+                  <div style={{color:hasV?C.textBright:'#335533',fontSize:'13px',fontWeight:'bold'}}>
+                    {hasV ? h2(val) : '--'}
+                  </div>
+                  {hasV && (
+                    <div style={{color:C.textDim,fontSize:'7px',marginTop:'1px'}}>
+                      {val}d &nbsp; {val.toString(2).padStart(8,'0')}b
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── ADC INPUTS ─────────────────────────────────────────── */}
+      {sub==='adc' && (
+        <div style={S.panel}>
+          <div style={S.panelTitle}>KLR ADC INPUTS &nbsp;
+            <span style={{color:C.textDim,fontSize:'8px'}}>from KLR: [DS] snapshot</span>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))',gap:'4px',marginTop:'6px'}}>
+            {[
+              { ch:3,  label:'TPS Supply',   addr:0x39, desc:'5V regulated supply (ch3)' },
+              { ch:7,  label:'TPS Angle',    addr:0x3C, desc:'Throttle wiper raw (ch7)' },
+              { ch:7,  label:'Throttle °',   addr:0x3A, desc:'Processed degrees (3A)' },
+              { ch:7,  label:'TPS Scaling',  addr:0x3B, desc:'3B scaling numerator' },
+              { ch:7,  label:'TPS Cycling',  addr:0x43, desc:'Cycling valve map input (43h)' },
+              { ch:7,  label:'WOT Threshold',addr:0x3E, desc:'WOT angle threshold (3E)' },
+              { ch:0,  label:'Knock ch0',    addr:null,  desc:'knock sensor 1 amplified' },
+              { ch:1,  label:'Knock ch1',    addr:null,  desc:'knock sensor 2 amplified' },
+              { ch:5,  label:'Comparator',   addr:null,  desc:'LM2902 comparator output (ch5)' },
+            ].map(({ch, label, addr, desc}) => {
+              const val = addr !== null ? ram[addr] : undefined;
+              const hasV = val !== undefined && val !== null;
+              return (
+                <div key={label} title={desc}
+                  style={{background: hasV?'#001a22':'#060d06',
+                          border:`1px solid ${hasV?'#44aaff':C.border}`,
+                          borderRadius:'4px',padding:'5px 6px'}}>
+                  <div style={{color:'#44aaff',fontSize:'9px',fontWeight:'bold'}}>{label}</div>
+                  <div style={{color:C.textDim,fontSize:'7px',marginBottom:'3px'}}>
+                    ch{ch}{addr!==null ? ` · ram[0x${addr.toString(16).toUpperCase()}]` : ''}
+                  </div>
+                  <div style={{color:hasV?C.textBright:'#335533',fontSize:'13px',fontWeight:'bold'}}>
+                    {hasV ? h2(val) : '--'}
+                  </div>
+                  {hasV && (
+                    <div style={{color:C.textDim,fontSize:'7px',marginTop:'1px'}}>
+                      {val}d &nbsp; {(val*100/255).toFixed(0)}%
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── STATUS VALUES ────────────────────────────────────── */}
+      {sub==='status' && (
+        <div style={S.panel}>
+          <div style={S.panelTitle}>RAM VALUES FROM KLR: [STATUS] LINES</div>
+          {hasStatus ? (
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'4px'}}>
+              {Object.entries(ramFromStatus).sort((a,b)=>+a[0]-+b[0]).map(([addr,val])=>(
+                <div key={addr} style={{display:'flex',justifyContent:'space-between',
+                                        padding:'3px 6px',borderBottom:`1px solid ${C.border}`,fontSize:'10px'}}>
+                  <span style={{color:C.textDim}}>ram[{addr}] {KNOWN[+addr]?<span style={{color:'#44aaff',fontSize:'9px'}}>{KNOWN[+addr]}</span>:''}</span>
+                  <span style={{color:C.textBright}}>0x{h2(val)} ({val}d)</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{color:C.textDim,fontSize:'10px',padding:'12px 8px'}}>
+              No ram[n] values found in KLR: [STATUS] lines at t≤{currentT===Infinity?'---':currentT}ms
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
