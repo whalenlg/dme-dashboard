@@ -338,12 +338,19 @@ function parseLog(text) {
   // can carry-forward across mid-scan raw ADC artifacts.
   // Inline threshold: val*0.875-116 >= -40  →  val >= 87 (0x57)
   const validTemp = v => v !== undefined && v >= 0x57;
-  let lastCoolantRaw = undefined, lastAirRaw = undefined;
+  const validAfm  = v => v !== undefined && v >= 0x08 && v <= 0xF0;
+  const validTps  = v => v !== undefined && v >= 0x50;
+  let lastCoolantRaw = undefined, lastAirRaw = undefined, lastAfmRaw = undefined, lastTpsRaw = undefined;
   for (const s of snapshots) {
     if (validTemp(s.iram[0x13])) lastCoolantRaw = s.iram[0x13];
     if (validTemp(s.iram[0x12])) lastAirRaw     = s.iram[0x12];
+    // Only use STATUS snapshots for AFM shadow — DS iram[0x10] is unreliable
+    if (s.raw?.includes('[STATUS]') && validAfm(s.iram[0x10])) lastAfmRaw = s.iram[0x10];
+    if (validTps(s.iram[0x16]))  lastTpsRaw     = s.iram[0x16];
     s._prevCoolant = lastCoolantRaw;
     s._prevAir     = lastAirRaw;
+    s._prevAfm     = lastAfmRaw;
+    s._prevTps     = lastTpsRaw;
   }
   phases.sort((a, b) => a.t - b.t);
   return { snapshots, phases };
@@ -439,7 +446,9 @@ function parseKLRLog(text) {
       const delay_us = dm ? parseFloat(dm[1]) * (dm[2] === 'ms' ? 1000 : 1) : null;
       const pulse_ms = pm ? parseFloat(pm[1]) * (pm[2] === 'us' ? 0.001 : 1) : null;
       // Timing-only lines (no parenthetical context) — merge into previous entry
-      const isTiming = (dm || pm) && !/\(/.test(msg);
+      // Never merge asserted/deasserted lines — they always need their own entry
+      const isTiming = (dm || pm) && !/\(/.test(msg) &&
+                       !/asserted|deasserted/i.test(msg);
       if (isTiming && phases.length > 0) {
         const prev = phases[phases.length - 1];
         if (delay_us != null) prev.delay_us = delay_us;
@@ -454,9 +463,10 @@ function parseKLRLog(text) {
       }
 
     // ── DME [PHASE] — bare or DME: prefixed (combined log) ───
+    // Tag as cat:'dme' so KLR charts filter these out
     } else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]')) {
       const p = parsePhaseLine(t);
-      if (p) phases.push(p);
+      if (p) { p.cat = 'dme'; phases.push(p); }
     }
   }
   phases.sort((a, b) => a.t - b.t);
@@ -679,8 +689,44 @@ export default function DMEDashboard() {
   const lmbd16   = ((iram[0x1B]||0)<<8)|(iram[0x1C]||0);
 
   const chartData = useMemo(() => {
-    let lastCoolant = null, lastAir = null, lastAfm = null;
-    return data.snapshots.map(s => {
+    // Merge DS + STATUS snapshots at same timestamp.
+    // DS has full iram[0x00-0x7F]; STATUS has shadowed ADC values.
+    // Merged: start with DS iram, overlay STATUS iram on top.
+    const byT = new Map();
+    for (const s of data.snapshots) {
+      const isStatus = s.raw?.includes('[STATUS]');
+      if (!byT.has(s.t)) {
+        byT.set(s.t, { ...s, iram: { ...s.iram } });
+      } else {
+        const merged = byT.get(s.t);
+        if (isStatus) {
+          // STATUS overlays its addresses onto the existing DS iram.
+          // For ADC channels with valid-range filtering, skip out-of-range values
+          // so they don't overwrite good DS readings with noise.
+          for (const [k, v] of Object.entries(s.iram)) {
+            const ki = Number(k);
+            // STATUS afm_raw(10) uses the shadow register — always authoritative.
+            // TPS (0x16) has no STATUS shadow — skip out-of-range values.
+            if (ki === 0x16 && v < 0x50) continue;
+            merged.iram[ki] = v;
+          }
+          // Copy STATUS-only fields
+          if (s.explicitRpm != null) merged.explicitRpm = s.explicitRpm;
+          if (s._prevAfm != null)    merged._prevAfm = s._prevAfm;
+          if (s._prevTps != null)    merged._prevTps = s._prevTps;
+        } else {
+          // DS: only fill addresses not already set by STATUS
+          for (const [k,v] of Object.entries(s.iram))
+            if (merged.iram[k] === undefined) merged.iram[k] = v;
+          if (s.refRpm != null) merged.refRpm = s.refRpm;
+          if (s._prevAfm != null && merged._prevAfm == null) merged._prevAfm = s._prevAfm;
+          if (s._prevTps != null && merged._prevTps == null) merged._prevTps = s._prevTps;
+        }
+      }
+    }
+    const merged = [...byT.values()].sort((a,b) => a.t - b.t);
+    let lastCoolant = null, lastAir = null, lastAfm = null, lastTps = null, lastLmbdLn = null, lastLmbdNln = null;
+    return merged.map(s => {
       const ir = s.iram ?? {};
       // Show 0ms when fuel is cut (FuelOffCoast = iram[23h].5)
       const fuel = ((ir[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3);
@@ -691,24 +737,26 @@ export default function DMEDashboard() {
       const rawAir     = ntcToC(ir[0x12]);
       if (rawCoolant !== null) lastCoolant = rawCoolant;
       if (rawAir     !== null) lastAir     = rawAir;
-      // AFM delta: difference from previous snapshot AFM value.
-      const afmNow   = ir[0x10] ?? null;
-      const afmDelta = (afmNow !== null && lastAfm !== null) ? afmNow - lastAfm : 0;
-      if (afmNow !== null) lastAfm = afmNow;
+      // AFM from STATUS shadow register (afm_raw_shadow) — always correct.
+      // _prevAfm is set only from STATUS snapshots in parseLog.
+      const afmPrev  = lastAfm;
+      if (s._prevAfm != null) lastAfm = s._prevAfm;
+      const afmNow   = lastAfm;
+      const afmDelta = (afmNow !== null && afmPrev !== null) ? afmNow - afmPrev : 0;
       return {
         t:         s.t,
         fuel,
         rpm,
         coolant:   lastCoolant,
-        lmbdLn:    ir[0x19] ?? null,
-        lmbdNln:   ir[0x1A] ?? null,
+        lmbdLn:    (() => { const v = ir[0x19] ?? null; if (v !== null) lastLmbdLn = v; return lastLmbdLn; })(),
+        lmbdNln:   (() => { const v = ir[0x1A] ?? null; if (v !== null) lastLmbdNln = v; return lastLmbdNln; })(),
         isv:       ir[0x7F] ?? null,
         dwell:   rpm != null && rpm >= 40 && ir[0x2F] != null
                    ? +(ir[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
                    : null,
         afm:       afmNow,
         afm_delta: afmDelta,
-        tps:       ir[0x16] ?? null,
+        tps:       (() => { const v = ir[0x16] != null && ir[0x16] >= 0x50 ? ir[0x16] : (s._prevTps ?? null); if (v !== null) lastTps = v; return lastTps; })(),
       };
     });
   }, [data.snapshots]);
@@ -730,8 +778,8 @@ export default function DMEDashboard() {
       coolant: mm(s => ntcToC(s.iram?.[0x13]),         v=>`${v}°C`),
       airtemp: mm(s => ntcToC(s.iram?.[0x12]),        v=>`${v}°C`),
       batt:    mm(s => s.iram?.[0x11]!=null ? +(s.iram[0x11]*0.05263+2.132).toFixed(1) : null, v=>`${v}V`),
-      afm:     mm(s => s.iram?.[0x10]??null,        v => h2(v)),
-      tps:     mm(s => s.iram?.[0x16]??null,        v => h2(v)),
+      afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
+      tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
       wdog:    mm(s => s.iram?.[0x2A]??null,        v => h2(v)),
     };
   }, [data.snapshots]);
@@ -807,7 +855,7 @@ export default function DMEDashboard() {
         {tab==='ports'    && <PortsTab snap={snap}
             logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
             logLoaded={data.snapshots.length>0} />}
-        {tab==='iram'     && <IRAMTab iram={iram} tooltip={tooltip} setTooltip={setTooltip} />}
+        {tab==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
         {tab==='charts'   && <ChartsTab chartData={chartData} currentT={snap.t} />}
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
@@ -1040,11 +1088,11 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null },
-    { lbl:'AFM RAW (10h)',    val:h2(iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm'     },
+    { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm'     },
     { lbl:'AFM Prev (53h)',   val:h2(iram[0x53]),                       unit:'hex',         col:'#339999', mmk:null      },
-    { lbl:'AFM Delta',        val:(iram[0x10]!=null&&iram[0x53]!=null) ? `+${iram[0x10]-iram[0x53]}` : '--', unit:'', col: (iram[0x10]??0)>(iram[0x53]??0) ? '#ff9944' : '#44cccc', mmk:null },
+    { lbl:'AFM Delta',        val:((snap._prevAfm??iram[0x10])!=null&&iram[0x53]!=null) ? `+${(snap._prevAfm??iram[0x10])-(iram[0x53]??0)}` : '--', unit:'', col: ((snap._prevAfm??iram[0x10])??0)>(iram[0x53]??0) ? '#ff9944' : '#44cccc', mmk:null },
     { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null      },
-    { lbl:'TPS',           val:h2(iram[0x16]),                       unit:(iram[0x16]??0)>=0xD1?'CLOSED':(iram[0x16]??0)>=0x77?'WOT':'OPEN', col:(iram[0x16]??0)>=0xD1?'#44cccc':(iram[0x16]??0)>=0x77?C.red:C.amber, mmk:'tps' },
+    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),                       unit:(snap._prevTps??iram[0x16]??0)>=0xD1?'CLOSED':(snap._prevTps??iram[0x16]??0)>=0x77?'WOT':'OPEN', col:(snap._prevTps??iram[0x16]??0)>=0xD1?'#44cccc':(snap._prevTps??iram[0x16]??0)>=0x77?C.red:C.amber, mmk:'tps' },
     { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog' },
   ];
 
@@ -1570,13 +1618,13 @@ function ChartsTab({ chartData, currentT }) {
   const charts = [
     {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
     {title:'ENGINE SPEED (RPM)',     k:'rpm',     col:C.textBright,unit:'RPM',   dom:[0,'auto']},
-    {title:'AFM RAW (10h)',          k:'afm',     col:'#44cccc', unit:'hex',     dom:[0,255]},
-    {title:'AFM DELTA (snapshot)',   k:'afm_delta',col:'#ff9944', unit:'Δhex',   dom:['auto','auto']},
-    {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255]},
-    {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255]},
-    {title:'LAMBDA ADJ — LEAN (19)', k:'lmbdLn',  col:'#cc66ff', unit:'hex',     dom:[0,255]},
-    {title:'DWELL TIME (2F)',         k:'dwell',   col:'#ff8844', unit:'ms', dom:[0,'auto']},
-    {title:'COOLANT TEMP (13)',      k:'coolant', col:C.blue,    unit:'°C',      dom:[-20,120]},
+    {title:'AFM RAW (10h)',          k:'afm',     col:'#44cccc', unit:'hex',     dom:[0,255],    cn:true},
+    {title:'AFM DELTA (snapshot)',   k:'afm_delta',col:'#ff9944', unit:'Δhex',   dom:['auto','auto'], cn:false},
+    {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
+    {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
+    {title:'LAMBDA ADJ — LEAN (19)', k:'lmbdLn',  col:'#cc66ff', unit:'hex',     dom:[0,255],    cn:true},
+    {title:'DWELL TIME (2F)',         k:'dwell',   col:'#ff8844', unit:'ms', dom:[0,'auto'],  cn:true},
+    {title:'COOLANT TEMP (13)',      k:'coolant', col:C.blue,    unit:'°C',      dom:[-20,120],  cn:true},
   ];
 
   return (
@@ -1592,13 +1640,13 @@ function ChartsTab({ chartData, currentT }) {
               <Tooltip
                 contentStyle={{background:'#060e06',border:`1px solid ${c.col}55`,
                                color:c.col,fontSize:'11px',fontFamily:'inherit'}}
-                formatter={v=>[v,c.unit]}
+                formatter={(v,n)=>[c.unit==='hex'?`0x${v.toString(16).toUpperCase().padStart(2,'0')} (${v}d)`:v, n]}
                 labelFormatter={t=>`t=${t} ms`}
               />
               {currentT !== undefined &&
                 <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3" />}
               <Line type="monotone" dataKey={c.k} stroke={c.col}
-                    dot={false} strokeWidth={1.5} connectNulls={false} />
+                    dot={false} strokeWidth={1.5} connectNulls={c.cn??false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -2039,6 +2087,17 @@ function KLRTab({ klrData, currentT }) {
 // Each chart uses Recharts ResponsiveContainer with the same
 // green-on-black theme as the DME charts tab.
 function KLRChartsTab({ klrData, currentT }) {
+  // Filter to KLR-only phases (exclude DME phase entries tagged cat:'dme')
+  const klrPhases = (klrData?.phases ?? []).filter(p => p.cat === 'klr');
+  const klrStatus = klrData?.status ?? [];
+  // If currentT predates KLR data (e.g. from a DME phase entry at t=2ms),
+  // default to showing all data up to the last KLR timestamp.
+  const firstKlrT = klrPhases[0]?.t ?? klrStatus[0]?.t;
+  const lastKlrT  = klrPhases[klrPhases.length-1]?.t ?? klrStatus[klrStatus.length-1]?.t;
+  const effectiveT = (currentT == null || (firstKlrT != null && currentT < firstKlrT))
+    ? lastKlrT
+    : currentT;
+
   const empty = !klrData ||
     (klrData.phases?.length === 0 && klrData.status?.length === 0 && klrData.snapshots?.length === 0);
 
@@ -2050,16 +2109,16 @@ function KLRChartsTab({ klrData, currentT }) {
 
   // ── Build chart datasets ──────────────────────────────────
   // IGN delay and pulse width — one point per asserted/deasserted event pair
-  const ignDelayData = (klrData.phases ?? [])
-    .filter(p => p.asserted && p.delay_us != null)
+  const ignDelayData = klrPhases
+    .filter(p => p.asserted && p.delay_us != null && (effectiveT == null || p.t <= effectiveT))
     .map(p => ({ t: p.t, delay: +p.delay_us.toFixed(2) }));
 
-  const ignPulseData = (klrData.phases ?? [])
-    .filter(p => p.deasserted && p.pulse_ms != null)
+  const ignPulseData = klrPhases
+    .filter(p => p.deasserted && p.pulse_ms != null && (effectiveT == null || p.t <= effectiveT))
     .map(p => ({ t: p.t, pulse: +p.pulse_ms.toFixed(3) }));
 
   // CV_PWM and knock from STATUS lines
-  const statusData = (klrData.status ?? []).map(s => ({
+  const statusData = klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
     t: s.t,
     cv_pwm: s.CV_PWM ?? null,
     knock:  s.knock  ?? null,
@@ -2067,12 +2126,12 @@ function KLRChartsTab({ klrData, currentT }) {
 
   // ign_out state from [KLR] snapshots or status
   const ignOutData = [
-    ...(klrData.snapshots ?? []).map(s => ({
+    ...(klrData.snapshots ?? []).filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
       t: s.t,
       ign_out: s.p2 != null ? ((s.p2 >> 7) & 1) : null,
       full_load: s.p1 != null ? ((s.p1 >> 5) & 1) : null,
     })),
-    ...(klrData.status ?? []).map(s => ({
+    ...klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
       t: s.t,
       ign_out:   s.ign_out   ?? null,
       full_load: s.full_load ?? null,
