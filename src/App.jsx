@@ -714,7 +714,7 @@ export default function DMEDashboard() {
     // Compute timing advance baseline from first stable snapshots (RPM > 1000)
     // Used to show FQS timing retard as deviation from no-retard baseline
     const stableAdvs = data.snapshots
-      .filter(s => (s.refRpm ?? s.explicitRpm ?? 0) > 1000 && s.iram?.[0x31] != null)
+      .filter(s => (s.refRpm ?? s.explicitRpm ?? 0) > 1000 && s.iram?.[0x31] != null && s.iram[0x31] <= 180)
       .slice(0, 30)
       .map(s => s.iram[0x31]);
     const advBaseline = stableAdvs.length
@@ -756,7 +756,8 @@ export default function DMEDashboard() {
       }
     }
     const merged = [...byT.values()].sort((a,b) => a.t - b.t);
-    let lastCoolant = null, lastAir = null, lastAfm = null, lastTps = null, lastLmbdLn = null, lastLmbdNln = null;
+    let lastCoolant = null, lastAir = null, lastAfm = null, lastTps = null, lastLmbdLn = null, lastLmbdNln = null,
+        lastLmbdHi = null, lastLmbdLo = null;
     return merged.map(s => {
       const ir = s.iram ?? {};
       // Show 0ms when fuel is cut (FuelOffCoast = iram[23h].5)
@@ -789,6 +790,15 @@ export default function DMEDashboard() {
         coolant:   lastCoolant,
         lmbdLn:    (() => { const v = ir[0x19] ?? null; if (v !== null) lastLmbdLn = v; return lastLmbdLn; })(),
         lmbdNln:   (() => { const v = ir[0x1A] ?? null; if (v !== null) lastLmbdNln = v; return lastLmbdNln; })(),
+        // Lambda correction — 16-bit lambda integrator (Lmbd Int 1B:1C) offset from
+        // its 0x8000 centre. Same calculation as the DME Overview callout box.
+        lmbdCorr:  (() => {
+          const hi = ir[0x1B] ?? null, lo = ir[0x1C] ?? null;
+          if (hi !== null) lastLmbdHi = hi;
+          if (lo !== null) lastLmbdLo = lo;
+          if (lastLmbdHi === null || lastLmbdLo === null) return null;
+          return ((lastLmbdHi << 8) | lastLmbdLo) - 0x8000;
+        })(),
         isv:       ir[0x7F] ?? null,
         dwell:   rpm != null && rpm >= 40 && ir[0x2F] != null
                    ? +(ir[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
@@ -796,9 +806,14 @@ export default function DMEDashboard() {
         afm:       afmNow,
         afm_delta: afmDelta,
         tps:       (() => { const v = ir[0x16] != null && ir[0x16] >= 0x50 ? ir[0x16] : (s._prevTps ?? null); if (v !== null) lastTps = v; return lastTps; })(),
-        timingAdv: ir[0x31] != null ? +(ir[0x31] * 360 / 264).toFixed(1) : null,  // half-teeth → degrees BTDC
+        // Ignition advance is only meaningful once the crank has synced (rpm valid) —
+        // before that, ir[0x31] holds stale/uninitialized RAM and produces a spurious
+        // spike at the start of the log. Also sanity-clamp to a physically plausible
+        // half-teeth range (0-180 half-teeth ≈ 0-245°BTDC) to reject any other garbage.
+        timingAdv: (rpm != null && rpm >= 40 && ir[0x31] != null && ir[0x31] <= 180)
+                     ? +(ir[0x31] * 360 / 264).toFixed(1) : null,  // half-teeth → degrees BTDC
         fqsAdv:      ir[0x17] ?? null,  // FQS ADC raw value (0x00=pos0 … 0xA7=pos7)
-        timingRetard: (ir[0x31] != null && advBaseline != null)
+        timingRetard: (rpm != null && rpm >= 40 && ir[0x31] != null && ir[0x31] <= 180 && advBaseline != null)
                         ? +((advBaseline - ir[0x31]) * 360 / 264).toFixed(2)
                         : null,  // degrees retarded vs baseline (positive = retard)
       };
@@ -1121,24 +1136,40 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
     else                       { afrLabel = 'OPEN LOOP';  afrCol = C.textDim; }
   }
 
-  const metrics = [
-    { lbl:'FUEL PULSE',    val:fuelDisplay,                              unit:fuelUnit,      col:fuelCut?C.red:'#66ff66', mmk:'fuel'    },
+  // Lambda correction — 16-bit lambda integrator (Lmbd Int 1B:1C) offset from
+  // its 0x8000 centre. Positive = correction added (lean-side trim), negative
+  // = correction removed (rich-side trim).
+  const lmbdCorrRaw = lmbd16 - 0x8000;
+  const lmbdCorrSign = lmbdCorrRaw >= 0 ? '+' : '−';
+  const lmbdCorrAbs  = Math.abs(lmbdCorrRaw);
+  const lmbdCorrHex  = (lmbdCorrRaw < 0 ? '-' : '') + '0x' + lmbdCorrAbs.toString(16).toUpperCase().padStart(4,'0');
+  const lmbdCorrCol  = lmbdCorrRaw > 0 ? '#44aaff' : lmbdCorrRaw < 0 ? '#ff6644' : '#66ffaa';
+
+  const metricsRow1 = [
     { lbl:'ENGINE SPEED',  val:rpm != null ? rpm : '---',              unit:'RPM',         col:C.textBright, mmk:'rpm' },
-    { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv'     },
+    { lbl:'FUEL PULSE',    val:fuelDisplay,                              unit:fuelUnit,      col:fuelCut?C.red:'#66ff66', mmk:'fuel'    },
     { lbl:'DWELL',         val:`${dwMs}ms`,   unit:`${dwDeg??'--'}° / ${dwHt??'--'} ht`, col:'#ff8844', mmk:'dwell'   },
+    { lbl:'LAMBDA CORR',   val:`${lmbdCorrSign}${lmbdCorrAbs}`,
+                           unit:`${lmbdCorrHex}  (1B:1C−8000h)`,       col:lmbdCorrCol, mmk:null },
+    { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null      },
+  ];
+
+  const metricsRow2 = [
+    { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm'     },
+    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),                       unit:(snap._prevTps??iram[0x16]??0)>=0xD1?'CLOSED':(snap._prevTps??iram[0x16]??0)>=0x77?'WOT':'OPEN', col:(snap._prevTps??iram[0x16]??0)>=0xD1?'#44cccc':(snap._prevTps??iram[0x16]??0)>=0x77?C.red:C.amber, mmk:'tps' },
     { lbl:'COOLANT',       val:coolC!==null?`${coolC}°C`:'--',       unit:`0x${h2(iram[0x13])}`, col:C.blue, mmk:'coolant' },
     { lbl:'AIR TEMP',      val:airC !==null?`${airC}°C` :'--',       unit:`0x${h2(iram[0x12])}`, col:C.blue, mmk:'airtemp' },
     { lbl:'BATTERY',       val:`${battV}V`,                            unit:`0x${h2(iram[0x11])}`, col:battCol, mmk:'batt'   },
+  ];
+
+  const metricsRow3 = [
+    { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv'     },
+    { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog' },
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null },
-    { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm'     },
-    { lbl:'AFM Prev (53h)',   val:h2(iram[0x53]),                       unit:'hex',         col:'#339999', mmk:null      },
-    { lbl:'AFM Delta',        val:((snap._prevAfm??iram[0x10])!=null&&iram[0x53]!=null) ? `+${(snap._prevAfm??iram[0x10])-(iram[0x53]??0)}` : '--', unit:'', col: ((snap._prevAfm??iram[0x10])??0)>(iram[0x53]??0) ? '#ff9944' : '#44cccc', mmk:null },
-    { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null      },
-    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),                       unit:(snap._prevTps??iram[0x16]??0)>=0xD1?'CLOSED':(snap._prevTps??iram[0x16]??0)>=0x77?'WOT':'OPEN', col:(snap._prevTps??iram[0x16]??0)>=0xD1?'#44cccc':(snap._prevTps??iram[0x16]??0)>=0x77?C.red:C.amber, mmk:'tps' },
-    { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog' },
   ];
+
 
   const flags = [
     { name:'EngineSync',        val:(f21>>0)&1, col:'#66ffaa',  addr:'21h.0' },
@@ -1185,9 +1216,63 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
 
   return (
     <div>
-      {/* Big metrics row */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(8,1fr)',gap:'6px',marginBottom:'10px'}}>
-        {metrics.map(m=>{
+      {/* Big metrics — row 1 */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'6px',marginBottom:'6px'}}>
+        {metricsRow1.map(m=>{
+          const mmv = mm[m.mmk] || {};
+          return (
+            <div key={m.lbl} style={S.metric}>
+              <div style={S.metricLbl}>{m.lbl}</div>
+              <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
+                {m.val}
+              </div>
+              <div style={S.metricUnit}>{m.unit}</div>
+              {(mmv.mn !== '--' || mmv.mx !== '--') && (
+                <div style={{
+                  display:'flex',justifyContent:'space-between',
+                  marginTop:'5px',paddingTop:'4px',borderTop:`1px solid ${C.border}`,
+                  fontSize:'9px',
+                }}>
+                  <span style={{color:'#33aaff'}}>▼{mmv.mn??'--'}</span>
+                  <span style={{color:C.textDim,fontSize:'8px'}}>min/max</span>
+                  <span style={{color:'#ff8844'}}>▲{mmv.mx??'--'}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Big metrics — row 2 */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'6px',marginBottom:'6px'}}>
+        {metricsRow2.map(m=>{
+          const mmv = mm[m.mmk] || {};
+          return (
+            <div key={m.lbl} style={S.metric}>
+              <div style={S.metricLbl}>{m.lbl}</div>
+              <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
+                {m.val}
+              </div>
+              <div style={S.metricUnit}>{m.unit}</div>
+              {(mmv.mn !== '--' || mmv.mx !== '--') && (
+                <div style={{
+                  display:'flex',justifyContent:'space-between',
+                  marginTop:'5px',paddingTop:'4px',borderTop:`1px solid ${C.border}`,
+                  fontSize:'9px',
+                }}>
+                  <span style={{color:'#33aaff'}}>▼{mmv.mn??'--'}</span>
+                  <span style={{color:C.textDim,fontSize:'8px'}}>min/max</span>
+                  <span style={{color:'#ff8844'}}>▲{mmv.mx??'--'}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Big metrics — row 3 */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'6px',marginBottom:'10px'}}>
+        {metricsRow3.map(m=>{
           const mmv = mm[m.mmk] || {};
           return (
             <div key={m.lbl} style={S.metric}>
@@ -1666,7 +1751,7 @@ function ChartsTab({ chartData, currentT }) {
     {title:'AFM DELTA (snapshot)',   k:'afm_delta',col:'#ff9944', unit:'Δhex',   dom:['auto','auto'], cn:false},
     {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
     {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
-    {title:'LAMBDA ADJ — LEAN (19)', k:'lmbdLn',  col:'#cc66ff', unit:'hex',     dom:[0,255],    cn:true},
+    {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
     {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
     {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
     {title:'IGNITION ADVANCE (31)',   k:'timingAdv',    col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
@@ -1999,19 +2084,17 @@ function KLRTab({ klrData, currentT }) {
   const avgPulse   = pulses.length ? (pulses.reduce((a,b)=>a+b,0)/pulses.length).toFixed(3) : '--';
 
   const sig = [
-    { l:'IGN OUT',    v: latestStatus?.ign_out != null ? (latestStatus.ign_out?'HIGH':'LOW') : '--',
-      col: latestStatus?.ign_out ? C.red : '#44aaff' },
-    { l:'FULL LOAD',  v: latestStatus?.full_load != null ? (latestStatus.full_load?'YES':'NO') : '--',
-      col: latestStatus?.full_load ? C.amber : C.textBright },
+    { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
+    { l:'AVG DELAY',  v: `${avgDelay}μs`, col: '#44cccc' },
     { l:'KNOCK',      v: latestStatus?.knock != null ? `0x${h2(latestStatus.knock)}` : 'N/A',
       col: '#cc66ff' },
+    { l:'FULL LOAD',  v: latestStatus?.full_load != null ? (latestStatus.full_load?'YES':'NO') : '--',
+      col: latestStatus?.full_load ? C.amber : C.textBright },
     { l:'CV PWM',     v: latestStatus?.CV_PWM != null ? (latestStatus.CV_PWM?'ON':'OFF') : '--',
       col: '#66ffaa' },
     { l:'TIMER',      v: latestStatus?.timer_val != null ? `0x${h2(latestStatus.timer_val)}` : '--',
       col: C.textBright },
     { l:'IGN FIRES',  v: totalFires, col: '#ff8844' },
-    { l:'AVG DELAY',  v: `${avgDelay}μs`, col: '#44cccc' },
-    { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
   ];
 
   const regs = latestStatus ? [
