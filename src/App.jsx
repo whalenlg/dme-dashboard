@@ -221,7 +221,7 @@ const KLR_PORT_DEFS = {
     {bit:7, name:'IGN_OUT',   dir:'OUT', desc:'Ignition coil output → DME ign input (processed spark signal)'},
     {bit:6, name:'IGN_OUT_N', dir:'OUT', desc:'Ignition coil output active-low complement'},
     {bit:5, name:'CV_PWM',    dir:'OUT', desc:'Coil voltage PWM control'},
-    {bit:4, name:'KNOCK_DET', dir:'IN',  desc:'Knock detector comparator input'},
+    {bit:4, name:'KNOCK_DET', dir:'OUT', desc:'Diag LED Output'},
     {bit:3, name:'P2_3',      dir:'?',   desc:'P2.3 — function TBD'},
     {bit:2, name:'P2_2',      dir:'?',   desc:'P2.2 — function TBD'},
     {bit:1, name:'P2_1',      dir:'?',   desc:'P2.1 — function TBD'},
@@ -305,6 +305,13 @@ function parseStatusLine(line) {
   // Explicit RPM in status line: prpm(37)=0x15 (840 RPM)
   const rpmEx = line.match(/prpm[^=]*=0x[0-9a-f]+\s+\((\d+)\s+RPM\)/i);
   if (rpmEx) snap.explicitRpm = parseInt(rpmEx[1]);
+  // Explicit ground-truth temps in status line: coolant(13)=0xde (80 degC).
+  // Prefer these over the NTC-curve estimate when present — 9999 degC is a
+  // startup sentinel for "sensor not yet sampled", so it's ignored.
+  const coolEx = line.match(/coolant\([0-9A-Fa-f]{1,2}\)=0x[0-9A-Fa-f]+\s+\((-?\d+)\s*degC\)/i);
+  if (coolEx) { const v = parseInt(coolEx[1]); if (v < 200) snap.explicitCoolantC = v; }
+  const airEx = line.match(/airtemp\([0-9A-Fa-f]{1,2}\)=0x[0-9A-Fa-f]+\s+\((-?\d+)\s*degC\)/i);
+  if (airEx) { const v = parseInt(airEx[1]); if (v < 200) snap.explicitAirC = v; }
   return snap;
 }
 
@@ -341,6 +348,7 @@ function parseLog(text) {
   const validAfm  = v => v !== undefined && v >= 0x08 && v <= 0xF0;
   const validTps  = v => v !== undefined && v >= 0x50;
   let lastCoolantRaw = undefined, lastAirRaw = undefined, lastAfmRaw = undefined, lastTpsRaw = undefined;
+  let lastCoolantC = undefined, lastAirC = undefined;
   let lastDsIram = {};
   for (const s of snapshots) {
     if (validTemp(s.iram[0x13])) lastCoolantRaw = s.iram[0x13];
@@ -348,10 +356,14 @@ function parseLog(text) {
     // Only use STATUS snapshots for AFM shadow — DS iram[0x10] is unreliable
     if (s.raw?.includes('[STATUS]') && validAfm(s.iram[0x10])) lastAfmRaw = s.iram[0x10];
     if (validTps(s.iram[0x16]))  lastTpsRaw     = s.iram[0x16];
-    s._prevCoolant = lastCoolantRaw;
-    s._prevAir     = lastAirRaw;
-    s._prevAfm     = lastAfmRaw;
-    s._prevTps     = lastTpsRaw;
+    if (s.explicitCoolantC !== undefined) lastCoolantC = s.explicitCoolantC;
+    if (s.explicitAirC     !== undefined) lastAirC     = s.explicitAirC;
+    s._prevCoolant  = lastCoolantRaw;
+    s._prevAir      = lastAirRaw;
+    s._prevAfm      = lastAfmRaw;
+    s._prevTps      = lastTpsRaw;
+    s._prevCoolantC = lastCoolantC;
+    s._prevAirC     = lastAirC;
     // Track last DS iram for gap-filling STATUS snapshots
     if (!s.raw?.includes('[STATUS]')) {
       lastDsIram = s.iram;
@@ -431,15 +443,19 @@ function parseKLRLog(text) {
       // knock — may be 'x'
       const km = body.match(/knock=(\w+)/);
       if (km) s.knock = km[1] === 'x' ? null : parseInt(km[1], 16);
+      // knock_count — cumulative decimal counter (not hex)
+      const kcm = body.match(/knock_count=(\d+)/);
+      if (kcm) s.knock_count = parseInt(kcm[1], 10);
       // Registers R0/R2/R4/R5
       for (const r of ['R0','R2','R4','R5']) {
         const m = body.match(new RegExp(r + '=(\\w+)'));
         if (m && m[1] !== 'x') s[r] = parseInt(m[1], 16);
       }
-      // ram[n] values
+      // ram[n] values — bracket index is HEX (e.g. ram[33] means address 0x33),
+      // matching how the KLR firmware log labels RAM addresses.
       s.ramVals = {};
-      for (const m of body.matchAll(/ram\[(\d+)\]=([0-9a-fA-F]+)/g))
-        s.ramVals[parseInt(m[1])] = parseInt(m[2], 16);
+      for (const m of body.matchAll(/ram\[([0-9a-fA-F]+)\]=([0-9a-fA-F]+)/g))
+        s.ramVals[parseInt(m[1], 16)] = parseInt(m[2], 16);
       status.push(s);
 
     // ── KLR: [PHASE] timing event ───────────────────────────
@@ -764,11 +780,18 @@ export default function DMEDashboard() {
       const fuel = ((ir[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3);
       // Use only reference-sensor RPM — null = gap in chart (pre-sync)
       const rpm  = s.refRpm ?? s.explicitRpm ?? null;
-      // Temperature: carry forward last valid reading to bridge ADC-scan artifacts.
-      const rawCoolant = ntcToC(ir[0x13]);
-      const rawAir     = ntcToC(ir[0x12]);
-      if (rawCoolant !== null) lastCoolant = rawCoolant;
-      if (rawAir     !== null) lastAir     = rawAir;
+      // Temperature: once the log has produced at least one explicit STATUS
+      // reading, keep riding that carried-forward value (s._prevCoolantC/
+      // s._prevAirC) rather than recomputing from iram[0x13]/[0x12] on every
+      // [DS] snapshot. The raw byte at that address is shared with other ADC
+      // channels via a hardware mux, so a [DS] dump can catch it mid-scan
+      // showing a different channel's value — that's what produces the
+      // sawtooth/triangle-wave noise. Only fall back to the NTC-curve
+      // estimate before any explicit reading has appeared yet in the log.
+      const rawCoolant = s._prevCoolantC ?? ntcToC(ir[0x13]);
+      const rawAir     = s._prevAirC     ?? ntcToC(ir[0x12]);
+      if (rawCoolant !== null && rawCoolant !== undefined) lastCoolant = rawCoolant;
+      if (rawAir     !== null && rawAir     !== undefined) lastAir     = rawAir;
       // AFM from STATUS shadow register (afm_raw_shadow) — always correct.
       // _prevAfm is set only from STATUS snapshots in parseLog.
       // AFM: prefer the STATUS shadow register (_prevAfm) when present, but
@@ -816,6 +839,7 @@ export default function DMEDashboard() {
         timingRetard: (rpm != null && rpm >= 40 && ir[0x31] != null && ir[0x31] <= 180 && advBaseline != null)
                         ? +((advBaseline - ir[0x31]) * 360 / 264).toFixed(2)
                         : null,  // degrees retarded vs baseline (positive = retard)
+        loadIdx:   ir[0x49] ?? null,  // load index — fuel map row selector
       };
     });
   }, [data.snapshots]);
@@ -834,12 +858,13 @@ export default function DMEDashboard() {
       rpm:     mm(s => snapRpm(s) || null,        v => v.toString()),
       isv:     mm(s => s.iram?.[0x7F]??null,        v => h2(v)),
       dwell:   mm(s => { const ht=s.iram?.[0x2F]; const r=s.refRpm??s.explicitRpm; return (ht!=null&&r>=40) ? +(ht*60000/(r*HT_PER_REV)).toFixed(2) : null; }, v=>`${v}ms`),
-      coolant: mm(s => ntcToC(s.iram?.[0x13]),         v=>`${v}°C`),
-      airtemp: mm(s => ntcToC(s.iram?.[0x12]),        v=>`${v}°C`),
+      coolant: mm(s => s._prevCoolantC ?? ntcToC(s.iram?.[0x13]), v=>`${v}°C`),
+      airtemp: mm(s => s._prevAirC     ?? ntcToC(s.iram?.[0x12]), v=>`${v}°C`),
       batt:    mm(s => s.iram?.[0x11]!=null ? +(s.iram[0x11]*0.05263+2.132).toFixed(1) : null, v=>`${v}V`),
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
       wdog:    mm(s => s.iram?.[0x2A]??null,        v => h2(v)),
+      load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
     };
   }, [data.snapshots]);
 
@@ -849,7 +874,7 @@ export default function DMEDashboard() {
     data.snapshots.some(s => ((s.iram?.[0x21] ?? 0) >> 1) & 1),
   [data.snapshots]);
 
-  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase'];
+  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'];
 
   return (
     <div style={S.root}>
@@ -893,13 +918,14 @@ export default function DMEDashboard() {
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {['klr','klr_ports','klr_iram','klr_charts','klr_phase'].map(t=>(
+          {['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].map(t=>(
             <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}>
               {t==='klr'       ?'KLR OVERVIEW':
                t==='klr_ports' ?'KLR PORTS'   :
                t==='klr_iram'  ?'KLR IRAM'    :
                t==='klr_charts'?'KLR CHARTS'  :
                t==='klr_phase' ?'KLR PHASE'   :
+               t==='klr_diag'  ?'KLR DIAG'    :
                t.toUpperCase()}
             </button>
           ))}
@@ -925,10 +951,11 @@ export default function DMEDashboard() {
         {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_charts' && <KLRChartsTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
+        {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
       </div>
 
       {/* ── TIME SCRUBBER + PLAYBACK ────────────────────────── */}
-      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase'].includes(tab) && (
+      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
         <div style={S.scrubber}>
           {/* Play / Pause */}
           <button onClick={()=>setPlaying(p=>!p)}
@@ -982,7 +1009,7 @@ export default function DMEDashboard() {
       )}
 
       {/* ── KLR PLAYBACK SCRUBBER — KLR tabs only ──────────── */}
-      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase'].includes(tab) && (
+      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
         <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
           <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
           <button onClick={()=>setKlrPlaying(p=>!p)}
@@ -1074,8 +1101,10 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
   const rpm     = snapRpm(snap);
   // Carry forward last valid temperature — raw ADC (0x20) briefly appears
   // in iram[0x12/13] mid-scan before linearisation; ignore those readings.
-  const coolC   = ntcToC(iram[0x13]) ?? ntcToC(snap._prevCoolant);
-  const airC    = ntcToC(iram[0x12]) ?? ntcToC(snap._prevAir);
+  // Prefer explicit ground-truth degC from STATUS lines (e.g. "80 degC") over
+  // the NTC-curve estimate, which is only an approximation of the real curve.
+  const coolC   = snap.explicitCoolantC ?? snap._prevCoolantC ?? ntcToC(iram[0x13]) ?? ntcToC(snap._prevCoolant);
+  const airC    = snap.explicitAirC     ?? snap._prevAirC     ?? ntcToC(iram[0x12]) ?? ntcToC(snap._prevAir);
   const dwHt    = iram[0x2F] ?? null;
   const dwDeg   = dwellHtToDeg(dwHt);
   const dwMs    = dwellHtToMs(dwHt, rpm);
@@ -1156,13 +1185,17 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
 
   const metricsRow2 = [
     { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm'     },
-    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),                       unit:(snap._prevTps??iram[0x16]??0)>=0xD1?'CLOSED':(snap._prevTps??iram[0x16]??0)>=0x77?'WOT':'OPEN', col:(snap._prevTps??iram[0x16]??0)>=0xD1?'#44cccc':(snap._prevTps??iram[0x16]??0)>=0x77?C.red:C.amber, mmk:'tps' },
+    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),
+                           unit:(snap._prevTps??iram[0x16])===0x85?'CLOSED/IDLE':(snap._prevTps??iram[0x16])===0xCC?'WOT':(snap._prevTps??iram[0x16])===0xF2?'PARTIAL':'--',
+                           col:(snap._prevTps??iram[0x16])===0x85?'#44cccc':(snap._prevTps??iram[0x16])===0xCC?C.red:(snap._prevTps??iram[0x16])===0xF2?C.amber:C.textDim,
+                           mmk:'tps' },
     { lbl:'COOLANT',       val:coolC!==null?`${coolC}°C`:'--',       unit:`0x${h2(iram[0x13])}`, col:C.blue, mmk:'coolant' },
     { lbl:'AIR TEMP',      val:airC !==null?`${airC}°C` :'--',       unit:`0x${h2(iram[0x12])}`, col:C.blue, mmk:'airtemp' },
     { lbl:'BATTERY',       val:`${battV}V`,                            unit:`0x${h2(iram[0x11])}`, col:battCol, mmk:'batt'   },
   ];
 
   const metricsRow3 = [
+    { lbl:'LOAD (49h)',    val:h2(iram[0x49]),                       unit:`map row ${iram[0x49]??'--'}`, col:'#88ccff', mmk:'load' },
     { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv'     },
     { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog' },
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
@@ -1757,6 +1790,7 @@ function ChartsTab({ chartData, currentT }) {
     {title:'IGNITION ADVANCE (31)',   k:'timingAdv',    col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
     {title:'FQS TIMING RETARD (°)',   k:'timingRetard', col:'#ff8800', unit:'°retard',  dom:['auto','auto'], cn:true},
     {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
+    {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
   ];
 
   return (
@@ -1767,7 +1801,7 @@ function ChartsTab({ chartData, currentT }) {
           <ResponsiveContainer width="100%" height={150}>
             <ComposedChart data={chartData} margin={{top:2,right:36,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
-              <XAxis dataKey="t" tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
+              <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
               <YAxis yAxisId="left"  tick={ax} domain={c.dom} stroke={C.textDim} />
               <YAxis yAxisId="right" tick={ax} domain={[0,7000]} stroke="#888855"
                      orientation="right" tickFormatter={v=>`${v}`} width={36}/>
@@ -2086,8 +2120,8 @@ function KLRTab({ klrData, currentT }) {
   const sig = [
     { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
     { l:'AVG DELAY',  v: `${avgDelay}μs`, col: '#44cccc' },
-    { l:'KNOCK',      v: latestStatus?.knock != null ? `0x${h2(latestStatus.knock)}` : 'N/A',
-      col: '#cc66ff' },
+    { l:'KNOCK COUNT', v: latestStatus?.knock_count != null ? `${latestStatus.knock_count}` : 'N/A',
+      col: (latestStatus?.knock_count ?? 0) > 0 ? C.red : '#cc66ff' },
     { l:'FULL LOAD',  v: latestStatus?.full_load != null ? (latestStatus.full_load?'YES':'NO') : '--',
       col: latestStatus?.full_load ? C.amber : C.textBright },
     { l:'CV PWM',     v: latestStatus?.CV_PWM != null ? (latestStatus.CV_PWM?'ON':'OFF') : '--',
@@ -2243,20 +2277,81 @@ function KLRChartsTab({ klrData, currentT }) {
   );
 
   // ── Build chart datasets ──────────────────────────────────
-  // IGN delay and pulse width — one point per asserted/deasserted event pair
-  const ignDelayData = klrPhases
-    .filter(p => p.asserted && p.delay_us != null && (effectiveT == null || p.t <= effectiveT))
-    .map(p => ({ t: p.t, delay: +p.delay_us.toFixed(2) }));
+  // IGN delay — one point per asserted event with a measured delay.
+  // First 5s is noisy cranking/sync data, and any single reading above
+  // 200μs is treated as sensor/measurement noise rather than a real spark
+  // delay — keep those points (so all 4 charts share the same time axis /
+  // line up) but zero their delay value instead of dropping them.
+  // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ... (4-stroke
+  // firing order repeats every 4 IGN_OUT assertions).
+  const IGN_IGNORE_MS   = 5000;
+  const IGN_NOISE_US    = 200;
+  const ignDelayEvents = klrPhases
+    .filter(p => p.asserted && p.delay_us != null &&
+                 (effectiveT == null || p.t <= effectiveT))
+    .map(p => {
+      const raw = +p.delay_us.toFixed(2);
+      const noisy = p.t < IGN_IGNORE_MS || raw > IGN_NOISE_US;
+      return { t: p.t, delay: noisy ? 0 : raw };
+    });
+
+  const ignDelayByCyl = [1, 2, 3, 4].map(cyl =>
+    ignDelayEvents.filter((_, i) => (i % 4) + 1 === cyl)
+  );
+
+  // Shared y-axis max across all 4 cylinder charts, so they're directly
+  // comparable at a glance instead of each auto-scaling independently.
+  const ignDelayMax = Math.max(
+    1, ...ignDelayByCyl.flat().map(d => d.delay ?? 0)
+  );
 
   const ignPulseData = klrPhases
     .filter(p => p.deasserted && p.pulse_ms != null && (effectiveT == null || p.t <= effectiveT))
-    .map(p => ({ t: p.t, pulse: +p.pulse_ms.toFixed(3) }));
+    .map(p => ({ t: p.t, pulse: p.t < IGN_IGNORE_MS ? 0 : +p.pulse_ms.toFixed(3) }));
 
   // CV_PWM and knock from STATUS lines
   const statusData = klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
     t: s.t,
     cv_pwm: s.CV_PWM ?? null,
     knock:  s.knock  ?? null,
+    knock_count: s.knock_count ?? null,
+  }));
+
+  // Real knock pulses, from [PHASE] lines rather than the coarse 100ms
+  // STATUS sample — STATUS is too infrequent to ever catch the ~6-8ms-wide
+  // knock window, so its "knock" bit always reads high/idle. The [PHASE]
+  // log records the actual drop/restore edges of the comparator output.
+  const knockPulseEvents = klrPhases
+    .filter(p => /Knock pulse: (dropping|restoring)/i.test(p.msg) &&
+                 (effectiveT == null || p.t <= effectiveT))
+    .map(p => ({ t: p.t, knock_out: /dropping/i.test(p.msg) ? 0 : 1 }));
+  // Anchor the line at idle-high for the full visible time range so the
+  // chart reads as a mostly-flat trace with brief low pulses, not just a
+  // handful of points floating in isolation. The lead-in/lead-out anchor
+  // segments are NOT real samples (there's no data confirming the signal
+  // stayed high across that whole gap) — they're dashed to flag that,
+  // while the real recorded pulse edges in the middle stay solid.
+  const knockPulseData = knockPulseEvents.length
+    ? [
+        { t: firstKlrT ?? 0, knock_out: 1 },
+        ...knockPulseEvents,
+        { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 },
+      ]
+    : [];
+  const knockPulseSegments = knockPulseEvents.length
+    ? [
+        { dashed: true,  data: [{ t: firstKlrT ?? 0, knock_out: 1 }, knockPulseEvents[0]] },
+        { dashed: false, data: knockPulseEvents },
+        { dashed: true,  data: [knockPulseEvents[knockPulseEvents.length-1],
+                                 { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 }] },
+      ]
+    : [];
+
+  // TPS (raw ADC + scaled degrees) from STATUS lines
+  const tpsData = klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
+    t: s.t,
+    tps_raw: s.tps_raw ?? null,
+    tps_deg: s.tps_deg ?? null,
   }));
 
   // ign_out state from [KLR] snapshots or status
@@ -2278,17 +2373,19 @@ function KLRChartsTab({ klrData, currentT }) {
                color: C.text, fontSize:'10px', fontFamily:'inherit' },
                labelFormatter: t => `t=${t}ms` };
 
+  const CYL_COLORS = ['#ff8844', '#ffcc44', '#88ccff', '#ff66aa'];
+
   const charts = [
-    {
-      title: 'IGN DELAY FROM IGN_IN (μs)',
-      data:  ignDelayData,
+    ...[1, 2, 3, 4].map(cyl => ({
+      title: `IGN DELAY — CYL ${cyl} (μs)`,
+      data:  ignDelayByCyl[cyl-1],
       key:   'delay',
-      col:   '#ff8844',
+      col:   CYL_COLORS[cyl-1],
       unit:  'μs',
-      dom:   [0, 'auto'],
-      note:  'Time from DME tach pulse to KLR spark — knock retard increases this',
-      empty: ignDelayData.length === 0,
-    },
+      dom:   [0, ignDelayMax],
+      note:  `Every 4th IGN_OUT assertion (firing #${cyl}, 4, 8, ...) — first ${IGN_IGNORE_MS/1000}s and readings >${IGN_NOISE_US}μs zeroed as noise`,
+      empty: ignDelayByCyl[cyl-1].length === 0,
+    })),
     {
       title: 'IGN PULSE WIDTH (ms)',
       data:  ignPulseData,
@@ -2296,7 +2393,7 @@ function KLRChartsTab({ klrData, currentT }) {
       col:   '#44cccc',
       unit:  'ms',
       dom:   [0, 'auto'],
-      note:  'KLR ignition coil dwell / spark duration',
+      note:  `KLR ignition coil dwell / spark duration — first ${IGN_IGNORE_MS/1000}s zeroed as noisy`,
       empty: ignPulseData.length === 0,
     },
     {
@@ -2306,25 +2403,58 @@ function KLRChartsTab({ klrData, currentT }) {
       col:   '#66ffaa',
       unit:  '',
       dom:   [-0.1, 1.1],
+      type:  'stepAfter',
       note:  'Coil voltage pulse-width modulation output state',
       empty: statusData.every(d => d.cv_pwm == null),
     },
     {
-      title: 'KNOCK OUTPUT',
-      data:  statusData,
-      key:   'knock',
+      title: 'KNOCK OUTPUT (pulse edges)',
+      data:  knockPulseData,
+      segments: knockPulseSegments,
+      key:   'knock_out',
       col:   '#cc66ff',
-      unit:  'hex',
+      unit:  '',
+      dom:   [-0.1, 1.1],
+      type:  'stepAfter',
+      note:  'Comparator output — briefly drops low during each knock window (from [PHASE] pulse events, not the 100ms STATUS sample). Dashed ends = no data confirming state across that gap, just anchored high.',
+      empty: knockPulseData.length === 0,
+    },
+    {
+      title: 'KNOCK COUNT',
+      data:  statusData,
+      key:   'knock_count',
+      col:   C.red,
+      unit:  '',
       dom:   [0, 'auto'],
-      note:  'KLR knock detection output value',
-      empty: statusData.every(d => d.knock == null),
+      note:  'Cumulative knock event counter',
+      empty: statusData.every(d => d.knock_count == null),
+    },
+    {
+      title: 'TPS RAW (ADC)',
+      data:  tpsData,
+      key:   'tps_raw',
+      col:   '#ffcc44',
+      unit:  'hex',
+      dom:   [0, 255],
+      note:  'Raw throttle position ADC reading — 0xDB..0xFF=closed/idle, 0x77..0xD0=WOT, 0x00..0x76=part load',
+      empty: tpsData.every(d => d.tps_raw == null),
+    },
+    {
+      title: 'TPS ANGLE (deg)',
+      data:  tpsData,
+      key:   'tps_deg',
+      col:   '#ffaa22',
+      unit:  '°',
+      dom:   [0, 'auto'],
+      note:  'Scaled throttle angle',
+      empty: tpsData.every(d => d.tps_deg == null),
     },
   ];
 
   return (
     <div>
       {/* Info banner when limited data */}
-      {(ignDelayData.length === 0 && ignPulseData.length === 0) && (
+      {(ignDelayEvents.length === 0 && ignPulseData.length === 0) && (
         <div style={{...S.panel, color:C.amber, fontSize:'10px', marginBottom:'8px'}}>
           ⚠ IGN delay and pulse width require <code>KLR: [PHASE]</code> lines in the log.
           CV_PWM and knock require <code>KLR: [STATUS]</code> lines.
@@ -2345,15 +2475,25 @@ function KLRChartsTab({ klrData, currentT }) {
                 <ResponsiveContainer width="100%" height={130}>
                   <LineChart data={c.data} margin={{top:2,right:6,bottom:0,left:0}}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-                    <XAxis dataKey="t" tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+                    <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={v=>[v, c.unit]}/>
                     {currentT != null &&
                       <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
-                    <Line type="monotone" dataKey={c.key} stroke={c.col}
-                          dot={c.data.length < 100}
-                          strokeWidth={c.data.length < 50 ? 1.5 : 1}
-                          connectNulls={false}/>
+                    {c.segments ? (
+                      c.segments.map((seg, i) => (
+                        <Line key={i} type={c.type || 'monotone'} dataKey={c.key} data={seg.data}
+                              stroke={c.col} strokeDasharray={seg.dashed ? '4 3' : undefined}
+                              dot={seg.data.length < 100}
+                              strokeWidth={c.data.length < 50 ? 1.5 : 1}
+                              connectNulls={false} isAnimationActive={false}/>
+                      ))
+                    ) : (
+                      <Line type={c.type || 'monotone'} dataKey={c.key} stroke={c.col}
+                            dot={c.data.length < 100}
+                            strokeWidth={c.data.length < 50 ? 1.5 : 1}
+                            connectNulls={false}/>
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
                 <div style={{color:C.textDim, fontSize:'8px', marginTop:'2px'}}>{c.note}</div>
@@ -2363,26 +2503,23 @@ function KLRChartsTab({ klrData, currentT }) {
         ))}
       </div>
 
-      {/* IGN OUT + FULL LOAD step chart */}
-      {ignOutData.some(d => d.ign_out != null) && (
+      {/* FULL LOAD step chart */}
+      {ignOutData.some(d => d.full_load != null) && (
         <div style={S.panel}>
-          <div style={S.panelTitle}>IGN OUT &amp; FULL LOAD STATES</div>
+          <div style={S.panelTitle}>FULL LOAD STATE</div>
           <ResponsiveContainer width="100%" height={120}>
             <LineChart data={ignOutData} margin={{top:2,right:6,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-              <XAxis dataKey="t" tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+              <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
               <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
               <Tooltip {...tt}/>
               {currentT != null &&
                 <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
-              <Line type="stepAfter" dataKey="ign_out"   stroke="#ff4444" dot={false}
-                    strokeWidth={1.5} connectNulls={false} name="IGN OUT"/>
               <Line type="stepAfter" dataKey="full_load" stroke={C.amber} dot={false}
                     strokeWidth={1.5} connectNulls={false} name="FULL LOAD"/>
             </LineChart>
           </ResponsiveContainer>
           <div style={{display:'flex', gap:'12px', marginTop:'3px', fontSize:'9px'}}>
-            <span style={{color:'#ff4444'}}>▬ IGN OUT (p2[7])</span>
             <span style={{color:C.amber}}>▬ FULL LOAD (p1[5])</span>
           </div>
         </div>
@@ -2395,6 +2532,9 @@ function KLRChartsTab({ klrData, currentT }) {
 function KLRPhaseTab({ klrData, klrIdx }) {
   const allPhases  = klrData?.phases ?? [];
   const klrPhases  = allPhases.filter(p => p.cat === 'klr');
+  // Filter out IGN_OUT asserted/deasserted events — too noisy for this view,
+  // covered in detail on KLR Overview / Charts instead.
+  const visPhases  = klrPhases.filter(p => !p.asserted && !p.deasserted);
 
   if (klrPhases.length === 0) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
@@ -2412,10 +2552,10 @@ function KLRPhaseTab({ klrData, klrIdx }) {
     <div>
       {/* ── Timeline bar ──────────────────────────────────────── */}
       <div style={{...S.panel, padding:'10px'}}>
-        <div style={S.panelTitle}>KLR EVENT TIMELINE — {klrPhases.length} events</div>
+        <div style={S.panelTitle}>KLR EVENT TIMELINE — {visPhases.length} events</div>
         <div style={{position:'relative',height:'36px',background:'#040904',
                      borderRadius:'2px',overflow:'hidden',border:`1px solid ${C.border}`}}>
-          {klrPhases.map((p,i)=>(
+          {visPhases.map((p,i)=>(
             <div key={i} title={`${p.t}ms — ${p.msg}`} style={{
               position:'absolute', left:`${(p.t/maxT)*100}%`,
               top:0, width:'2px', height:'100%',
@@ -2429,9 +2569,10 @@ function KLRPhaseTab({ klrData, klrIdx }) {
           }}/>
         </div>
         <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginTop:'8px'}}>
-          <span style={{fontSize:'9px',color:'#ff8844',letterSpacing:'0.05em'}}>▌ IGN ASSERTED</span>
-          <span style={{fontSize:'9px',color:'#44aaff',letterSpacing:'0.05em'}}>▌ IGN DEASSERTED</span>
-          <span style={{fontSize:'9px',color:'#44cccc',letterSpacing:'0.05em'}}>▌ OTHER</span>
+          <span style={{fontSize:'9px',color:'#44cccc',letterSpacing:'0.05em'}}>▌ EVENTS</span>
+          <span style={{fontSize:'9px',color:C.textDim,letterSpacing:'0.05em'}}>
+            (IGN_OUT asserted/deasserted events hidden — see KLR Overview)
+          </span>
         </div>
       </div>
 
@@ -2439,7 +2580,7 @@ function KLRPhaseTab({ klrData, klrIdx }) {
       <div style={S.panel}>
         <div style={S.panelTitle}>ALL KLR EVENTS</div>
         <div style={{maxHeight:'420px',overflow:'auto'}}>
-          {klrPhases.map((p,i)=>{
+          {visPhases.map((p,i)=>{
             const past  = p.t <= currentT;
             const col   = klrColor(p);
             const isCur = allPhases.indexOf(p) === klrIdx;
@@ -2622,15 +2763,24 @@ function KLRIRAMTab({ klrData, klrIdx }) {
   const snap  = snaps.filter(s => s.t <= currentT).slice(-1)[0];
   const ram   = snap?.ram ?? {};
 
-  // Accumulate ALL ramVals from STATUS lines up to currentT
-  // (multiple lines may add different addresses)
+  // Accumulate ALL ramVals from STATUS lines up to currentT, tracking the
+  // time each address was last updated (multiple lines may touch different
+  // addresses, and later status lines should win over earlier ones).
   const allStatus = (klrData?.status ?? []).filter(s => s.t <= currentT);
-  const ramFromStatus = {};
+  const ramFromStatus = {}; // addr -> { v, t }
   for (const s of allStatus)
-    if (s.ramVals) Object.assign(ramFromStatus, s.ramVals);
+    if (s.ramVals)
+      for (const [a, v] of Object.entries(s.ramVals))
+        ramFromStatus[a] = { v, t: s.t };
 
-  // Merge: hex snapshot takes priority, then STATUS ramVals
-  const ramMerged = { ...ramFromStatus, ...ram };
+  // Merge: for each address, use whichever source (hex snapshot at snap.t,
+  // or the latest STATUS-line update) is more recent — NOT a blind priority
+  // for one source, since hex snapshots and STATUS lines are sampled at
+  // different rates and can disagree about which is "current" at a given t.
+  const snapT = snap?.t ?? -Infinity;
+  const ramMerged = { ...ram };
+  for (const [a, {v, t}] of Object.entries(ramFromStatus))
+    if (t >= snapT) ramMerged[a] = v;
 
   // KLR 8048 RAM labels — from bin/memory_byte_map.hex (30 labelled locations)
   const KNOWN = {
@@ -2804,6 +2954,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
               { ch:0,  label:'Knock ch0',    addr:null,  desc:'knock sensor 1 amplified' },
               { ch:1,  label:'Knock ch1',    addr:null,  desc:'knock sensor 2 amplified' },
               { ch:5,  label:'Comparator',   addr:null,  desc:'LM2902 comparator output (ch5)' },
+              { ch:null, label:'Knock Integrator', addr:0x46, desc:'Integrated knock value (46h)' },
             ].map(({ch, label, addr, desc}) => {
               const val = addr !== null ? ram[addr] : undefined;
               const hasV = val !== undefined && val !== null;
@@ -2814,7 +2965,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
                           borderRadius:'4px',padding:'5px 6px'}}>
                   <div style={{color:'#44aaff',fontSize:'9px',fontWeight:'bold'}}>{label}</div>
                   <div style={{color:C.textDim,fontSize:'7px',marginBottom:'3px'}}>
-                    ch{ch}{addr!==null ? ` · ram[0x${addr.toString(16).toUpperCase()}]` : ''}
+                    {ch!==null ? `ch${ch}` : ''}{addr!==null ? `${ch!==null?' · ':''}ram[0x${addr.toString(16).toUpperCase()}]` : ''}
                   </div>
                   <div style={{color:hasV?C.textBright:'#335533',fontSize:'13px',fontWeight:'bold'}}>
                     {hasV ? h2(val) : '--'}
@@ -2837,11 +2988,11 @@ function KLRIRAMTab({ klrData, klrIdx }) {
           <div style={S.panelTitle}>RAM VALUES FROM KLR: [STATUS] LINES</div>
           {hasStatus ? (
             <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'4px'}}>
-              {Object.entries(ramFromStatus).sort((a,b)=>+a[0]-+b[0]).map(([addr,val])=>(
+              {Object.entries(ramFromStatus).sort((a,b)=>+a[0]-+b[0]).map(([addr,{v,t}])=>(
                 <div key={addr} style={{display:'flex',justifyContent:'space-between',
                                         padding:'3px 6px',borderBottom:`1px solid ${C.border}`,fontSize:'10px'}}>
                   <span style={{color:C.textDim}}>ram[{addr}] {KNOWN[+addr]?<span style={{color:'#44aaff',fontSize:'9px'}}>{KNOWN[+addr]}</span>:''}</span>
-                  <span style={{color:C.textBright}}>0x{h2(val)} ({val}d)</span>
+                  <span style={{color:C.textBright}}>0x{h2(v)} ({v}d) <span style={{color:C.textDim,fontSize:'9px'}}>@{t}ms</span></span>
                 </div>
               ))}
             </div>
@@ -2852,6 +3003,128 @@ function KLRIRAMTab({ klrData, klrIdx }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── KLRDiagTab ───────────────────────────────────────────────────
+function KLRDiagTab({ klrData, klrIdx }) {
+  const phases   = klrData?.phases ?? [];
+  const currentT = phases[klrIdx]?.t ?? Infinity;
+
+  // Nearest [KLR] hex snapshot at or before currentT
+  const snaps = klrData?.snapshots ?? [];
+  const snap  = snaps.filter(s => s.t <= currentT).slice(-1)[0];
+  const ram   = snap?.ram ?? {};
+
+  // Accumulate ALL ramVals from STATUS lines up to currentT, tracking the
+  // time each address was last updated.
+  const allStatus = (klrData?.status ?? []).filter(s => s.t <= currentT);
+  const ramFromStatus = {}; // addr -> { v, t }
+  for (const s of allStatus)
+    if (s.ramVals)
+      for (const [a, v] of Object.entries(s.ramVals))
+        ramFromStatus[a] = { v, t: s.t };
+
+  // Merge: for each address, use whichever source (hex snapshot at snap.t,
+  // or the latest STATUS-line update) is more recent.
+  const snapT = snap?.t ?? -Infinity;
+  const ramMerged = { ...ram };
+  for (const [a, {v, t}] of Object.entries(ramFromStatus))
+    if (t >= snapT) ramMerged[a] = v;
+
+  const logLoaded = (klrData?.snapshots?.length > 0) || (klrData?.status?.length > 0);
+  if (!logLoaded) return (
+    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
+      No KLR data loaded — use <strong style={{color:C.textBright}}>PARSE &amp; LOAD</strong> with a combined log containing{' '}
+      <code style={{color:'#44aaff'}}>[KLR]</code> or <code style={{color:'#44aaff'}}>KLR: [STATUS]</code> lines
+    </div>
+  );
+
+  // ram[0x33] diagnostic code
+  const code     = ramMerged[0x33];
+  const hasCode  = code != null;
+
+  const DTC = {
+    0x11: { label: 'Max KLR Timing Retard Exceeded' },
+    0x12: { label: 'Voltage Under 10.2V',
+            detail: 'Check alternator, battery, regulator, relays or wiring' },
+    0x21: { label: 'Engine Damage' },
+    0x22: { label: 'Knock Sensor Disconnected' },
+    0x23: { label: 'KLR Defective' },
+    0x31: { label: 'Boost Pressure Low' },
+    0x32: { label: 'Boost Pressure Too High' },
+    0x33: { label: 'Pressure Sensor In KLR Defective' },
+    0x41: { label: 'Throttle Position Sensor Power Wires',
+            detail: 'Power wire to TPS, ground contact or connection dirty' },
+    0x42: { label: 'Throttle Position Sensor Bad' },
+  };
+
+  // "X-Y" style code label, e.g. 0x31 → "3-1", matching the KLR tester's own notation
+  const codeStr = c => `${(c >> 4) & 0xF}-${c & 0xF}`;
+
+  const entry = hasCode ? DTC[code] : null;
+  const isKnownFault = entry != null;
+  const label  = hasCode ? (entry?.label ?? 'No Fault / Unknown Code') : '--';
+  const detail = entry?.detail;
+  const col    = isKnownFault ? C.red : hasCode ? '#66ffaa' : C.textDim;
+
+  return (
+    <div>
+      <div style={S.panel}>
+        <div style={S.panelTitle}>KLR DIAGNOSTIC CODE — RAM[0x33]</div>
+        <div style={{display:'flex',alignItems:'center',gap:'28px',padding:'14px 8px',flexWrap:'wrap'}}>
+          <div>
+            <div style={{fontSize:'10px',color:C.textDim,letterSpacing:'0.15em'}}>RAW CODE</div>
+            <div style={{fontSize:'30px',fontWeight:'bold',color:col,margin:'2px 0'}}>
+              {hasCode ? `0x${h2(code)}` : '--'}
+            </div>
+            <div style={{fontSize:'10px',color:C.textDim}}>{hasCode ? `${codeStr(code)}  (${code}d)` : ''}</div>
+          </div>
+          <div style={{borderLeft:`1px solid ${C.border}`,paddingLeft:'28px'}}>
+            <div style={{fontSize:'10px',color:C.textDim,letterSpacing:'0.15em'}}>DIAGNOSIS</div>
+            <div style={{fontSize:'22px',fontWeight:'bold',color:col,margin:'2px 0'}}>
+              {label}
+            </div>
+            {detail && (
+              <div style={{fontSize:'11px',color:C.textDim,maxWidth:'480px'}}>{detail}</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{...S.panel, marginTop:'8px'}}>
+        <div style={S.panelTitle}>KNOWN DTC CODES</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px',padding:'6px 4px'}}>
+          {Object.entries(DTC).map(([c,d]) => {
+            const cNum = Number(c);
+            const active = hasCode && code === cNum;
+            return (
+              <div key={c} style={{
+                display:'flex',flexDirection:'column',gap:'2px',padding:'6px 10px',
+                background: active ? 'rgba(255,68,68,0.12)' : 'transparent',
+                border:`1px solid ${active ? C.red : C.border}`,
+                borderRadius:'2px',
+              }}>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span style={{color: active ? C.red : C.textBright}}>
+                    {codeStr(cNum)} <span style={{color:C.textDim,fontSize:'9px'}}>0x{h2(cNum)}</span>
+                  </span>
+                  <span style={{color: active ? C.red : C.textDim}}>{d.label}</span>
+                </div>
+                {d.detail && (
+                  <div style={{fontSize:'9px',color:C.textDim,textAlign:'right'}}>{d.detail}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {hasCode && !isKnownFault && (
+          <div style={{color:C.textDim,fontSize:'10px',padding:'6px 8px'}}>
+            Current code {codeStr(code)} (0x{h2(code)}) does not match a known DTC — treated as no fault present.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
