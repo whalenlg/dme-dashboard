@@ -37,135 +37,271 @@ const PHASE_COLORS = {
 //  FULL 8051 IRAM MEMORY MAP  (0x00–0x7F)
 // ─────────────────────────────────────────────────────────────────
 const IRAM_MAP = [
-  {a:0x00,n:'R0',     g:'reg',    d:'Bank 0 R0 — general purpose register'},
-  {a:0x01,n:'R1',     g:'reg',    d:'Bank 0 R1 — general purpose register'},
-  {a:0x02,n:'R2',     g:'reg',    d:'Bank 0 R2 — general purpose register'},
-  {a:0x03,n:'R3',     g:'reg',    d:'Bank 0 R3 — general purpose register'},
-  {a:0x04,n:'R4',     g:'reg',    d:'Bank 0 R4  (also byte for bit25h: DataPlug flag bit 5)'},
-  {a:0x05,n:'R5',     g:'reg',    d:'Bank 0 R5 — general purpose register'},
-  {a:0x06,n:'R6',     g:'reg',    d:'Bank 0 R6 — general purpose register'},
-  {a:0x07,n:'R7',     g:'reg',    d:'Bank 0 R7 — general purpose register'},
-  {a:0x08,n:'B1:R0',  g:'reg',    d:'Bank 1 R0'},
-  {a:0x09,n:'B1:R1',  g:'reg',    d:'Bank 1 R1'},
-  {a:0x0A,n:'B1:R2',  g:'reg',    d:'Bank 1 R2'},
-  {a:0x0B,n:'B1:R3',  g:'reg',    d:'Bank 1 R3'},
-  {a:0x0C,n:'B1:R4',  g:'reg',    d:'Bank 1 R4'},
-  {a:0x0D,n:'B1:R5',  g:'reg',    d:'Bank 1 R5'},
-  {a:0x0E,n:'B1:R6',  g:'reg',    d:'Bank 1 R6'},
-  {a:0x0F,n:'B1:R7',  g:'reg',    d:'Bank 1 R7'},
-  {a:0x10,n:'AFM_RAW',g:'adc',    d:'ADC Ch0 — Airflow meter raw value (ADC-derived; reflects afm_tippy spike during TEST_TIPPY_IN)'},
-  {a:0x11,n:'BATT_V', g:'adc',    d:'ADC Ch1 — Battery voltage. Formula: V = raw × 0.05263 + 2.132  (0xD8=13.5V, 0x8C=11.0V, ADC spans ~6.4–14.8V)'},
-  {a:0x12,n:'AIR_NTC',g:'adc',    d:'ADC Ch2 — Intake air temperature NTC (linearised firmware units)'},
-  {a:0x13,n:'COOLANT',g:'adc',    d:'ADC Ch3 — Engine coolant NTC (linearised, 0xE0≈80°C warm, 0x00=cold/error)'},
-  {a:0x14,n:'ALT_COR',g:'adc',    d:'ADC Ch4 — Altitude correction switch (0x00=high altitude >1000m, 0xF8=sea level)'},
-  {a:0x15,n:'ADC_CH5',g:'adc',    d:'ADC Ch5 — Spare / unused channel (0xFF = no sensor fitted)'},
-  {a:0x16,n:'TPS',    g:'adc',    d:'ADC Ch6 — Throttle Position Sensor (0xDB..0xFF=closed/idle, 0x77..0xD0=WOT, 0x00..0x76=part load)'},
-  {a:0x17,n:'FQS_ALT',g:'adc',    d:'ADC Ch7 — Fuel Quality Switch / altitude barometric pressure sensor'},
-  {a:0x18,n:'LMB_UNC',g:'lambda', d:'Lambda adj UNCHANGED — correction applied when no O2 change required'},
-  {a:0x19,n:'LMB_LN', g:'lambda', d:'Lambda adj LEAN — applied when O2 reads lean (rich-up correction)'},
-  {a:0x1A,n:'LMB_NLN',g:'lambda', d:'Lambda adj NOT-LEAN — applied when O2 reads rich (lean-down correction)'},
-  {a:0x1B,n:'LMB_HI', g:'lambda', d:'Lambda integrator high byte — bit 7 drives TXD/P3.1 diagnostic pin output'},
-  {a:0x1C,n:'LMB_LO', g:'lambda', d:'Lambda integrator low byte'},
-  {a:0x1D,n:'B3:R5',  g:'reg',    d:'Bank 3 R5 save — extint1_handler (crank interrupt) register context save area'},
-  {a:0x1E,n:'B3:R6',  g:'reg',    d:'Bank 3 R6 save — extint1_handler register context save'},
-  {a:0x1F,n:'B3:R7',  g:'reg',    d:'Bank 3 R7 save — extint1_handler register context save'},
-  {a:0x20,n:'FLAGS20',g:'flags',  d:'Bit-addressable: bit05h=ISVPWMOverflow'},
-  {a:0x21,n:'FLAGS21',g:'flags',  d:'Bit-addressable: bit08h=EngineSync, bit09h=Phase2LambdaEnable, bit0Dh(bit5)=UseMap1140 after-start enrich active'},
-  {a:0x22,n:'FLAGS22',g:'flags',  d:'Bit-addressable: bit10h..17h — fuel and lambda control flags'},
-  {a:0x23,n:'FLAGS23',g:'flags',  d:'Bit-addressable: bit1Dh[5]=FuelOffCoast — fuel injection cut on deceleration'},
-  {a:0x24,n:'FLAGS24',g:'flags',  d:'Bit-addressable: bit23h[3]=O2Lean / LambdaOK — closed-loop lambda enabled'},
-  {a:0x25,n:'FLAGS25',g:'flags',  d:'Bit-addressable: bit2Ch[4]=ColdStartTiming map, bit2Dh[5]=ColdStartEnrich active'},
-  {a:0x26,n:'FLAGS26',g:'flags',  d:'Bit-addressable: bit28h..2Fh — miscellaneous control bits'},
-  {a:0x27,n:'FLAGS27',g:'flags',  d:'Bit-addressable: bit30h=LambdaTimerExpired, bit37h=DataPlug variant select'},
-  {a:0x28,n:'FLAGS28',g:'flags',  d:'Bit-addressable: bit38h..3Fh'},
-  {a:0x29,n:'FLAGS29',g:'flags',  d:'Bit-addressable: bit40h..47h'},
-  {a:0x2A,n:'WDOG',   g:'sys',    d:'Watchdog counter — decremented each main-loop iteration; firmware health indicator'},
-  {a:0x2B,n:'IGN_EVT',g:'ign',    d:'Teeth remaining until next extint1 ignition coil event fires'},
-  {a:0x2C,n:'IGN_1ST',g:'ign',    d:'Tooth count to first ignition event after crank TDC reference pulse'},
-  {a:0x2D,n:'XINT1DN',g:'ign',    d:'XINT1 countdown counter (counts 252→0, wraps — hooks empty in this ROM)'},
-  {a:0x2E,n:'XINT1RL',g:'ign',    d:'XINT1 countdown reload value (0xFC=252, loaded from ROM[0x1162])'},
-  {a:0x2F,n:'DWELL',  g:'ign',    d:'Dwell angle in half-teeth — coil charge duration (90° cap applied from table)'},
-  {a:0x30,n:'IGN_DUR',g:'ign',    d:'Ignition duration: dwell with crank-reference offset correction applied'},
-  {a:0x31,n:'IGN_ADV',g:'ign',    d:'Ignition advance °BTDC — base map value, reduced by KLR knock retard on real engine'},
-  {a:0x32,n:'TIM_NXT',g:'ign',    d:'Next computed timing advance value (loaded into 0x31 at next update)'},
-  {a:0x33,n:'NXT_TDC',g:'ign',    d:'Half-teeth from spark event to TDC (= advance + 180°)'},
-  {a:0x34,n:'TIM_UPD',g:'ign',    d:'Interval (main-loop iterations) between timing advance updates'},
-  {a:0x35,n:'FIRE_EV',g:'ign',    d:'Fire event index (0 or 1) — selects cylinder for next injection/ignition'},
-  {a:0x36,n:'PRPM_CT',g:'rpm',    d:'PRPM tooth counter — accumulates teeth between crank reference pulses'},
-  {a:0x37,n:'PRPM',   g:'rpm',    d:'PRPM tooth period — inversely proportional to RPM (lower = higher RPM)'},
-  {a:0x38,n:'PSC0',   g:'timer',  d:'Prescaler 0 — subtask scheduler countdown'},
-  {a:0x39,n:'PSC1',   g:'timer',  d:'Prescaler 1 — subtask scheduler countdown'},
-  {a:0x3A,n:'PSC2',   g:'timer',  d:'Prescaler 2 — subtask scheduler countdown'},
-  {a:0x3B,n:'PRPM_PRV',g:'rpm',   d:'Previous PRPM — used for RPM rate-of-change calculation'},
-  {a:0x3C,n:'SUBTSK0',g:'timer',  d:'Subtask-0 prescaler / after-start enrichment counter (reloads 0x43–0x59)'},
-  {a:0x3D,n:'AFM_PK', g:'rpm',    d:'AFM wiper peak — maximum wiper deflection sampled per crankshaft revolution'},
-  {a:0x3E,n:'LMBD_TM',g:'lambda', d:'Lambda warmup timer — counts down before closed-loop lambda control enabled'},
-  {a:0x3F,n:'DATAPLG',g:'sys',    d:'DataPlug variant register — written by P3.4 (T0) variant-select code path'},
-  {a:0x40,n:'FUEL_40',g:'fuel',   d:'Fuel calculation intermediate work area'},
-  {a:0x41,n:'FUEL_41',g:'fuel',   d:'Fuel calculation intermediate work area'},
-  {a:0x42,n:'FUEL_42',g:'fuel',   d:'Fuel calculation intermediate work area'},
-  {a:0x43,n:'FUEL_43',g:'fuel',   d:'Fuel calculation intermediate work area'},
-  {a:0x44,n:'FUEL_44',g:'fuel',   d:'Fuel calculation intermediate work area'},
-  {a:0x45,n:'FUEL_45',g:'fuel',   d:'Fuel calculation intermediate work area'},
-  {a:0x46,n:'LOAD_HB',g:'fuel',   d:'24-bit load accumulator HIGH byte (0x46:0x47:0x48 — AFM×RPM integration)'},
-  {a:0x47,n:'LOAD_MB',g:'fuel',   d:'24-bit load accumulator MID byte'},
-  {a:0x48,n:'LOAD_LB',g:'fuel',   d:'24-bit load accumulator LOW byte'},
-  {a:0x49,n:'LOAD_IX',g:'fuel',   d:'Load index — fuel map row selector (derived from load accumulator)'},
-  {a:0x4A,n:'FUEL_LB',g:'fuel',   d:'Current injection pulse width LOW byte (pulse_width_µs = value×2)'},
-  {a:0x4B,n:'FUEL_HB',g:'fuel',   d:'Current injection pulse width HIGH byte (ms = ((HB<<8)|LB)×2/1000)'},
-  {a:0x4C,n:'ACCEL_E',g:'fuel',   d:'Acceleration enrichment — transient fuel adder from AFM rate-of-change'},
-  {a:0x4D,n:'MAP1140',g:'fuel',   d:'Map-at-0x1140 index — UseMap1140 correction table lookup index'},
-  {a:0x4E,n:'FNX_LB', g:'fuel',   d:'Next-cycle injection pulse LOW byte (computed this rev, loaded next rev)'},
-  {a:0x4F,n:'FNX_HB', g:'fuel',   d:'Next-cycle injection pulse HIGH byte'},
-  {a:0x50,n:'WORK_50',g:'misc',   d:'General firmware work area'},
-  {a:0x51,n:'WORK_51',g:'misc',   d:'General firmware work area'},
-  {a:0x52,n:'WORK_52',g:'misc',   d:'General firmware work area'},
-  {a:0x53,n:'AFM_PRV',g:'adc',    d:'AFM previous-cycle reading — used by airflow_calc to compute delta (iram[10h]-iram[53h]) for acceleration enrichment'},
-  {a:0x54,n:'WORK_54',g:'misc',   d:'General firmware work area'},
-  {a:0x55,n:'WORK_55',g:'misc',   d:'General firmware work area'},
-  {a:0x56,n:'WORK_56',g:'misc',   d:'General firmware work area'},
-  {a:0x57,n:'WORK_57',g:'misc',   d:'General firmware work area'},
-  {a:0x58,n:'WU_HB',  g:'enrich', d:'Warmup counter HIGH byte (0x58:0x59 — after-start enrichment countdown timer)'},
-  {a:0x59,n:'WU_LB',  g:'enrich', d:'Warmup counter LOW byte (decrements to 0, then normal fuel calculation resumes)'},
-  {a:0x5A,n:'WORK_5A',g:'misc',   d:'General firmware work area'},
-  {a:0x5B,n:'WORK_5B',g:'misc',   d:'General firmware work area'},
-  {a:0x5C,n:'WORK_5C',g:'misc',   d:'General firmware work area'},
-  {a:0x5D,n:'WORK_5D',g:'misc',   d:'General firmware work area'},
-  {a:0x5E,n:'WORK_5E',g:'misc',   d:'General firmware work area'},
-  {a:0x5F,n:'WORK_5F',g:'misc',   d:'General firmware work area'},
-  {a:0x60,n:'WORK_60',g:'misc',   d:'General firmware work area'},
-  {a:0x61,n:'WORK_61',g:'misc',   d:'General firmware work area'},
-  {a:0x62,n:'WORK_62',g:'misc',   d:'General firmware work area'},
-  {a:0x63,n:'WORK_63',g:'misc',   d:'General firmware work area'},
-  {a:0x64,n:'WORK_64',g:'misc',   d:'General firmware work area'},
-  {a:0x65,n:'WORK_65',g:'misc',   d:'General firmware work area'},
-  {a:0x66,n:'WORK_66',g:'misc',   d:'General firmware work area'},
-  {a:0x67,n:'WORK_67',g:'misc',   d:'General firmware work area'},
-  {a:0x68,n:'WORK_68',g:'misc',   d:'General firmware work area'},
-  {a:0x69,n:'WORK_69',g:'misc',   d:'General firmware work area'},
-  {a:0x6A,n:'WORK_6A',g:'misc',   d:'General firmware work area'},
-  {a:0x6B,n:'WORK_6B',g:'misc',   d:'General firmware work area'},
-  {a:0x6C,n:'WORK_6C',g:'misc',   d:'General firmware work area'},
-  {a:0x6D,n:'WORK_6D',g:'misc',   d:'General firmware work area'},
-  {a:0x6E,n:'WORK_6E',g:'misc',   d:'General firmware work area'},
-  {a:0x6F,n:'WORK_6F',g:'misc',   d:'General firmware work area'},
-  {a:0x70,n:'WORK_70',g:'misc',   d:'General firmware work area'},
-  {a:0x71,n:'WORK_71',g:'misc',   d:'General firmware work area'},
-  {a:0x72,n:'WORK_72',g:'misc',   d:'General firmware work area'},
-  {a:0x73,n:'WORK_73',g:'misc',   d:'General firmware work area'},
-  {a:0x74,n:'WORK_74',g:'misc',   d:'General firmware work area'},
-  {a:0x75,n:'WORK_75',g:'misc',   d:'General firmware work area'},
-  {a:0x76,n:'WORK_76',g:'misc',   d:'General firmware work area'},
-  {a:0x77,n:'WORK_77',g:'misc',   d:'General firmware work area'},
-  {a:0x78,n:'WORK_78',g:'misc',   d:'General firmware work area'},
-  {a:0x79,n:'WORK_79',g:'misc',   d:'General firmware work area'},
-  {a:0x7A,n:'WORK_7A',g:'misc',   d:'General firmware work area'},
-  {a:0x7B,n:'WORK_7B',g:'misc',   d:'General firmware work area'},
-  {a:0x7C,n:'WORK_7C',g:'misc',   d:'General firmware work area'},
-  {a:0x7D,n:'WORK_7D',g:'misc',   d:'General firmware work area'},
-  {a:0x7E,n:'WORK_7E',g:'misc',   d:'General firmware work area'},
-  {a:0x7F,n:'ISV_STP',g:'isv',    d:'ISV step position — Idle Speed Valve (0x00=fully closed, higher=more air bypass)'},
+  {a:0x00,n:'r00',g:'reg',d:'undefined/unknown'},
+  {a:0x01,n:'r01',g:'reg',d:'undefined/unknown'},
+  {a:0x02,n:'r02',g:'reg',d:'undefined/unknown'},
+  {a:0x03,n:'r03',g:'reg',d:'undefined/unknown'},
+  {a:0x04,n:'r04',g:'reg',d:'undefined/unknown'},
+  {a:0x05,n:'r05',g:'reg',d:'undefined/unknown'},
+  {a:0x06,n:'r06',g:'reg',d:'undefined/unknown'},
+  {a:0x07,n:'r07',g:'reg',d:'undefined/unknown'},
+  {a:0x08,n:'r08',g:'reg',d:'undefined/unknown'},
+  {a:0x09,n:'r09',g:'reg',d:'undefined/unknown'},
+  {a:0x0A,n:'r0A',g:'reg',d:'undefined/unknown'},
+  {a:0x0B,n:'r0B',g:'reg',d:'undefined/unknown'},
+  {a:0x0C,n:'r0C',g:'reg',d:'undefined/unknown'},
+  {a:0x0D,n:'r0D',g:'reg',d:'undefined/unknown'},
+  {a:0x0E,n:'r0E',g:'reg',d:'undefined/unknown'},
+  {a:0x0F,n:'r0F',g:'reg',d:'undefined/unknown'},
+  {a:0x10,n:'AFM_RAW',g:'adc',d:'raw AFM wiper value, from the ADC'},
+  {a:0x11,n:'SYS_VOLTAGE',g:'adc',d:'system voltage, from the ADC'},
+  {a:0x12,n:'AIRTEMP_NTC1',g:'adc',d:'intake air temperature (NTC I), from the ADC'},
+  {a:0x13,n:'COOLANT_NTC2',g:'adc',d:'coolant temperature (NTC II), from the ADC'},
+  {a:0x14,n:'ALT_REGION_ADC',g:'adc',d:'altitude sensor / region coding input, from the ADC'},
+  {a:0x15,n:'RESERVED_15H',g:'adc',d:'undefined/unknown'},
+  {a:0x16,n:'ADC_TPS',g:'adc',d:'undefined/unknown'},
+  {a:0x17,n:'FQS_POSITION',g:'adc',d:'FQS switch position, from the ADC'},
+  {a:0x18,n:'LAMBDA_STEP_UNCHANGED',g:'lambda',d:'lambda correction step, condition unchanged (Map 62 or 65)'},
+  {a:0x19,n:'LAMBDA_STEP_TO_LEAN',g:'lambda',d:'lambda correction step, changed to lean (Map 63 or 66)'},
+  {a:0x1A,n:'LAMBDA_STEP_TO_NOTLEAN',g:'lambda',d:'lambda correction step, changed to not-lean (Map 64 or 67)'},
+  {a:0x1B,n:'LAMBDA_CORR_HI',g:'lambda',d:'lambda correction factor, high byte. Notes: bit 7 is written to diag plug output'},
+  {a:0x1C,n:'LAMBDA_CORR_LO',g:'lambda',d:'lambda correction factor, low byte'},
+  {a:0x1D,n:'RESERVED_1DH',g:'reg',d:'undefined/unknown. Notes: used in extint1_handler'},
+  {a:0x1E,n:'RESERVED_1EH',g:'reg',d:'undefined/unknown. Notes: -"-'},
+  {a:0x1F,n:'RESERVED_1FH',g:'reg',d:'undefined/unknown. Notes: -"-'},
+  {a:0x20,n:'FLAGS_20',g:'flags',d:'Bit-addressable flags register: b0=ISV_FLARE_VARIANT; b1=init_flag; b2=ISV_RPM_ERR_SIGN_LAMBDA_COND_CURRENT; b3=ISV_INT_BLOCK_POS; b4=ISV_INT_BLOCK_NEG; b5=ISV_PWM_OVF_SIGN; b6=ISV_FLARE_NEEDED; b7=LAMBDA_ENABLE'},
+  {a:0x21,n:'FLAGS_21',g:'flags',d:'Bit-addressable flags register: b0=OVERLOAD_PRETIMER_RUN; b1=OVERLOAD_LOCKOUT_RUN; b2=INJECTORS_ON; b3=RESERVED_21H_3; b4=CRANK_ENR_PHASEOUT_LATCH; b5=FUEL_REACT_TRANS_ACTIVE; b6=FUELCUT_REACT_MODE; b7=ACCEL_PUMP_SHOT_LATCH'},
+  {a:0x22,n:'FLAGS_22',g:'flags',d:'Bit-addressable flags register: b0=IGN_HALFTOOTH_CORR; b1=IGN_HALFTOOTH_ROUND_ERR; b2=Unreferenced; b3=COIL_STATE_REF; b4=TIMING_RATE_SEL_LOW; b5=TIMING_RATE_SEL_MED; b6=TIMING_RATE_SEL_HIGH; b7=Time1FlagLowIdle'},
+  {a:0x23,n:'FLAGS_23',g:'flags',d:'Bit-addressable flags register: b0=TPS_AT_IDLE; b1=WOT_FLAG; b2=CRANKING_FLAG; b3=ISV_ALT_PATH; b4=STARTUP_FLAG; b5=FUEL_CUT_FLAG; b6=TRG_IDLE_FLARE; b7=TXDLambdaDiag'},
+  {a:0x24,n:'FLAGS_24',g:'flags',d:'Bit-addressable flags register: b0=LAMBDA_WATCHDOG_EN; b1=LAMBDA_LOAD_TIMER_RUN; b2=LAMBDA_WATCHDOG_ACTIVE; b3=LAMBDA_NEUTRAL_PHASE; b4=LAMBDA_RICHLEAN_PHASE; b5=LAMBDA_COND_MET; b6=LAMBDA_COND_PREV; b7=LAMBDA_COND_PERSISTED'},
+  {a:0x25,n:'FLAGS_25',g:'flags',d:'Bit-addressable flags register: b0=Unused; b1=Unused; b2=MapLookFail; b3=DiagNotSet; b4=COLD_CRANK_LAMBDA_SEL; b5=COLD_CRANK_WARMUP_SEL; b6=REGION_CODE; b7=ALTITUDE_HIGH_FLAG'},
+  {a:0x26,n:'RESERVED_26H',g:'flags',d:'undefined/unknown. Notes: Only referenced in unused parts of the ROM'},
+  {a:0x27,n:'RESERVED_27H',g:'flags',d:'undefined/unknown'},
+  {a:0x28,n:'RESERVED_28H',g:'flags',d:'undefined/unknown'},
+  {a:0x29,n:'ram_diag_addr',g:'flags',d:'Used for indexing table of RAM addresses to send from and receive to during diagnostics. Notes: Used for indexing table of RAM addresses to send from and receive to during diagnostics'},
+  {a:0x2A,n:'RESERVED_2AH',g:'sys',d:'undefined/unknown. Notes: Software watchdog timer'},
+  {a:0x2B,n:'IGN_EVENT_CNT',g:'ign',d:'ignition event counter to the next dwell or spark, in whole teeth. Notes: Tooth count until next extint1_handler event'},
+  {a:0x2C,n:'IGN_EVENT_CNT_REF',g:'ign',d:'pre-calculated replacement for 2Bh, relative to the ref sensor. Notes: Tooth count until first ignition event after reference mark. Loaded into 2B when at reference mark.'},
+  {a:0x2D,n:'KLR_TRIGGER_CNT',g:'ign',d:'KLR trigger counter, in whole teeth. Notes: Tooth count until next extint1_handler high ROM hook event. Reloaded from I2E (value 252) when at reference mark. Added to in steps of 65. Tooth count of first hook event is thus 61 since it wraps. The hook is empty in this version of the ROM and thus do nothing.'},
+  {a:0x2E,n:'KLR_TRIGGER_CNT_REF',g:'ign',d:'pre-calculated replacement for 2Dh, relative to the ref sensor. Notes: Loaded with value from address 1162, value is 252.'},
+  {a:0x2F,n:'DWELL_ANGLE',g:'ign',d:'dwell angle, in half-teeth. Notes: Dwell angle, number of half-teeth for primary current through the ignition coil. Loaded from map 24, rpm and battery voltage dependent.'},
+  {a:0x30,n:'DWELL_DURATION_SPD',g:'ign',d:'dwell duration used by the speed sensor routine, in half-teeth. Notes: Duration of ignition pulse, number of half-teeth needed for dwell. This is the dwell angle with correction for offset between reference mark and flywheel tooth.'},
+  {a:0x31,n:'IGN_ADVANCE_CUR',g:'ign',d:'current ignition advance, in half-teeth. Notes: Spark timing advance, half-teeth before TDC'},
+  {a:0x32,n:'IGN_ADVANCE_TARGET',g:'ign',d:'target ignition advance. Notes: Next spark timing advance'},
+  {a:0x33,n:'TDC_COUNTDOWN',g:'ign',d:'half-tooth count to the next TDC. Notes: Half-tooth count for next TDC counted from the point of the spark. i.e. timing advance + 180 degrees'},
+  {a:0x34,n:'IGN_STEP_COUNTDOWN',g:'ign',d:'countdown to the next permitted ignition timing step. Notes: Timing advance update interval. The interval between updating I31 from I32.'},
+  {a:0x35,n:'CYL_FIRE_INDEX',g:'ign',d:'cylinder firing index (0 or 1). Notes: This can have values 0 or 1. Two fire events in our four cylinder engine. It is used as index into arrays with flywheel tooth/half-tooth counts.'},
+  {a:0x36,n:'SPD_PULSE_CNT',g:'rpm',d:'speed sensor pulse counter, used for rpm measurement'},
+  {a:0x37,n:'ENGINE_RPM_RAW',g:'rpm',d:'engine speed, in units of 40rpm'},
+  {a:0x38,n:'RESERVED_38H',g:'timer',d:'undefined/unknown'},
+  {a:0x39,n:'RESERVED_39H',g:'timer',d:'undefined/unknown'},
+  {a:0x3A,n:'RESERVED_3AH',g:'timer',d:'undefined/unknown'},
+  {a:0x3B,n:'RESERVED_3BH',g:'rpm',d:'undefined/unknown'},
+  {a:0x3C,n:'POST_START_ENR_TIMER',g:'timer',d:'post-start enrichment (software counter, 414ms units). Notes: After start enrichment'},
+  {a:0x3D,n:'ACCEL_ENR_TIMER',g:'rpm',d:'all-rpm acceleration enrichment (software counter, 58ms units)'},
+  {a:0x3E,n:'LAMBDA_TIMER',g:'lambda',d:'lambda timer (software counter, 11.5ms units)'},
+  {a:0x3F,n:'LAMBDA_LOAD_TIMER',g:'sys',d:'lambda load threshold timer (software counter, 345ms units)'},
+  {a:0x40,n:'RESERVED_40H',g:'fuel',d:'undefined/unknown'},
+  {a:0x41,n:'ISV_ON_TIME_HI',g:'fuel',d:'timer1 ISV on-time, high byte'},
+  {a:0x42,n:'ISV_ON_TIME_LO',g:'fuel',d:'timer1 ISV on-time, low byte'},
+  {a:0x43,n:'RESERVED_43H',g:'fuel',d:'undefined/unknown'},
+  {a:0x44,n:'ISV_OFF_TIME_LO',g:'fuel',d:'timer1 ISV off-time, low byte'},
+  {a:0x45,n:'ISV_OFF_TIME_HI',g:'fuel',d:'timer1 ISV off-time, high byte'},
+  {a:0x46,n:'LOAD_SMOOTHED_HI',g:'fuel',d:'smoothed 24-bit load value, high byte'},
+  {a:0x47,n:'LOAD_SMOOTHED_MID',g:'fuel',d:'smoothed 24-bit load value, middle byte'},
+  {a:0x48,n:'LOAD_SMOOTHED_LO',g:'fuel',d:'smoothed 24-bit load value, low byte'},
+  {a:0x49,n:'LOAD_VALUE',g:'fuel',d:'load, i.e. the high byte of the scaled base fuel pulse'},
+  {a:0x4A,n:'FUEL_PULSE_LO',g:'fuel',d:'final fuel pulse, low byte (timer0 ticks of 2us)'},
+  {a:0x4B,n:'FUEL_PULSE_HI',g:'fuel',d:'final fuel pulse, high byte'},
+  {a:0x4C,n:'ACCEL_ENR_LOWRPM',g:'fuel',d:'low-rpm acceleration enrichment, added directly to the pulse'},
+  {a:0x4D,n:'INJ_EVENT_CNT',g:'fuel',d:'injection event counter, capped at 128'},
+  {a:0x4E,n:'FUEL_ADJ_ACCUM_LO',g:'fuel',d:'accumulated fuel adjustment, low byte'},
+  {a:0x4F,n:'FUEL_ADJ_ACCUM_HI',g:'fuel',d:'accumulated fuel adjustment, high byte'},
+  {a:0x50,n:'FUEL_ADJ_SHIFT_CNT',g:'misc',d:'count of outstanding left shifts (pending multiplications by 2)'},
+  {a:0x51,n:'AFM_HIST_1',g:'misc',d:'AFM history queue, most recent previous reading'},
+  {a:0x52,n:'AFM_HIST_2',g:'misc',d:'AFM history queue, second previous reading'},
+  {a:0x53,n:'AFM_HIST_3',g:'adc',d:'AFM history queue, third previous reading (~35ms old)'},
+  {a:0x54,n:'INJ_DEADTIME',g:'misc',d:'injector dead-time. Notes: Number of ticks/5 to add to injection signal to compensate for injector opening time.'},
+  {a:0x55,n:'RPM_LAG_REF',g:'misc',d:'lagging rpm reference that chases 37h'},
+  {a:0x56,n:'RPM_LAG_ACCUM',g:'misc',d:'fractional accumulator controlling how fast 55h chases 37h'},
+  {a:0x57,n:'IGN_ACCEL_ADJ',g:'misc',d:'acceleration/deceleration ignition timing adjustment. Notes: half-tooth spark timing adjustment for acceleration or deceleration. can have values 0, 1 or -1'},
+  {a:0x58,n:'OVERLOAD_TIMER',g:'enrich',d:'overload timer'},
+  {a:0x59,n:'OVERLOAD_PRESCALE',g:'enrich',d:'prescale counter for 58h'},
+  {a:0x5A,n:'RESERVED_5AH',g:'misc',d:'undefined/unknown'},
+  {a:0x5B,n:'RESERVED_5BH',g:'misc',d:'undefined/unknown'},
+  {a:0x5C,n:'RESERVED_5CH',g:'misc',d:'undefined/unknown'},
+  {a:0x5D,n:'RESERVED_5DH',g:'misc',d:'undefined/unknown'},
+  {a:0x5E,n:'RESERVED_5EH',g:'misc',d:'undefined/unknown'},
+  {a:0x5F,n:'RESERVED_5FH',g:'misc',d:'undefined/unknown'},
+  {a:0x60,n:'RESERVED_60H',g:'misc',d:'undefined/unknown'},
+  {a:0x61,n:'RESERVED_61H',g:'misc',d:'undefined/unknown'},
+  {a:0x62,n:'RESERVED_62H',g:'misc',d:'undefined/unknown'},
+  {a:0x63,n:'stack_0',g:'misc',d:'stack'},
+  {a:0x64,n:'stack_1',g:'misc',d:'stack'},
+  {a:0x65,n:'stack_2',g:'misc',d:'stack'},
+  {a:0x66,n:'stack_3',g:'misc',d:'stack'},
+  {a:0x67,n:'stack_4',g:'misc',d:'stack'},
+  {a:0x68,n:'stack_5',g:'misc',d:'stack'},
+  {a:0x69,n:'stack_6',g:'misc',d:'stack'},
+  {a:0x6A,n:'stack_7',g:'misc',d:'stack'},
+  {a:0x6B,n:'stack_8',g:'misc',d:'stack'},
+  {a:0x6C,n:'stack_9',g:'misc',d:'stack'},
+  {a:0x6D,n:'stack_A',g:'misc',d:'stack'},
+  {a:0x6E,n:'stack_B',g:'misc',d:'stack'},
+  {a:0x6F,n:'stack_C',g:'misc',d:'stack'},
+  {a:0x70,n:'stack_D',g:'misc',d:'stack'},
+  {a:0x71,n:'stack_E',g:'misc',d:'stack'},
+  {a:0x72,n:'stack_F',g:'misc',d:'stack'},
+  {a:0x73,n:'stack_G',g:'misc',d:'stack'},
+  {a:0x74,n:'stack_H',g:'misc',d:'stack'},
+  {a:0x75,n:'stack_I',g:'misc',d:'stack'},
+  {a:0x76,n:'stack_J',g:'misc',d:'stack'},
+  {a:0x77,n:'stack_K',g:'misc',d:'stack'},
+  {a:0x78,n:'stack_L',g:'misc',d:'stack'},
+  {a:0x79,n:'stack_M',g:'misc',d:'stack'},
+  {a:0x7A,n:'RESERVED_7AH',g:'misc',d:'undefined/unknown. Notes: probably used as sequence number, written and read during diagnostics'},
+  {a:0x7B,n:'ISV_CORR_DBL_HI',g:'misc',d:'high byte of the doubled ISV correction'},
+  {a:0x7C,n:'ISV_FLARE_HOLD_CNT',g:'misc',d:'ISV flare hold counter'},
+  {a:0x7D,n:'ISV_INTEGRAL_LO',g:'misc',d:'ISV integral term, low byte'},
+  {a:0x7E,n:'ISV_INTEGRAL_HI',g:'misc',d:'ISV integral term, high byte'},
+  {a:0x7F,n:'ISV_TARGET_RPM',g:'isv',d:'ISV target idle rpm'},
 ];
+
+// KLR 8048 RAM labels — from 87KLR951.xlsx byte_mem sheet (disassembly), variable_name column
+const KLR_KNOWN = {
+  0x00: {n:'interrupt_info', d:'Register bank 0 - Used for interrupt context/ r0 - Holds 24h at start of interrupt. 24h is scratch space to store the normal-context\'s accumulator'},
+  0x02: {n:'num_timer_ints', d:'r2 - A count of number of times timer interrupt fired.'},
+  0x03: {n:'mult_in', d:'r3 - used as an input to the 8-bit multiply function'},
+  0x05: {n:'dec_interrupts', d:'r5 - Decremented every interrupt. When reaches 0'},
+  0x06: {n:'speed_count', d:'r6 - engine speed represented as the number of timer interrupts since the last reset. Actually it is a count that is initialized to 0 at reset and counts _down_ each interrupt.'},
+  0x07: {n:'timer_period', d:'r7 - the current timer period. Actually it is the value the timer/event-counter register. is re-initialized to every time the timer interrupt happens. r7 is initialized to 0xfc. in the boot code, and then left/right shifted occasionally depending on the RPM. In practice it has a value of 0xfe when the RPM is above 1500 RPM and 0xfc otherwise.'},
+  0x22: {n:'ADC_INIT_ANGLE', d:'angle to begin ADC initialization routine (in timer ticks)'},
+  0x23: {n:'ADC_READ_ANGLE', d:'angle to read ADC (after 22h, in timer ticks)'},
+  0x24: {n:'ENGINE_SPEED_TICKS', d:'engine speed (in timer ticks)'},
+  0x2E: {n:'BATTERY_VOLTAGE', d:'battery voltage'},
+  0x2F: {n:'KNOCK_SENSOR_DIAG', d:'knock sensor (diagnostics)'},
+  0x30: {n:'BLINK_ERR_KNOCK_MAP', d:'knock/MAP'},
+  0x31: {n:'knock_test_out', d:''},
+  0x33: {n:'BLINK_CODE_CURRENT', d:'current blink code'},
+  0x35: {n:'BLINK_ERR_BOOST_HILO', d:'boost high/low'},
+  0x36: {n:'BLINK_ERR_TPS', d:'TPS/TPS power supply'},
+  0x38: {n:'UNKNOWN_38', d:'38h - scratch space for interrupt routines to stash the non-interrupt context\'s accumulator'},
+  0x39: {n:'TPS_POWER_SUPPLY', d:'throttle position (power supply)'},
+  0x3A: {n:'TPS_DEGREES', d:'throttle position (degrees)'},
+  0x3B: {n:'TPS_Scaling', d:'3bh - The scaling numerator 3B is initialized to 119 in the trigger/reset routine. So the nominal scaling factor is 119/256, or about 0.46'},
+  0x3C: {n:'TPS_RAW', d:'throttle position (raw)'},
+  0x3E: {n:'WOT_angle', d:'angle for WOT (set to 66 decimal for all rpm)'},
+  0x41: {n:'CV_DUTY_FINAL', d:'final CV duty cycle'},
+  0x43: {n:'TPS_MAP_AXIS', d:'throttle position (map axis)'},
+  0x44: {n:'RPM_MAP_AXIS', d:'rpm range (map axis)'},
+  0x45: {n:'mac_knock_thresh', d:'45h - current maximum knock threshold (looked-up from map based on current RPM. But map is all the same value of 10). minimum knock threshold value (10 decimal for all rpm)'},
+  0x46: {n:'integrated_knock_val', d:'46h - integrated knock value read by ADC'},
+  0x47: {n:'knock_det_threshold', d:'coefficient for knock threshold (makes knock detection less sensitive at higher rpm)'},
+  0x48: {n:'throttle_position_threshold', d:'throttle position threshold for knock control'},
+  0x4A: {n:'cycle_count_before_restore', d:'cycle count before restoring 0.3 deg. timing (this value is used to initialize the counter 49h)'},
+  0x4B: {n:'max_timing_retart', d:'max timing retard (set to 18 decimal for all rpm, which corresponds to ~6 degrees)'},
+  0x4C: {n:'boost_threshold', d:'threshold for pulling boost'},
+  0x4E: {n:'cycle_count_before_pulling_boost', d:'cycle count before pulling boost'},
+  0x50: {n:'cycle_count_before_restore_boost', d:'cycle count before restoring boost'},
+  0x51: {n:'MAP compare?', d:''},
+  0x52: {n:'MAP_PRESSURE', d:'MAP pressure'},
+  0x57: {n:'BOOST_REDUCTION_KNOCK', d:'total boost reduction for knock control'},
+  0x60: {n:'BOOST_PID_ERROR', d:'boost control PID error (target boost - actual boost)'},
+  0x61: {n:'BOOST_PID_ITERM', d:'boost control PID I term (integral)'},
+  0x62: {n:'BOOST_PID_DTERM', d:'boost control PID D term (derivative)'},
+  0x68: {n:'BOOST_FEEDFORWARD_CV', d:'boost control feedforward value (CV duty cycle)'},
+  0x70: {n:'CYL_TIMING_DELAY_C1', d:'per-cylinder timing delay cylinder 1'},
+  0x71: {n:'CYL_TIMING_DELAY_C2', d:'per-cylinder timing delay cylinder 2'},
+  0x72: {n:'CYL_TIMING_DELAY_C3', d:'per-cylinder timing delay cylinder 3'},
+  0x73: {n:'CYL_TIMING_DELAY_C4', d:'per-cylinder timing delay cylinder 4'},
+  0x74: {n:'CYL_KNOCK_THRESH_C1', d:'per-cylinder knock threshold cyinder 1'},
+  0x75: {n:'CYL_KNOCK_THRESH_C2', d:'per-cylinder knock threshold cyinder 2'},
+  0x76: {n:'CYL_KNOCK_THRESH_C3', d:'per-cylinder knock threshold cyinder 3'},
+  0x77: {n:'CYL_KNOCK_THRESH_C4', d:'per-cylinder knock threshold cyinder 4'},
+  0x7A: {n:'knk_thres', d:'7ah - current knock threshold msb value for the cylinder that fired in the previous cycle'},
+};
+
+// ─────────────────────────────────────────────────────────────────
+//  BOOST MAP TABLE — JS port of the identical table in klr_tb.v's
+//  -DBOOST model (which itself was sourced from the '89 KLR boost
+//  map documented at https://jhnbyrn.github.io/951-KLR-PAGES/
+//  klr_memory_map.html). Used here to compute the *target* boost
+//  the firmware should be reading, for comparison against the
+//  actual observed reading (ram[0x52]) on the new Boost Control tab.
+// ─────────────────────────────────────────────────────────────────
+const BOOST_RPM_BP = [0, 1864, 2041, 2254, 2446, 2674, 2948, 3164, 3415, 3708, 4057, 4479, 4724, 4998, 5653, 6050];
+const BOOST_THR_BP = [57.0, 61.3, 65.6, 69.9, 74.2, 78.5, 82.8, 87.1];
+const BOOST_TABLE = [
+  [137,141,144,145,145,146,146,148,148,148,150,150,150,152,152,152], // 57.0%
+  [139,141,145,151,154,157,157,158,158,158,158,158,158,158,158,158], // 61.3%
+  [139,141,148,157,164,167,167,170,170,167,167,167,166,165,165,165], // 65.6%
+  [141,142,159,170,177,180,180,180,180,177,176,175,174,171,171,171], // 69.9%
+  [143,145,171,190,193,193,193,193,193,191,188,186,184,182,180,180], // 74.2%
+  [145,152,180,206,206,206,206,206,206,208,206,206,206,206,206,194], // 78.5%
+  [145,152,180,206,206,206,206,206,206,208,206,206,206,206,206,194], // 82.8%
+  [145,152,180,206,206,206,206,206,206,208,206,206,206,206,206,194], // 87.1%
+];
+
+// Throttle% from KLR's own tps_raw (STATUS-line field).
+// Direction confirmed against an actual log (cl_ramp_to_6000_BOOST_LOW):
+// tps_raw reads 0x77 (119) right at sim start (engine at rest, throttle
+// closed) and rises as throttle opens — a DIRECT relationship, not
+// inverted. Anchored 0%=idle at 0x77(119), 100%=fully open at 256 (the
+// full 8-bit ADC ceiling), clamped beyond either end.
+function tpsRawToThrottlePct(tpsRaw) {
+  if (tpsRaw == null) return null;
+  const pct = ((tpsRaw - 119) / (256 - 119)) * 100;
+  return Math.max(0, Math.min(100, pct));
+}
+
+// Throttle% for the boost MAP table, from ram[0x43] — the KLR firmware's
+// own throttle-cycling valve map input register (same source klr_tb.v's
+// -DBOOST model now reads directly, replacing the earlier tps_raw-based
+// approximation that was producing confirmed mismatches). Calibration:
+// ram[0x43]=1 -> 58%, ram[0x43]=0x1C(28) -> 88%, linear between (and
+// beyond — the boost table's own interpolation clamps out-of-range
+// throttle% at its edges, so no clamping needed here).
+function ram43ToThrottlePct(ram43) {
+  if (ram43 == null) return null;
+  return 58.0 + (ram43 - 1.0) * 30.0 / 27.0;
+}
+
+// Bilinear interpolation over BOOST_TABLE, clamped at the table edges
+// (no extrapolation) — mirrors klr_tb.v's -DBOOST model exactly.
+// Returns the target value in "software units" (same post-+10-offset
+// scale as ram[0x52] itself, i.e. directly comparable to the actual
+// observed reading without any further correction).
+function boostTargetSoftwareUnits(rpm, throttlePct) {
+  if (rpm == null || throttlePct == null) return null;
+  let r = Math.max(BOOST_RPM_BP[0], Math.min(BOOST_RPM_BP[BOOST_RPM_BP.length-1], rpm));
+
+  let rLo = 0, rHi = BOOST_RPM_BP.length - 1;
+  for (let i = 0; i < BOOST_RPM_BP.length - 1; i++) {
+    if (r >= BOOST_RPM_BP[i] && r <= BOOST_RPM_BP[i+1]) { rLo = i; rHi = i+1; }
+  }
+  const rFrac = BOOST_RPM_BP[rHi] !== BOOST_RPM_BP[rLo]
+    ? (r - BOOST_RPM_BP[rLo]) / (BOOST_RPM_BP[rHi] - BOOST_RPM_BP[rLo]) : 0;
+
+  let tLo, tHi, tFrac;
+  if (throttlePct <= BOOST_THR_BP[0]) {
+    tLo = 0; tHi = 0; tFrac = 0;
+  } else if (throttlePct >= BOOST_THR_BP[BOOST_THR_BP.length-1]) {
+    tLo = tHi = BOOST_THR_BP.length - 1; tFrac = 0;
+  } else {
+    tLo = 0; tHi = BOOST_THR_BP.length - 1;
+    for (let j = 0; j < BOOST_THR_BP.length - 1; j++) {
+      if (throttlePct >= BOOST_THR_BP[j] && throttlePct <= BOOST_THR_BP[j+1]) { tLo = j; tHi = j+1; }
+    }
+    tFrac = BOOST_THR_BP[tHi] !== BOOST_THR_BP[tLo]
+      ? (throttlePct - BOOST_THR_BP[tLo]) / (BOOST_THR_BP[tHi] - BOOST_THR_BP[tLo]) : 0;
+  }
+
+  const v00 = BOOST_TABLE[tLo][rLo], v01 = BOOST_TABLE[tLo][rHi];
+  const v10 = BOOST_TABLE[tHi][rLo], v11 = BOOST_TABLE[tHi][rHi];
+  const v0 = v00 + (v01 - v00) * rFrac;
+  const v1 = v10 + (v11 - v10) * rFrac;
+  return v0 + (v1 - v0) * tFrac;
+}
 
 // ─────────────────────────────────────────────────────────────────
 //  PORT DEFINITIONS
@@ -174,11 +310,11 @@ const PORT_DEFS = {
   P1: [
     {bit:7, name:'O2_LEAN',   dir:'IN',  desc:'O2/Lambda sensor top threshold: 1=lean (sensor < 0.45V), 0=rich'},
     {bit:6, name:'O2_RICH',   dir:'IN',  desc:'O2/Lambda sensor bottom threshold: 1=lean or crossover (sensor < 0.50V), 0=rich'},
-    {bit:5, name:'IGN_OUT',   dir:'OUT', desc:'Ignition coil primary driver (KLR) — triggered by extint1_handler at computed spark angle'},
+    {bit:5, name:'KLR_TRIGGER',dir:'OUT', desc:'Ignition/trigger signal to KLR trigger input — triggered by extint1_handler at computed spark angle'},
     {bit:4, name:'IDLE_SPD',  dir:'OUT', desc:'Idle speed positioner output — also used as firmware watchdog heartbeat'},
     {bit:3, name:'UNUSED',    dir:'?',   desc:'Unused — P1.3 not connected to any DME function'},
     {bit:2, name:'DME_RELAY', dir:'OUT', desc:'DME main relay / fuel pump relay driver — active-low'},
-    {bit:1, name:'TACH_PULSE',dir:'OUT', desc:'Tachometer output pulse — drives instrument cluster rev counter'},
+    {bit:1, name:'TACH/KLRIgn',dir:'OUT', desc:'Ignition signal output — drives both the tachometer (instrument cluster rev counter) and the KLR ignition input'},
     {bit:0, name:'INJ_OUT',   dir:'OUT', desc:'Fuel injector driver — active-low pulse width set by FUEL_HB/LB (iram[4B:4A])'},
   ],
   P2: [
@@ -446,6 +582,11 @@ function parseKLRLog(text) {
       // knock_count — cumulative decimal counter (not hex)
       const kcm = body.match(/knock_count=(\d+)/);
       if (kcm) s.knock_count = parseInt(kcm[1], 10);
+      // boost_target — real internal MAP-table lookup from klr_tb.v itself
+      // (authoritative — replaces the dashboard's own independent JS
+      // reconstruction when present in the log). 0 when -DBOOST wasn't set.
+      const btm = body.match(/boost_target=([0-9a-fA-F]+)/);
+      if (btm) s.boost_target = parseInt(btm[1], 16);
       // Registers R0/R2/R4/R5
       for (const r of ['R0','R2','R4','R5']) {
         const m = body.match(new RegExp(r + '=(\\w+)'));
@@ -874,7 +1015,7 @@ export default function DMEDashboard() {
     data.snapshots.some(s => ((s.iram?.[0x21] ?? 0) >> 1) & 1),
   [data.snapshots]);
 
-  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'];
+  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'];
 
   return (
     <div style={S.root}>
@@ -918,7 +1059,7 @@ export default function DMEDashboard() {
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].map(t=>(
+          {['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'].map(t=>(
             <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}>
               {t==='klr'       ?'KLR OVERVIEW':
                t==='klr_ports' ?'KLR PORTS'   :
@@ -926,6 +1067,7 @@ export default function DMEDashboard() {
                t==='klr_charts'?'KLR CHARTS'  :
                t==='klr_phase' ?'KLR PHASE'   :
                t==='klr_diag'  ?'KLR DIAG'    :
+               t==='klr_boost' ?'BOOST CONTROL':
                t.toUpperCase()}
             </button>
           ))}
@@ -952,10 +1094,11 @@ export default function DMEDashboard() {
         {tab==='klr_charts' && <KLRChartsTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
+        {tab==='klr_boost'  && <BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />}
       </div>
 
       {/* ── TIME SCRUBBER + PLAYBACK ────────────────────────── */}
-      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
+      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'].includes(tab) && (
         <div style={S.scrubber}>
           {/* Play / Pause */}
           <button onClick={()=>setPlaying(p=>!p)}
@@ -1009,7 +1152,7 @@ export default function DMEDashboard() {
       )}
 
       {/* ── KLR PLAYBACK SCRUBBER — KLR tabs only ──────────── */}
-      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
+      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'].includes(tab) && (
         <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
           <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
           <button onClick={()=>setKlrPlaying(p=>!p)}
@@ -1094,7 +1237,7 @@ export default function DMEDashboard() {
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
 function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
-  const f20=iram[0x20]??0, f21=iram[0x21]??0, f23=iram[0x23]??0,
+  const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
   const prpm    = iram[0x37];
@@ -1174,46 +1317,93 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
   const lmbdCorrHex  = (lmbdCorrRaw < 0 ? '-' : '') + '0x' + lmbdCorrAbs.toString(16).toUpperCase().padStart(4,'0');
   const lmbdCorrCol  = lmbdCorrRaw > 0 ? '#44aaff' : lmbdCorrRaw < 0 ? '#ff6644' : '#66ffaa';
 
+  // Hover text for metric cards, sourced from IRAM_MAP (disassembly data)
+  const iramDesc = addr => {
+    const e = IRAM_MAP.find(x => x.a === addr);
+    return e ? `0x${addr.toString(16).toUpperCase().padStart(2,'0')} ${e.n} — ${e.d}` : undefined;
+  };
+
   const metricsRow1 = [
-    { lbl:'ENGINE SPEED',  val:rpm != null ? rpm : '---',              unit:'RPM',         col:C.textBright, mmk:'rpm' },
-    { lbl:'FUEL PULSE',    val:fuelDisplay,                              unit:fuelUnit,      col:fuelCut?C.red:'#66ff66', mmk:'fuel'    },
-    { lbl:'DWELL',         val:`${dwMs}ms`,   unit:`${dwDeg??'--'}° / ${dwHt??'--'} ht`, col:'#ff8844', mmk:'dwell'   },
+    { lbl:'ENGINE SPEED',  val:rpm != null ? rpm : '---',              unit:'RPM',         col:C.textBright, mmk:'rpm', addr:0x37 },
+    { lbl:'FUEL PULSE',    val:fuelDisplay,                              unit:fuelUnit,      col:fuelCut?C.red:'#66ff66', mmk:'fuel', addr:0x4B    },
+    { lbl:'DWELL',         val:`${dwMs}ms`,   unit:`${dwDeg??'--'}° / ${dwHt??'--'} ht`, col:'#ff8844', mmk:'dwell', addr:0x2F   },
     { lbl:'LAMBDA CORR',   val:`${lmbdCorrSign}${lmbdCorrAbs}`,
-                           unit:`${lmbdCorrHex}  (1B:1C−8000h)`,       col:lmbdCorrCol, mmk:null },
-    { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null      },
+                           unit:`${lmbdCorrHex}  (1B:1C−8000h)`,       col:lmbdCorrCol, mmk:null, addr:0x1B },
+    { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null, addr:0x4C      },
   ];
 
   const metricsRow2 = [
-    { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm'     },
+    { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm', addr:0x10     },
     { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),
                            unit:(snap._prevTps??iram[0x16])===0x85?'CLOSED/IDLE':(snap._prevTps??iram[0x16])===0xCC?'WOT':(snap._prevTps??iram[0x16])===0xF2?'PARTIAL':'--',
                            col:(snap._prevTps??iram[0x16])===0x85?'#44cccc':(snap._prevTps??iram[0x16])===0xCC?C.red:(snap._prevTps??iram[0x16])===0xF2?C.amber:C.textDim,
-                           mmk:'tps' },
-    { lbl:'COOLANT',       val:coolC!==null?`${coolC}°C`:'--',       unit:`0x${h2(iram[0x13])}`, col:C.blue, mmk:'coolant' },
-    { lbl:'AIR TEMP',      val:airC !==null?`${airC}°C` :'--',       unit:`0x${h2(iram[0x12])}`, col:C.blue, mmk:'airtemp' },
-    { lbl:'BATTERY',       val:`${battV}V`,                            unit:`0x${h2(iram[0x11])}`, col:battCol, mmk:'batt'   },
+                           mmk:'tps', addr:0x16 },
+    { lbl:'COOLANT',       val:coolC!==null?`${coolC}°C`:'--',       unit:`0x${h2(iram[0x13])}`, col:C.blue, mmk:'coolant', addr:0x13 },
+    { lbl:'AIR TEMP',      val:airC !==null?`${airC}°C` :'--',       unit:`0x${h2(iram[0x12])}`, col:C.blue, mmk:'airtemp', addr:0x12 },
+    { lbl:'BATTERY',       val:`${battV}V`,                            unit:`0x${h2(iram[0x11])}`, col:battCol, mmk:'batt', addr:0x11   },
   ];
 
   const metricsRow3 = [
-    { lbl:'LOAD (49h)',    val:h2(iram[0x49]),                       unit:`map row ${iram[0x49]??'--'}`, col:'#88ccff', mmk:'load' },
-    { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv'     },
-    { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog' },
+    { lbl:'LOAD (49h)',    val:h2(iram[0x49]),                       unit:`map row ${iram[0x49]??'--'}`, col:'#88ccff', mmk:'load', addr:0x49 },
+    { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv', addr:0x7F     },
+    { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog', addr:0x2A },
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
-                           col:afrCol, mmk:null },
+                           col:afrCol, mmk:null, addr:null },
   ];
 
 
+  // Control flags — from disassemble3.xlsx bit_mem sheet (43 named bits, 0x20-0x25)
+  // Control flags — from disassemble3.xlsx bit_mem sheet (all 48 documented bits, 0x20-0x25)
   const flags = [
-    { name:'EngineSync',        val:(f21>>0)&1, col:'#66ffaa',  addr:'21h.0' },
-    { name:'Phase2Lambda',      val:(f21>>1)&1, col:'#cc66ff',  addr:'21h.1' },
-    { name:'UseMap1140',        val:(f21>>5)&1, col:'#44cccc',  addr:'21h.5' },
-    { name:'ISVPWMOverflow',    val:(f20>>5)&1, col:'#ff88cc',  addr:'20h.5' },
-    { name:'FuelOffCoast',      val:(f23>>5)&1, col:C.red,      addr:'23h.5' },
-    { name:'O2 Lean',           val:(f24>>3)&1, col:C.amber,    addr:'24h.3' },
-    { name:'LambdaOK',          val:(f24>>3)&1, col:'#cc66ff',  addr:'24h.3' },
-    { name:'ColdStartTiming',   val:(f25>>4)&1, col:C.blue,     addr:'25h.4' },
-    { name:'ColdStartEnrich',   val:(f25>>5)&1, col:C.blue,     addr:'25h.5' },
+    { name:'ISV_FLARE_VARIANT', val:(f20>>0)&1, col:'#66ffaa', addr:'20h.0', desc:'ISV flare variant: 0 = return to idle, 1 = startup' },
+    { name:'init_flag', val:(f20>>1)&1, col:'#cc66ff', addr:'20h.1', desc:'at startup phase, a locally used init flag' },
+    { name:'ISV_RPM_ERR_SIGN_LAMBDA_COND_CURRENT', val:(f20>>2)&1, col:'#66ffaa', addr:'20h.2', desc:'ISV idle rpm error sign: 1 = rpm too high, 0 = rpm too low. *reused for lambda:* current condition, 0 = lean, 1 = not lean' },
+    { name:'ISV_INT_BLOCK_POS', val:(f20>>3)&1, col:'#66ffaa', addr:'20h.3', desc:'blocks integration when a positive ISV correction is clamped' },
+    { name:'ISV_INT_BLOCK_NEG', val:(f20>>4)&1, col:'#66ffaa', addr:'20h.4', desc:'blocks integration when a negative ISV correction is clamped, or when load is below the Map 87 value' },
+    { name:'ISV_PWM_OVF_SIGN', val:(f20>>5)&1, col:'#66ffaa', addr:'20h.5', desc:'ISV PWM correction overflow sign (which way to clamp)' },
+    { name:'ISV_FLARE_NEEDED', val:(f20>>6)&1, col:'#66ffaa', addr:'20h.6', desc:'an idle flare is needed on return to idle' },
+    { name:'LAMBDA_ENABLE', val:(f20>>7)&1, col:'#44cccc', addr:'20h.7', desc:'master enable for closed loop lambda control; only set on US (cat/O2) cars' },
+    { name:'OVERLOAD_PRETIMER_RUN', val:(f21>>0)&1, col:'#ff88cc', addr:'21h.0', desc:'the ~3 second overload pre-timer is running' },
+    { name:'OVERLOAD_LOCKOUT_RUN', val:(f21>>1)&1, col:'#ff88cc', addr:'21h.1', desc:'overload confirmed; the ~60 second lockout is running' },
+    { name:'INJECTORS_ON', val:(f21>>2)&1, col:'#ff6644', addr:'21h.2', desc:'injectors are currently on' },
+    { name:'RESERVED_21H_3', val:(f21>>3)&1, col:'#cc66ff', addr:'21h.3', desc:'undefined/unknown' },
+    { name:'CRANK_ENR_PHASEOUT_LATCH', val:(f21>>4)&1, col:'#ffcc44', addr:'21h.4', desc:'latch marking that the cranking enrichment phase-out has started' },
+    { name:'FUEL_REACT_TRANS_ACTIVE', val:(f21>>5)&1, col:'#ff88cc', addr:'21h.5', desc:'transient fuel correction after reactivation is active' },
+    { name:'FUELCUT_REACT_MODE', val:(f21>>6)&1, col:'#ff88cc', addr:'21h.6', desc:'selects return-to-idle (Map 1140) vs return-to-throttle (Map 1150)' },
+    { name:'ACCEL_PUMP_SHOT_LATCH', val:(f21>>7)&1, col:'#88ccff', addr:'21h.7', desc:'latch for a pending 4Ch acceleration enrichment pump shot' },
+    { name:'IGN_HALFTOOTH_CORR', val:(f22>>0)&1, col:'#ff8844', addr:'22h.0', desc:'half-tooth correction applied to the next ignition event' },
+    { name:'IGN_HALFTOOTH_ROUND_ERR', val:(f22>>1)&1, col:'#ff8844', addr:'22h.1', desc:'half-tooth rounding error left over from the 021D calculation' },
+    { name:'Unreferenced', val:(f22>>2)&1, col:'#cc66ff', addr:'22h.2', desc:'bit 2 - unreferenced' },
+    { name:'COIL_STATE_REF', val:(f22>>3)&1, col:'#ff8844', addr:'22h.3', desc:'coil state to apply in the ref sensor routine (set = dwell off)' },
+    { name:'TIMING_RATE_SEL_LOW', val:(f22>>4)&1, col:'#ff6644', addr:'22h.4', desc:'timing change rate select, lowest priority of the three' },
+    { name:'TIMING_RATE_SEL_MED', val:(f22>>5)&1, col:'#ff6644', addr:'22h.5', desc:'timing change rate select, medium priority' },
+    { name:'TIMING_RATE_SEL_HIGH', val:(f22>>6)&1, col:'#ff6644', addr:'22h.6', desc:'timing change rate select, highest priority' },
+    { name:'Time1FlagLowIdle', val:(f22>>7)&1, col:'#cc66ff', addr:'22h.7', desc:'set at start of low idle speed positioner pulse' },
+    { name:'TPS_AT_IDLE', val:(f23>>0)&1, col:'#66ffaa', addr:'23h.0', desc:'TPS at idle (1 = at idle)' },
+    { name:'WOT_FLAG', val:(f23>>1)&1, col:'#66ffaa', addr:'23h.1', desc:'WOT (1 = WOT). Controlled by the KLR, which calls > 65 deg. WOT' },
+    { name:'CRANKING_FLAG', val:(f23>>2)&1, col:'#cc66ff', addr:'23h.2', desc:'cranking (1 = rpm below 160). Cleared at a temperature-dependent threshold from Map 3' },
+    { name:'ISV_ALT_PATH', val:(f23>>3)&1, col:'#66ffaa', addr:'23h.3', desc:'ISV alternate code path, set via ADC channel 5 (DME pin 28)' },
+    { name:'STARTUP_FLAG', val:(f23>>4)&1, col:'#44cccc', addr:'23h.4', desc:'startup' },
+    { name:'FUEL_CUT_FLAG', val:(f23>>5)&1, col:'#ff88cc', addr:'23h.5', desc:'fuel cut, for coasting or overload' },
+    { name:'TRG_IDLE_FLARE', val:(f23>>6)&1, col:'#ffcc44', addr:'23h.6', desc:'trigger the idle flare (rpm increase above normal target)' },
+    { name:'TXDLambdaDiag', val:(f23>>7)&1, col:'#cc66ff', addr:'23h.7', desc:'used for lambda diag' },
+    { name:'LAMBDA_WATCHDOG_EN', val:(f24>>0)&1, col:'#44cccc', addr:'24h.0', desc:'lambda watchdog enable; always set in the production code' },
+    { name:'LAMBDA_LOAD_TIMER_RUN', val:(f24>>1)&1, col:'#44cccc', addr:'24h.1', desc:'the load threshold timer (3Fh) is running' },
+    { name:'LAMBDA_WATCHDOG_ACTIVE', val:(f24>>2)&1, col:'#44cccc', addr:'24h.2', desc:'watchdog countdown active; never set by reachable code' },
+    { name:'LAMBDA_NEUTRAL_PHASE', val:(f24>>3)&1, col:'#44cccc', addr:'24h.3', desc:'the lambda-neutral timer phase is running' },
+    { name:'LAMBDA_RICHLEAN_PHASE', val:(f24>>4)&1, col:'#44cccc', addr:'24h.4', desc:'the rich/lean timer phase is running' },
+    { name:'LAMBDA_COND_MET', val:(f24>>5)&1, col:'#44cccc', addr:'24h.5', desc:'all lambda threshold conditions are met (1 = correction permitted)' },
+    { name:'LAMBDA_COND_PREV', val:(f24>>6)&1, col:'#44cccc', addr:'24h.6', desc:'previous value of 20h.2: 0 = previously lean, 1 = previously not lean' },
+    { name:'LAMBDA_COND_PERSISTED', val:(f24>>7)&1, col:'#44cccc', addr:'24h.7', desc:'the current condition has persisted long enough to act on' },
+    { name:'Unused', val:(f25>>0)&1, col:'#cc66ff', addr:'25h.0', desc:'bit 0-1 - only has purpose in unused functions' },
+    { name:'Unused', val:(f25>>1)&1, col:'#cc66ff', addr:'25h.1', desc:'bit 0-1 - only has purpose in unused functions' },
+    { name:'MapLookFail', val:(f25>>2)&1, col:'#cc66ff', addr:'25h.2', desc:'map lookup failed' },
+    { name:'DiagNotSet', val:(f25>>3)&1, col:'#cc66ff', addr:'25h.3', desc:'bit 3 - 1= diagnostics mode not set, =0 when mode has been selected' },
+    { name:'COLD_CRANK_LAMBDA_SEL', val:(f25>>4)&1, col:'#44cccc', addr:'25h.4', desc:'NTC II was below ~14.7C while cranking; selects the lambda enable temperature' },
+    { name:'COLD_CRANK_WARMUP_SEL', val:(f25>>5)&1, col:'#ffcc44', addr:'25h.5', desc:'NTC II was below ~14.7C while cranking; selects between warmup maps 43 and 45' },
+    { name:'REGION_CODE', val:(f25>>6)&1, col:'#cc66ff', addr:'25h.6', desc:'region coding: 0 = US, 1 = RoW' },
+    { name:'ALTITUDE_HIGH_FLAG', val:(f25>>7)&1, col:'#ffcc44', addr:'25h.7', desc:'altitude sensor: 1 = above 1000M' },
   ];
 
   const regs = [
@@ -1254,7 +1444,7 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
         {metricsRow1.map(m=>{
           const mmv = mm[m.mmk] || {};
           return (
-            <div key={m.lbl} style={S.metric}>
+            <div key={m.lbl} style={S.metric} title={m.addr!=null ? iramDesc(m.addr) : undefined}>
               <div style={S.metricLbl}>{m.lbl}</div>
               <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
                 {m.val}
@@ -1281,7 +1471,7 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
         {metricsRow2.map(m=>{
           const mmv = mm[m.mmk] || {};
           return (
-            <div key={m.lbl} style={S.metric}>
+            <div key={m.lbl} style={S.metric} title={m.addr!=null ? iramDesc(m.addr) : undefined}>
               <div style={S.metricLbl}>{m.lbl}</div>
               <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
                 {m.val}
@@ -1308,7 +1498,7 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
         {metricsRow3.map(m=>{
           const mmv = mm[m.mmk] || {};
           return (
-            <div key={m.lbl} style={S.metric}>
+            <div key={m.lbl} style={S.metric} title={m.addr!=null ? iramDesc(m.addr) : undefined}>
               <div style={S.metricLbl}>{m.lbl}</div>
               <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
                 {m.val}
@@ -1349,25 +1539,31 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
 
         {/* Control flags */}
         <div style={S.panel}>
-          <div style={S.panelTitle}>CONTROL FLAGS</div>
-          {flags.map(f=>(
-            <div key={f.name+f.addr} style={{
-              display:'flex',alignItems:'center',gap:'8px',
-              padding:'4px 6px',marginBottom:'2px',
-              borderLeft:`3px solid ${f.val?f.col:'#1a2e1a'}`,
-              background:f.val?'#0a1f0a':'#070e07',
-            }}>
-              <span style={{
-                width:'10px',height:'10px',borderRadius:'50%',flexShrink:0,
-                background:f.val?f.col:'transparent',
-                border:`1px solid ${f.val?f.col:'#1a3a1a'}`,
-                boxShadow:f.val?`0 0 6px ${f.col}`:'none',
-                display:'inline-block',
-              }}/>
-              <span style={{color:f.val?f.col:'#335533',fontSize:'10px',flex:1}}>{f.name}</span>
-              <span style={{color:C.textDim,fontSize:'9px'}}>{f.addr}</span>
-            </div>
-          ))}
+          <div style={S.panelTitle}>CONTROL FLAGS &nbsp;
+            <span style={{color:C.textDim,fontSize:'8px'}}>hover any flag for full description</span>
+          </div>
+          <div style={{maxHeight:'420px',overflow:'auto'}}>
+            {flags.map(f=>(
+              <div key={f.name+f.addr} title={f.desc}
+                style={{
+                display:'flex',alignItems:'center',gap:'8px',
+                padding:'4px 6px',marginBottom:'2px',
+                borderLeft:`3px solid ${f.val?f.col:'#1a2e1a'}`,
+                background:f.val?'#0a1f0a':'#070e07',
+              }}>
+                <span style={{
+                  width:'10px',height:'10px',borderRadius:'50%',flexShrink:0,
+                  background:f.val?f.col:'transparent',
+                  border:`1px solid ${f.val?f.col:'#1a3a1a'}`,
+                  boxShadow:f.val?`0 0 6px ${f.col}`:'none',
+                  display:'inline-block',
+                }}/>
+                <span style={{color:f.val?f.col:'#335533',fontSize:'10px',flex:1,
+                              overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{f.name}</span>
+                <span style={{color:C.textDim,fontSize:'9px',flexShrink:0}}>{f.addr}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -2117,6 +2313,19 @@ function KLRTab({ klrData, currentT }) {
   const avgDelay   = delays.length ? (delays.reduce((a,b)=>a+b,0)/delays.length).toFixed(2) : '--';
   const avgPulse   = pulses.length ? (pulses.reduce((a,b)=>a+b,0)/pulses.length).toFixed(3) : '--';
 
+  // Merge ram vals from status ramVals into ram display
+  const ramDisplay = { ...ram };
+  if (latestStatus?.ramVals) Object.assign(ramDisplay, latestStatus.ramVals);
+
+  // Boost / MAP pressure — ram[0x52]. ADC-read routine adds 10 units
+  // before storing here (software-units scale), and per the KLR memory
+  // map docs, ~1.2 software units = 1 kPa absolute. Converted to gauge
+  // PSI (relative to ~101.3kPa atmospheric) — conventional boost-gauge units.
+  //   https://jhnbyrn.github.io/951-KLR-PAGES/klr_memory_map.html
+  const boostRaw = ramDisplay[0x52];
+  const boostKpa = boostRaw != null ? boostRaw / 1.2 : null;
+  const boostPsiGauge = boostKpa != null ? +((boostKpa - 101.3) * 0.145038).toFixed(1) : null;
+
   const sig = [
     { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
     { l:'AVG DELAY',  v: `${avgDelay}μs`, col: '#44cccc' },
@@ -2129,6 +2338,8 @@ function KLRTab({ klrData, currentT }) {
     { l:'TIMER',      v: latestStatus?.timer_val != null ? `0x${h2(latestStatus.timer_val)}` : '--',
       col: C.textBright },
     { l:'IGN FIRES',  v: totalFires, col: '#ff8844' },
+    { l:'BOOST',      v: boostPsiGauge != null ? `${boostPsiGauge>=0?'+':''}${boostPsiGauge}psi` : '--',
+      col: boostPsiGauge != null && boostPsiGauge > 0 ? C.amber : '#88ccff', addr: 0x52 },
   ];
 
   const regs = latestStatus ? [
@@ -2142,16 +2353,13 @@ function KLRTab({ klrData, currentT }) {
     ['SP',  latestStatus.SP  != null ? String(latestStatus.SP)  : '--'],
   ] : [];
 
-  // Merge ram vals from status ramVals into ram display
-  const ramDisplay = { ...ram };
-  if (latestStatus?.ramVals) Object.assign(ramDisplay, latestStatus.ramVals);
-
   return (
     <div>
       {/* ── Signal metrics ─────────────────────────────────── */}
       <div style={{display:'grid', gridTemplateColumns:'repeat(8,1fr)', gap:'5px', marginBottom:'8px'}}>
         {sig.map(s => (
-          <div key={s.l} style={S.metric}>
+          <div key={s.l} style={S.metric}
+               title={s.addr != null ? `0x${s.addr.toString(16).toUpperCase().padStart(2,'0')} ${KLR_KNOWN[s.addr]?.n ?? ''} — ${KLR_KNOWN[s.addr]?.d ?? ''}` : undefined}>
             <div style={S.metricLbl}>{s.l}</div>
             <div style={{...S.metricVal, color:s.col, fontSize:'12px', margin:'2px 0'}}>{s.v}</div>
           </div>
@@ -2317,6 +2525,26 @@ function KLRChartsTab({ klrData, currentT }) {
     knock_count: s.knock_count ?? null,
   }));
 
+  // Boost / MAP pressure (ram[0x52]) — merged from periodic [DS] hex
+  // snapshots (always has it) and any explicit STATUS ram[52]= lines,
+  // sorted chronologically. ~1.2 software units = 1 kPa absolute, per
+  // https://jhnbyrn.github.io/951-KLR-PAGES/klr_memory_map.html
+  // Converted to gauge PSI (relative to ~101.3kPa atmospheric) — the
+  // conventional units for a boost gauge readout.
+  const boostData = [
+    ...(klrData.snapshots ?? [])
+      .filter(s => (effectiveT == null || s.t <= effectiveT) && s.ram?.[0x52] != null)
+      .map(s => ({ t: s.t, raw: s.ram[0x52] })),
+    ...klrStatus
+      .filter(s => (effectiveT == null || s.t <= effectiveT) && s.ramVals?.[0x52] != null)
+      .map(s => ({ t: s.t, raw: s.ramVals[0x52] })),
+  ]
+    .sort((a, b) => a.t - b.t)
+    .map(d => {
+      const kpa = d.raw / 1.2;
+      return { t: d.t, boost_psi: +((kpa - 101.3) * 0.145038).toFixed(1) };
+    });
+
   // Real knock pulses, from [PHASE] lines rather than the coarse 100ms
   // STATUS sample — STATUS is too infrequent to ever catch the ~6-8ms-wide
   // knock window, so its "knock" bit always reads high/idle. The [PHASE]
@@ -2436,7 +2664,7 @@ function KLRChartsTab({ klrData, currentT }) {
       col:   '#ffcc44',
       unit:  'hex',
       dom:   [0, 255],
-      note:  'Raw throttle position ADC reading — 0xDB..0xFF=closed/idle, 0x77..0xD0=WOT, 0x00..0x76=part load',
+      note:  'Raw throttle position ADC reading — increases as throttle opens (0x77≈idle, higher=more open; see BOOST CONTROL tab for %)',
       empty: tpsData.every(d => d.tps_raw == null),
     },
     {
@@ -2448,6 +2676,16 @@ function KLRChartsTab({ klrData, currentT }) {
       dom:   [0, 'auto'],
       note:  'Scaled throttle angle',
       empty: tpsData.every(d => d.tps_deg == null),
+    },
+    {
+      title: 'BOOST (psi)',
+      data:  boostData,
+      key:   'boost_psi',
+      col:   '#88ccff',
+      unit:  'psi',
+      dom:   ['auto', 'auto'],
+      note:  'ram[0x52] — gauge boost pressure (0psi ≈ atmospheric, no boost)',
+      empty: boostData.length === 0,
     },
   ];
 
@@ -2782,38 +3020,6 @@ function KLRIRAMTab({ klrData, klrIdx }) {
   for (const [a, {v, t}] of Object.entries(ramFromStatus))
     if (t >= snapT) ramMerged[a] = v;
 
-  // KLR 8048 RAM labels — from bin/memory_byte_map.hex (30 labelled locations)
-  const KNOWN = {
-    0x00: 'interrupt_info',
-    0x02: 'num_timer_ints',
-    0x03: 'mult_in',
-    0x05: 'dec_interrupts',
-    0x06: 'speed_count',
-    0x07: 'timer_period',
-    0x24: 'eng_speed',
-    0x2E: 'battery_volts',
-    0x2F: 'knock_raw',
-    0x31: 'knock_test_out',
-    0x33: 'blink',
-    0x38: 'scratch',
-    0x39: 'TPS Voltage',
-    0x3A: 'throttle_degrees',
-    0x3B: 'TPS_Scaling',
-    0x3C: 'throttle_raw_sensor',
-    0x3E: 'WOT_angle',
-    0x43: 'TPS_Cycling',
-    0x44: 'rpm_range',
-    0x45: 'mac_knock_thresh',
-    0x46: 'integrated_knock_val',
-    0x47: 'knock_det_threshold',
-    0x48: 'throttle_position_threshold',
-    0x4A: 'cycle_count_before_restore',
-    0x4B: 'max_timing_retart',
-    0x4C: 'boost_threshold',
-    0x4E: 'cycle_count_before_pulling_boost',
-    0x50: 'cycle_count_before_restore_boost',
-    0x7A: 'knk_thres',
-  };
 
   const hasHex    = Object.keys(ram).length > 0;
   const hasStatus = Object.keys(ramFromStatus).length > 0;
@@ -2868,12 +3074,12 @@ function KLRIRAMTab({ klrData, klrIdx }) {
             {Array.from({length:128},(_,addr)=>{
               const val   = ramMerged[addr];
               const hasV  = val !== undefined;
-              const known = KNOWN[addr];
+              const known = KLR_KNOWN[addr];
               const fromSnap   = ram[addr] !== undefined;
               const fromStat   = ramFromStatus[addr] !== undefined && !fromSnap;
               return (
                 <div key={addr}
-                  title={`ram[${addr}] (0x${addr.toString(16).toUpperCase().padStart(2,'0')}) = ${hasV?'0x'+h2(val)+' ('+val+'d)':'unknown'}${known?' — '+known:''}${fromStat?' [STATUS]':fromSnap?' [HEX]':''}`}
+                  title={`ram[${addr}] (0x${addr.toString(16).toUpperCase().padStart(2,'0')}) = ${hasV?'0x'+h2(val)+' ('+val+'d)':'unknown'}${known?' — '+known.n+(known.d?': '+known.d:''):''}${fromStat?' [STATUS]':fromSnap?' [HEX]':''}`}
                   style={{
                     background: hasV ? (known?'#001a22':'#0a150a') : '#060d06',
                     border:`1px solid ${hasV?(known?'#44aaff':'#1a3a1a'):C.border}`,
@@ -2885,7 +3091,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
                   </div>
                   {known && (
                     <div style={{color:'#44aaff',fontSize:'6px',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
-                      {known}
+                      {known.n}
                     </div>
                   )}
                 </div>
@@ -2902,14 +3108,14 @@ function KLRIRAMTab({ klrData, klrIdx }) {
             <span style={{color:C.textDim,fontSize:'8px'}}>blue border = has value · dim = no data yet</span>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:'4px',marginTop:'6px'}}>
-            {Object.entries(KNOWN).map(([addr,name])=>{
+            {Object.entries(KLR_KNOWN).map(([addr,info])=>{
               const a   = +addr;
               const val = ramMerged[a];
               const hasV = val !== undefined;
               const addrHex = a.toString(16).toUpperCase().padStart(2,'0');
               return (
                 <div key={addr}
-                  title={`ram[${a}] (0x${addrHex}h) = ${hasV?'0x'+h2(val)+' ('+val+'d)':'no data'}`}
+                  title={`ram[${a}] (0x${addrHex}h) = ${hasV?'0x'+h2(val)+' ('+val+'d)':'no data'}${info.d?' — '+info.d:''}`}
                   style={{
                     background: hasV ? '#001a22' : '#060d06',
                     border:`1px solid ${hasV?'#44aaff':C.border}`,
@@ -2917,7 +3123,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
                   }}>
                   <div style={{color:'#44aaff',fontSize:'9px',fontWeight:'bold',
                                overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
-                    {name}
+                    {info.n}
                   </div>
                   <div style={{color:C.textDim,fontSize:'7px',marginBottom:'3px'}}>
                     0x{addrHex}h
@@ -2941,7 +3147,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
       {sub==='adc' && (
         <div style={S.panel}>
           <div style={S.panelTitle}>KLR ADC INPUTS &nbsp;
-            <span style={{color:C.textDim,fontSize:'8px'}}>from KLR: [DS] snapshot</span>
+            <span style={{color:C.textDim,fontSize:'8px'}}>from KLR: [DS] snapshot + [STATUS] (whichever is freshest)</span>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))',gap:'4px',marginTop:'6px'}}>
             {[
@@ -2951,12 +3157,13 @@ function KLRIRAMTab({ klrData, klrIdx }) {
               { ch:7,  label:'TPS Scaling',  addr:0x3B, desc:'3B scaling numerator' },
               { ch:7,  label:'TPS Cycling',  addr:0x43, desc:'Cycling valve map input (43h)' },
               { ch:7,  label:'WOT Threshold',addr:0x3E, desc:'WOT angle threshold (3E)' },
-              { ch:0,  label:'Knock ch0',    addr:null,  desc:'knock sensor 1 amplified' },
-              { ch:1,  label:'Knock ch1',    addr:null,  desc:'knock sensor 2 amplified' },
+              { ch:0,  label:'Knock ch0',    addr:0x2F,  desc:'knock sensor 1 amplified' },
+              { ch:1,  label:'Battery',      addr:0x2E,  desc:'battery voltage (ch1)' },
               { ch:5,  label:'Comparator',   addr:null,  desc:'LM2902 comparator output (ch5)' },
               { ch:null, label:'Knock Integrator', addr:0x46, desc:'Integrated knock value (46h)' },
+              { ch:4,  label:'Boost',        addr:0x52, desc:'MAP pressure — post +10-offset ADC read (52h), see BOOST CONTROL tab' },
             ].map(({ch, label, addr, desc}) => {
-              const val = addr !== null ? ram[addr] : undefined;
+              const val = addr !== null ? ramMerged[addr] : undefined;
               const hasV = val !== undefined && val !== null;
               return (
                 <div key={label} title={desc}
@@ -2991,7 +3198,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
               {Object.entries(ramFromStatus).sort((a,b)=>+a[0]-+b[0]).map(([addr,{v,t}])=>(
                 <div key={addr} style={{display:'flex',justifyContent:'space-between',
                                         padding:'3px 6px',borderBottom:`1px solid ${C.border}`,fontSize:'10px'}}>
-                  <span style={{color:C.textDim}}>ram[{addr}] {KNOWN[+addr]?<span style={{color:'#44aaff',fontSize:'9px'}}>{KNOWN[+addr]}</span>:''}</span>
+                  <span style={{color:C.textDim}} title={KLR_KNOWN[+addr]?.d}>ram[{addr}] {KLR_KNOWN[+addr]?<span style={{color:'#44aaff',fontSize:'9px'}}>{KLR_KNOWN[+addr].n}</span>:''}</span>
                   <span style={{color:C.textBright}}>0x{h2(v)} ({v}d) <span style={{color:C.textDim,fontSize:'9px'}}>@{t}ms</span></span>
                 </div>
               ))}
@@ -3124,6 +3331,175 @@ function KLRDiagTab({ klrData, klrIdx }) {
             Current code {codeStr(code)} (0x{h2(code)}) does not match a known DTC — treated as no fault present.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── BoostControlTab ─────────────────────────────────────────────
+function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
+  const phases   = klrData?.phases ?? [];
+  const currentT = phases[klrIdx]?.t ?? Infinity;
+
+  // RPM comes from the DME side, but this tab's timeline is driven by the
+  // KLR cursor (klrIdx) — NOT the DME tab's own independently-scrubbed
+  // position. Find the DME snapshot actually time-aligned with currentT
+  // (nearest at-or-before), rather than reading whatever the DME scrubber
+  // happens to be sitting on, which could be at a completely different
+  // point in the log and produce a stale/mismatched RPM reading.
+  const dmeSnaps = dmeSnapshots ?? [];
+  const dmeSnapAtCurrentT = dmeSnaps.filter(s => s.t <= currentT).slice(-1)[0] ?? { iram:{} };
+  const rpm = snapRpm(dmeSnapAtCurrentT);
+
+  // Nearest [KLR] hex snapshot at or before currentT
+  const snaps = klrData?.snapshots ?? [];
+  const snap  = snaps.filter(s => s.t <= currentT).slice(-1)[0];
+  const ram   = snap?.ram ?? {};
+
+  // Accumulate ALL ramVals from STATUS lines up to currentT, tracking the
+  // time each address was last updated (same merge pattern as KLR Diag).
+  const allStatus = (klrData?.status ?? []).filter(s => s.t <= currentT);
+  const ramFromStatus = {}; // addr -> { v, t }
+  for (const s of allStatus)
+    if (s.ramVals)
+      for (const [a, v] of Object.entries(s.ramVals))
+        ramFromStatus[a] = { v, t: s.t };
+
+  const snapT = snap?.t ?? -Infinity;
+  const ramMerged = { ...ram };
+  for (const [a, {v, t}] of Object.entries(ramFromStatus))
+    if (t >= snapT) ramMerged[a] = v;
+
+  // Latest tps_raw and CV_PWM directly from STATUS lines (not in ramVals —
+  // these are named fields the parser pulls out separately).
+  const latestStatus = allStatus.length ? allStatus[allStatus.length - 1] : null;
+
+  const logLoaded = (klrData?.snapshots?.length > 0) || (klrData?.status?.length > 0);
+  if (!logLoaded) return (
+    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
+      No KLR data loaded — use <strong style={{color:C.textBright}}>PARSE &amp; LOAD</strong> with a combined log containing{' '}
+      <code style={{color:'#44aaff'}}>[KLR]</code> or <code style={{color:'#44aaff'}}>KLR: [STATUS]</code> lines
+    </div>
+  );
+
+  // ── Boost Input — actual observed reading, ram[0x52] ──────────
+  const boostInputRaw = ramMerged[0x52];
+  const boostInputKpa = boostInputRaw != null ? boostInputRaw / 1.2 : null;
+  const boostInputPsi = boostInputKpa != null ? (boostInputKpa - 101.3) * 0.145038 : null;
+
+  // ── Throttle % — from ram[0x43], the same source klr_tb.v's boost
+  // model now reads directly (see ram43ToThrottlePct above) ─────────
+  const ram43 = ramMerged[0x43];
+  const throttlePct = ram43ToThrottlePct(ram43);
+
+  // ── Boost Target — bilinear MAP-table lookup at current RPM/throttle ──
+  // Gated at 400rpm (matching var_interrupt_gen_cl.v's own CL_RPM_MIN stall
+  // threshold) — below that the engine is cranking/stalled, and a turbo
+  // boost target is physically meaningless (no exhaust flow to spool
+  // anything), so showing a computed table value there would be misleading
+  // rather than informative.
+  // Gate 1: cranking/stall (see above). Gate 2: the real boost table only
+  // has documented data from 57.0% to 87.1% throttle — outside that band,
+  // any "target" would just be silently clamped to the table's nearest
+  // edge row, which isn't a real measured target and is misleading to
+  // present as one (this is exactly what was producing bogus low-throttle
+  // "targets" like 3.7psi at near-idle, clamped to the 57% row instead of
+  // reflecting anything real about closed-throttle boost behavior).
+  // ── Boost Target — prefer the real value klr_tb.v itself computed
+  // (logged directly as boost_target=XX in newer logs) over the
+  // dashboard's own independent MAP-table reconstruction. The
+  // reconstruction uses tps_raw-derived throttle%, which is NOT the same
+  // signal path klr_tb.v actually uses internally (tps_wiper) — this was
+  // producing real, confirmed mismatches (e.g. input 0xC2 vs "target"
+  // 0xB0 on a plain, unmodified BOOST test, where they should be
+  // identical). The logged value is authoritative; only fall back to the
+  // approximation for older logs that don't have this field yet.
+  const boostTargetLogged = latestStatus?.boost_target;
+  const usingLoggedTarget = boostTargetLogged !== undefined;
+
+  const rpmValidForBoost = rpm != null && rpm >= 400;
+  const throttleInTableRange = throttlePct != null && throttlePct >= BOOST_THR_BP[0] && throttlePct <= BOOST_THR_BP[BOOST_THR_BP.length-1];
+  const boostTargetApprox = (rpmValidForBoost && throttleInTableRange) ? boostTargetSoftwareUnits(rpm, throttlePct) : null;
+
+  const boostTargetRaw = usingLoggedTarget ? boostTargetLogged : boostTargetApprox;
+  const boostTargetKpa = boostTargetRaw != null ? boostTargetRaw / 1.2 : null;
+  const boostTargetPsi = boostTargetKpa != null ? (boostTargetKpa - 101.3) * 0.145038 : null;
+
+  const boostDeltaPsi = (boostInputPsi != null && boostTargetPsi != null)
+    ? boostInputPsi - boostTargetPsi : null;
+
+  // ── CV Duty Cycle — ram[0x41] (CV_DUTY_FINAL) ──────────────────
+  const cvDutyRaw = ramMerged[0x41];
+  const cvDutyPct = cvDutyRaw != null ? (cvDutyRaw / 255) * 100 : null;
+
+  const fmt1 = v => v != null ? v.toFixed(1) : '--';
+
+  const Card = ({ label, value, unit, sub, col }) => (
+    <div style={S.metric}>
+      <div style={S.metricLbl}>{label}</div>
+      <div style={{...S.metricVal, color: col || C.textBright, fontSize:'20px', margin:'4px 0'}}>
+        {value}{unit && <span style={{fontSize:'12px', color:C.textDim, marginLeft:'4px'}}>{unit}</span>}
+      </div>
+      {sub && <div style={S.metricUnit}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'10px'}}>
+        <Card label="BOOST INPUT" value={fmt1(boostInputPsi)} unit="psi"
+              sub={boostInputRaw != null ? `ram[0x52]=0x${h2(boostInputRaw)} (${fmt1(boostInputKpa)}kPa)` : 'no data'}
+              col={boostInputPsi != null && boostInputPsi > 0 ? C.amber : '#88ccff'} />
+        <Card label="BOOST TARGET" value={fmt1(boostTargetPsi)} unit="psi"
+              sub={boostTargetRaw != null
+                   ? `hex=0x${h2(Math.round(boostTargetRaw))}${usingLoggedTarget ? ' [sim]' : ` [approx @ ${rpm}rpm, ${fmt1(throttlePct)}%]`}`
+                   : rpm != null && rpm < 400 ? `cranking (${rpm}rpm) — not meaningful below 400rpm`
+                   : throttlePct != null && !throttleInTableRange ? `${fmt1(throttlePct)}% throttle outside table's 57-87% range`
+                   : 'no RPM/throttle'}
+              col="#66ffaa" />
+        <Card label="CV DUTY CYCLE" value={fmt1(cvDutyPct)} unit="%"
+              sub={cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}
+              col="#cc66ff" />
+        <Card label="THROTTLE %" value={fmt1(throttlePct)} unit="%"
+              sub={ram43 != null ? `ram[0x43]=0x${h2(ram43)}` : 'no data'}
+              col="#ffcc44" />
+      </div>
+
+      <div style={S.panel}>
+        <div style={S.panelTitle}>BOOST INPUT vs TARGET</div>
+        <div style={{display:'flex', alignItems:'center', gap:'28px', padding:'10px 8px', flexWrap:'wrap'}}>
+          <div>
+            <div style={{fontSize:'10px', color:C.textDim, letterSpacing:'0.1em'}}>INPUT (ram[0x52])</div>
+            <div style={{fontSize:'20px', fontWeight:'bold', color:'#88ccff'}}>
+              {boostInputRaw != null ? `0x${h2(boostInputRaw)}` : '--'}
+              <span style={{fontSize:'11px', color:C.textDim, marginLeft:'6px'}}>
+                {boostInputRaw != null ? `${boostInputRaw}d` : ''}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:'10px', color:C.textDim, letterSpacing:'0.1em'}}>TARGET (MAP table)</div>
+            <div style={{fontSize:'20px', fontWeight:'bold', color:'#66ffaa'}}>
+              {boostTargetRaw != null ? `0x${h2(Math.round(boostTargetRaw))}` : '--'}
+              <span style={{fontSize:'11px', color:C.textDim, marginLeft:'6px'}}>
+                {boostTargetRaw != null ? `${Math.round(boostTargetRaw)}d` : ''}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:'10px', color:C.textDim, letterSpacing:'0.1em'}}>DEVIATION</div>
+            <div style={{fontSize:'22px', fontWeight:'bold',
+                         color: boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red}}>
+              {boostDeltaPsi != null ? `${boostDeltaPsi >= 0 ? '+' : ''}${fmt1(boostDeltaPsi)}psi` : '--'}
+            </div>
+          </div>
+          <div style={{fontSize:'10px', color:C.textDim, maxWidth:'420px'}}>
+            Input minus target. Large/persistent deviation typically means either a test-injected
+            boost fault (see KLR Diag) or a genuine closed-loop wastegate control error the CV duty
+            cycle hasn't yet corrected for. Hex values above are both in the same "software units"
+            scale as the KLR memory map docs (post +10-offset) — directly comparable byte-for-byte.
+          </div>
+        </div>
       </div>
     </div>
   );
