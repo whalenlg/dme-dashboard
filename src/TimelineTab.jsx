@@ -34,16 +34,19 @@ const ADCS = [
   {addr:0x17, name:'FUEL QUAL', col:'#ff44aa'},
 ];
 
-// KLR [PHASE] lines that fire every revolution — plotted as data, not markers
-const KLR_NOISY_PHASE = /IGN_OUT|Knock pulse|KNOCK_LOGIC|KNOCK_OUT/i;
+// KLR [PHASE] lines that fire every revolution (or, for FULL_LOAD, repeat
+// every ~40 ms in real logs) — plotted as data, not markers
+const KLR_NOISY_PHASE = /IGN_OUT|Knock pulse|KNOCK_LOGIC|KNOCK_OUT|FULL_LOAD/i;
 const MAX_MARKERS = 400;
 const MAX_IGN_POINTS = 3000;
 const DEFAULT_PICKS = [{src:'dme', addr:0x7D}, {src:'klr', addr:0x33}];
 const PICKS_KEY = 'dme951.timeline.picks';
 
 // Same conversion as prpmToRpm in App.jsx: prpm=21 @ 840 RPM → K=17640,
-// only valid once EngineSync (iram[21h].0) is set and prpm >= 3.
-const fwRpm = ir => ((ir[0x21] ?? 0) & 1) && ir[0x37] >= 3 ? Math.round(17640 / ir[0x37]) : null;
+// valid for prpm >= 3 once EngineSync (iram[21h].0) has been seen. The bit
+// is latched here because real logs show it clearing again after sync
+// (21h goes 0x13 → 0x70 at ~1.6 s in warm_idle_5s) while prpm stays valid.
+const fwRpm = (ir, synced) => synced && ir[0x37] >= 3 ? Math.round(17640 / ir[0x37]) : null;
 const hx = v => v.toString(16).toUpperCase().padStart(2, '0');
 const pickKey = p => `${p.src}_${hx(p.addr)}${p.bit != null ? `_${p.bit}` : ''}`;
 const pickLabel = p => `${p.src === 'dme' ? 'DME iram' : 'KLR ram'}[${hx(p.addr)}h]${p.bit != null ? `.${p.bit}` : ''}`;
@@ -110,10 +113,12 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
     for (const d of chartData) Object.assign(row(d.t), {
       rpm: d.rpm, fuel: d.fuel, isv: d.isv, dwell: d.dwell, timingAdv: d.timingAdv,
     });
+    let synced = false;
     for (const s of dmeSnapshots) {
       if (s.raw?.includes('[STATUS]')) continue;   // DS only: full iram, raw ADC bytes
       const r = row(s.t), ir = s.iram;
-      r.fwRpm = fwRpm(ir);
+      if ((ir[0x21] ?? 0) & 1) synced = true;
+      r.fwRpm = fwRpm(ir, synced);
       for (const a of ADCS) r[`adc_${hx(a.addr)}`] = ir[a.addr] ?? null;
       for (const p of picks) if (p.src === 'dme') {
         const v = ir[p.addr];
