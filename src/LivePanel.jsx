@@ -39,7 +39,7 @@ const inp = { background:'#030803', border:`1px solid ${C.border}`, color:C.text
 const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadius:'2px', padding:'8px 10px' };
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
-export default function LivePanel({ live, url, follow, setFollow, onClose }) {
+export default function LivePanel({ live, url, follow, setFollow, engine, onClose }) {
   const { connected, sim, inputs, bps, trace, error, asm, send, restart } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
@@ -79,6 +79,7 @@ export default function LivePanel({ live, url, follow, setFollow, onClose }) {
         </label>
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
+      <EngineRow engine={engine} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -90,6 +91,30 @@ export default function LivePanel({ live, url, follow, setFollow, onClose }) {
         <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr}
                   running={running} stopKey={stopKey} send={send} />
       </div>
+    </div>
+  );
+}
+
+// ── Engine values from the latest DS snapshot ────────────────────
+function EngineRow({ engine }) {
+  const cells = [
+    ['RPM',        engine?.rpm ?? '--'],
+    ['FUEL PULSE', engine == null ? '--' : engine.fuelCut ? 'CUT' : `${engine.fuelMs.toFixed(3)} ms`],
+    ['AFM RAW',    `0x${hx(engine?.afm)}`],
+    ['TPS',        `0x${hx(engine?.tps)}`],
+    ['LOAD',       `0x${hx(engine?.load)}`],
+  ];
+  return (
+    <div style={{...panel,display:'flex',gap:'22px',alignItems:'baseline',flexWrap:'wrap'}}>
+      {cells.map(([k, v]) => (
+        <span key={k} style={{display:'inline-flex',gap:'6px',alignItems:'baseline'}}>
+          <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{k}</span>
+          <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{v}</span>
+        </span>
+      ))}
+      <span style={{color:'#779977',fontSize:'9px',marginLeft:'auto'}}>
+        {engine?.t != null ? `latest snapshot ${engine.t} ms` : 'no snapshot yet'}
+      </span>
     </div>
   );
 }

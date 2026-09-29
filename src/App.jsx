@@ -658,6 +658,16 @@ const snapRpm   = snap =>
   ?? ((snap.iram?.[0x21] & 1)                           // prpm fallback only after EngineSync
       ? prpmToRpm(snap.iram?.[0x37] ?? 0)
       : null);
+// Latest-snapshot engine values for the LIVE banner (same sources as the Overview tiles)
+const liveEngine = snap => snap && {
+  t:        snap.t,
+  rpm:      snapRpm(snap),
+  fuelMs:   fuelMs(snap),
+  fuelCut:  ((snap.iram?.[0x23] ?? 0) >> 5) & 1,
+  afm:      snap._prevAfm ?? snap.iram?.[0x10],
+  tps:      snap._prevTps ?? snap.iram?.[0x16],
+  load:     snap.iram?.[0x49],
+};
 // NTC linearised byte → °C  (anchored: 0x00=−116°C, 0xE0=80°C → slope=0.875)
 // NTC linearised byte → °C.
 // Returns null if below −40°C — that means the firmware's linearisation
@@ -1105,6 +1115,7 @@ export default function DMEDashboard() {
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
+                               engine={liveEngine(data.snapshots[data.snapshots.length - 1])}
                                onClose={()=>setLiveUrl(null)} />}
         {tab==='overview' && <OverviewTab snap={snap} iram={iram}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
