@@ -13,18 +13,19 @@ const C = {
 };
 const hx = (v, n = 2) => v == null || isNaN(v) ? '--' : v.toString(16).toUpperCase().padStart(n, '0');
 
-// Raw byte inputs; hints come from the testbench's own nominal/fault values
+// Raw byte inputs; hints come from the testbench's own nominal/fault values.
+// The sim runs the closed-loop engine model: TPS is the driver's throttle,
+// and RPM, AFM and boost are computed unless unticked from auto (pinned).
 const INPUTS = [
-  { k:'rpm',       label:'RPM target',   max:7000, step:10, dec:true },
-  { k:'rpm_slew',  label:'RPM slew /ms', min:1, max:200, dec:true },
-  { k:'afm',       label:'AFM (ch0)',    auto:true, hint:'auto follows RPM' },
-  { k:'tps',       label:'KLR TPS',      auto:true, hint:'auto follows AFM' },
+  { k:'tps',       label:'THROTTLE (TPS)', hint:'28 idle · 72 ≈3000 rpm · D8 ≈6400 rpm' },
+  { k:'rpm',       label:'RPM',          auto:true, max:7000, step:10, dec:true, pin:840, hint:'auto = torque-balance model' },
+  { k:'afm',       label:'AFM (ch0)',    auto:true, pin:0x28, hint:'auto follows throttle ~250 ms later' },
+  { k:'boost',     label:'BOOST MAP (KLR ch4)', auto:true, pin:0x85, hint:'auto = MAP-table model · 85 nominal' },
+  { k:'fuel_qual', label:'FQS (ch7)',    hint:'00 best · A7 worst · FF open; also scales model fuel energy' },
   { k:'coolant',   label:'COOLANT (ch3)', hint:'20 warm · 68 ≈5°C · 00 shorted' },
   { k:'airtemp',   label:'AIR TEMP (ch2)', hint:'50 nominal · 00 shorted' },
   { k:'battery',   label:'BATTERY (ch1)', hint:'V ≈ raw×0.0526+2.13', volts:true },
   { k:'altitude',  label:'ALTITUDE (ch4)', hint:'F8 sea level · 00 high' },
-  { k:'fuel_qual', label:'FQS (ch7)',    hint:'00 best · A7 worst · FF open' },
-  { k:'boost',     label:'BOOST MAP (KLR ch4)', hint:'85 nominal' },
 ];
 
 const btn = (on, col = C.textBright) => ({
@@ -118,7 +119,7 @@ function InputsPanel({ inputs, send }) {
               {d.auto && (
                 <label style={{color:C.blue,cursor:'pointer',marginLeft:'auto'}}>
                   <input type="checkbox" checked={isAuto}
-                         onChange={e => send(`set ${d.k} ${e.target.checked ? 'auto' : (val ?? 0x28)}`)} /> auto
+                         onChange={e => send(`set ${d.k} ${e.target.checked ? 'auto' : (val ?? d.pin)}`)} /> auto
                 </label>
               )}
             </div>
