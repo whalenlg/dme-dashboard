@@ -21,7 +21,8 @@ const INPUTS = [
   { k:'rpm',       label:'RPM',          auto:true, max:7000, step:10, dec:true, pin:840, hint:'auto = torque-balance model' },
   { k:'afm',       label:'AFM (ch0)',    auto:true, pin:0x28, hint:'auto follows throttle ~250 ms later' },
   { k:'boost',     label:'BOOST MAP (KLR ch4)', auto:true, pin:0x85, hint:'auto = MAP-table model · 85 nominal' },
-  { k:'fuel_qual', label:'FQS (ch7)',    hint:'00 best · A7 worst · FF open; also scales model fuel energy' },
+  { k:'fuel_qual', label:'FQS (ch7)',    positions:[0x00,0x3B,0x5A,0x75,0x81,0x91,0x9C,0xA7],
+    hint:'switch position (ch7 raw 00…A7, as the FQS0..7 tests); also scales model fuel energy' },
   { k:'coolant',   label:'COOLANT (ch3)', hint:'20 warm · 68 ≈5°C · 00 shorted' },
   { k:'airtemp',   label:'AIR TEMP (ch2)', hint:'50 nominal · 00 shorted' },
   { k:'battery',   label:'BATTERY (ch1)', hint:'V ≈ raw×0.0526+2.13', volts:true },
@@ -115,6 +116,7 @@ function InputsPanel({ inputs, send }) {
                 {isAuto && draft[d.k] == null ? 'AUTO'
                   : val == null ? '--'
                   : d.dec ? val
+                  : d.positions ? (d.positions.includes(val) ? `pos ${d.positions.indexOf(val)} (0x${hx(val)})` : `0x${hx(val)}`)
                   : `0x${hx(val)} (${val})${d.volts ? ` ${(val * 0.05263 + 2.132).toFixed(1)}V` : ''}`}
               </span>
               {d.auto && (
@@ -124,12 +126,28 @@ function InputsPanel({ inputs, send }) {
                 </label>
               )}
             </div>
+            {d.positions ? (
+              <div style={{display:'flex',gap:'2px',margin:'2px 0'}}>
+                {d.positions.map((raw, i) => (
+                  <label key={i} title={`0x${hx(raw)}`}
+                         style={{flex:1,textAlign:'center',fontSize:'10px',cursor:'pointer',padding:'2px 0',
+                                 border:`1px solid ${cur === raw ? C.textBright : C.border}`,
+                                 background: cur === raw ? '#0d4a0d' : C.panelBg2,
+                                 color: cur === raw ? C.textBright : C.textDim}}>
+                    <input type="radio" name={d.k} checked={cur === raw} disabled={cur == null}
+                           onChange={() => commit(d.k, raw)} style={{display:'none'}} />
+                    {i}
+                  </label>
+                ))}
+              </div>
+            ) : (
             <input type="range" min={min} max={max} step={d.step ?? 1} value={val ?? min}
                    disabled={cur == null}
                    onChange={e => setDraft(dr => ({ ...dr, [d.k]: +e.target.value }))}
                    onPointerUp={e => commit(d.k, e.target.value)}
                    onKeyUp={e => commit(d.k, e.target.value)}
                    style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto ? 0.5 : 1}} />
+            )}
             {d.hint && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
           </div>
         );
