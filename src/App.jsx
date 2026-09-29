@@ -3,6 +3,8 @@ import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine
 } from "recharts";
+import LivePanel from "./LivePanel.jsx";
+import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  GROUP COLOUR MAP
@@ -754,6 +756,27 @@ export default function DMEDashboard() {
   const [playSpeed, setPlaySpeed] = useState(100); // ms between steps
   const logRef = useRef();
 
+  // Live simulator (dme_klr/live/bridge.mjs). ?live or ?live=<bridge url>
+  // connects on load; otherwise the LIVE button does.
+  const [liveUrl, setLiveUrl] = useState(() => {
+    const v = new URLSearchParams(window.location.search).get('live');
+    return v === null ? null : (v && v !== '1' ? v : DEFAULT_LIVE_URL);
+  });
+  const [follow, setFollow] = useState(true);
+  const followRef = useRef(follow);
+  useEffect(() => { followRef.current = follow; }, [follow]);
+  const handleLiveText = useCallback(text => {
+    const dme = parseLog(text);
+    setData(dme);
+    setKlrData(parseKLRLog(text));
+    if (followRef.current) {
+      setIdx(Math.max(0, dme.snapshots.length - 1));
+      setKlrIdx(0);
+    }
+  }, []);
+  const live = useLiveSim(liveUrl, handleLiveText);
+  useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
+
   // Playback engine
   useEffect(() => {
     if (!playing || data.snapshots.length === 0) return;
@@ -1037,6 +1060,11 @@ export default function DMEDashboard() {
               {data.snapshots.length} STATUS · {data.phases.length} PHASE
             </span>
           )}
+          <button style={S.btn(liveUrl ? 'p' : 's')}
+            onClick={()=>setLiveUrl(u => u ? null : DEFAULT_LIVE_URL)}
+            title="Drive the simulator through dme_klr/live/bridge.mjs">
+            {liveUrl ? '● LIVE' : 'LIVE ○'}
+          </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
         </div>
       </div>
@@ -1076,6 +1104,8 @@ export default function DMEDashboard() {
 
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
+        {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
+                               onClose={()=>setLiveUrl(null)} />}
         {tab==='overview' && <OverviewTab snap={snap} iram={iram}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
           minmax={minmax} clEverActive={clEverActive} />}
