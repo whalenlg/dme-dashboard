@@ -26,7 +26,8 @@ const INPUTS = [
   { k:'coolant',   label:'COOLANT (ch3)', hint:'20 warm · 68 ≈5°C · 00 shorted' },
   { k:'airtemp',   label:'AIR TEMP (ch2)', hint:'50 nominal · 00 shorted' },
   { k:'battery',   label:'BATTERY (ch1)', hint:'V ≈ raw×0.0526+2.13', volts:true },
-  { k:'altitude',  label:'ALTITUDE (ch4)', hint:'F8 sea level · 00 high' },
+  { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00], names:['under 1000 m','over 1000 m'],
+    hint:'ch4 raw F8 / 00, as TEST_IDLE_HIGH_ALT' },
 ];
 
 const btn = (on, col = C.textBright) => ({
@@ -116,7 +117,9 @@ function InputsPanel({ inputs, send }) {
                 {isAuto && draft[d.k] == null ? 'AUTO'
                   : val == null ? '--'
                   : d.dec ? val
-                  : d.positions ? (d.positions.includes(val) ? `pos ${d.positions.indexOf(val)} (0x${hx(val)})` : `0x${hx(val)}`)
+                  : d.positions ? (d.positions.includes(val)
+                      ? `${d.names ? d.names[d.positions.indexOf(val)] : `pos ${d.positions.indexOf(val)}`} (0x${hx(val)})`
+                      : `0x${hx(val)}`)
                   : `0x${hx(val)} (${val})${d.volts ? ` ${(val * 0.05263 + 2.132).toFixed(1)}V` : ''}`}
               </span>
               {d.auto && (
@@ -136,7 +139,7 @@ function InputsPanel({ inputs, send }) {
                                  color: cur === raw ? C.textBright : C.textDim}}>
                     <input type="radio" name={d.k} checked={cur === raw} disabled={cur == null}
                            onChange={() => commit(d.k, raw)} style={{display:'none'}} />
-                    {i}
+                    {d.names ? d.names[i] : i}
                   </label>
                 ))}
               </div>
