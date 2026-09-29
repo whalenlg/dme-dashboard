@@ -42,6 +42,7 @@ export default function LivePanel({ live, url, follow, setFollow, onClose }) {
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
+  const stopKey = running ? null : `${sim.tNs}:${sim.reason}`;
 
   // Ask for the instruction trace whenever the sim stops
   useEffect(() => {
@@ -83,9 +84,9 @@ export default function LivePanel({ live, url, follow, setFollow, onClose }) {
       <div style={{display:'grid',gridTemplateColumns:'minmax(280px,1fr) minmax(300px,1.2fr) minmax(300px,1.2fr)',gap:'8px'}}>
         <InputsPanel inputs={inputs} send={send} />
         <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme}
-                  running={running} send={send} />
+                  running={running} stopKey={stopKey} send={send} />
         <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr}
-                  running={running} send={send} />
+                  running={running} stopKey={stopKey} send={send} />
       </div>
     </div>
   );
@@ -148,9 +149,13 @@ function rowFor(listing, a) {
   return lo;
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, trace, running, send }) {
+function AsmPanel({ cpu, name, listing, pc, bps, trace, running, stopKey, send }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
+
+  // Every stop (breakpoint, step, pause) drops a GO pin so the view shows the PC
+  const [lastStop, setLastStop] = useState(stopKey);
+  if (stopKey !== lastStop) { setLastStop(stopKey); setCenter(null); setJump(''); }
 
   const routine = useMemo(() => {
     if (pc == null || !listing.length) return '';
@@ -185,6 +190,29 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, running, send }) {
           {center != null && <button style={btn(false)} onClick={() => { setCenter(null); setJump(''); }}>PC</button>}
         </span>
       </div>
+      {bps.length > 0 && (
+        <div style={{display:'flex',gap:'4px',flexWrap:'wrap',alignItems:'center',fontSize:'10px',marginBottom:'4px'}}>
+          <span style={{color:C.textDim}}>BREAKPOINTS</span>
+          {bps.map(a => {
+            const lbl = listing.length ? listing[rowFor(listing, a)] : null;
+            return (
+              <span key={a} style={{display:'inline-flex',border:`1px solid ${C.border}`,background:C.panelBg2}}>
+                <span style={{color:C.red,padding:'1px 5px',cursor:'pointer'}} title="Show in listing"
+                      onClick={() => { setCenter(a); setJump(hx(a, 4)); }}>
+                  ● {hx(a, cpu === 'dme' ? 4 : 3)}{lbl?.a === a && lbl.label ? ` ${lbl.label}` : ''}
+                </span>
+                <span style={{color:C.textDim,padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`}}
+                      title="Remove breakpoint" onClick={() => send(`bp del ${cpu} ${hx(a, 4)}`)}>✕</span>
+              </span>
+            );
+          })}
+          {bps.length > 1 && (
+            <button style={btn(false, C.red)} onClick={() => send(bps.map(a => `bp del ${cpu} ${hx(a, 4)}`).join('\n'))}>
+              CLEAR ALL
+            </button>
+          )}
+        </div>
+      )}
       {!listing.length ? (
         <div style={{color:C.textDim,fontSize:'10px',padding:'20px'}}>No disassembly from the bridge.</div>
       ) : (
