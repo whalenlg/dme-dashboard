@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 // ─────────────────────────────────────────────────────────────────
 //  LIVE PANEL — controls for a running simulator (see liveSim.js)
@@ -39,7 +40,7 @@ const inp = { background:'#030803', border:`1px solid ${C.border}`, color:C.text
 const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadius:'2px', padding:'8px 10px' };
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
-export default function LivePanel({ live, url, follow, setFollow, engine, onClose }) {
+export default function LivePanel({ live, url, follow, setFollow, series, onClose }) {
   const { connected, sim, inputs, bps, trace, error, asm, send, restart } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
@@ -79,7 +80,7 @@ export default function LivePanel({ live, url, follow, setFollow, engine, onClos
         </label>
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
-      <EngineRow engine={engine} />
+      <EngineRow series={series} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -95,26 +96,61 @@ export default function LivePanel({ live, url, follow, setFollow, engine, onClos
   );
 }
 
-// ── Engine values from the latest DS snapshot ────────────────────
-function EngineRow({ engine }) {
-  const cells = [
-    ['RPM',        engine?.rpm ?? '--'],
-    ['FUEL PULSE', engine == null ? '--' : engine.fuelCut ? 'CUT' : `${engine.fuelMs.toFixed(3)} ms`],
-    ['AFM RAW',    `0x${hx(engine?.afm)}`],
-    ['TPS',        `0x${hx(engine?.tps)}`],
-    ['LOAD',       `0x${hx(engine?.load)}`],
-  ];
+// ── Engine values: latest DS snapshot, plus a chart per metric ──
+const hexv = v => v == null ? '--' : `0x${hx(v)}`;
+const METRICS = [
+  { k:'rpm',    label:'RPM',          col:'#66ffaa', fmt: v => v ?? '--' },
+  { k:'fuel',   label:'FUEL PULSE',   col:'#aaffaa', unit:'ms', fmt: (v, p) => p?.fuelCut ? 'CUT' : v == null ? '--' : `${v.toFixed(3)} ms` },
+  { k:'afm',    label:'AFM RAW',      col:'#44cccc', hex:true, fmt: hexv },
+  { k:'tps',    label:'TPS',          col:'#88ccff', hex:true, fmt: hexv },
+  { k:'load',   label:'LOAD',         col:'#ffcc66', hex:true, fmt: hexv },
+  { k:'boost',  label:'BOOST',        col:'#ffaa00', unit:'psi', fmt: v => v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} psi` },
+  { k:'dmeIgn', label:'DME IGN PULSE', col:'#ff8888', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
+  { k:'klrIgn', label:'KLR IGN PULSE', col:'#ff66cc', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
+];
+
+function EngineRow({ series }) {
+  const [charts, setCharts] = useState(true);
+  const last = series[series.length - 1];
+  const t0 = series[0]?.t ?? 0, t1 = last?.t ?? 1;
   return (
-    <div style={{...panel,display:'flex',gap:'22px',alignItems:'baseline',flexWrap:'wrap'}}>
-      {cells.map(([k, v]) => (
-        <span key={k} style={{display:'inline-flex',gap:'6px',alignItems:'baseline'}}>
-          <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{k}</span>
-          <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{v}</span>
+    <div style={{...panel,display:'flex',flexDirection:'column',gap:'6px'}}>
+      <div style={{display:'flex',gap:'20px',alignItems:'baseline',flexWrap:'wrap'}}>
+        {METRICS.map(m => (
+          <span key={m.k} style={{display:'inline-flex',gap:'6px',alignItems:'baseline'}}>
+            <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{m.label}</span>
+            <span style={{color:m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
+          </span>
+        ))}
+        <span style={{marginLeft:'auto',display:'inline-flex',gap:'8px',alignItems:'baseline'}}>
+          <span style={{color:'#779977',fontSize:'9px'}}>
+            {last ? `latest snapshot ${last.t} ms` : 'no snapshot yet'}
+          </span>
+          <button style={btn(charts)} onClick={() => setCharts(c => !c)}>CHARTS</button>
         </span>
-      ))}
-      <span style={{color:'#779977',fontSize:'9px',marginLeft:'auto'}}>
-        {engine?.t != null ? `latest snapshot ${engine.t} ms` : 'no snapshot yet'}
-      </span>
+      </div>
+      {charts && series.length > 1 && (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(330px,1fr))',gap:'6px'}}>
+          {METRICS.map(m => (
+            <div key={m.k} style={{background:C.panelBg2,border:`1px solid ${C.border}`,padding:'3px 4px 0'}}>
+              <div style={{color:m.col,fontSize:'9px',letterSpacing:'0.12em'}}>{m.label}{m.unit ? ` (${m.unit})` : ''}</div>
+              <ResponsiveContainer width="100%" height={86}>
+                <LineChart data={series} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine">
+                  <CartesianGrid stroke="#123312" strokeDasharray="2 4" />
+                  <XAxis dataKey="t" type="number" domain={[t0, t1]} tick={{fill:'#557755',fontSize:8}}
+                         tickFormatter={v => `${(v / 1000).toFixed(1)}s`} />
+                  <YAxis width={40} domain={['auto','auto']} tick={{fill:'#557755',fontSize:8}}
+                         tickFormatter={v => m.hex ? hx(v) : v} />
+                  <Tooltip contentStyle={{background:'#030803',border:`1px solid ${C.border}`,fontSize:10}}
+                           labelFormatter={v => `${v} ms`} formatter={v => [m.fmt(v), m.label]} />
+                  <Line dataKey={m.k} stroke={m.col} dot={false} isAnimationActive={false}
+                        type={m.step ? 'stepAfter' : 'linear'} connectNulls />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

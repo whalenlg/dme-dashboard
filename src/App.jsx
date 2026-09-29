@@ -659,14 +659,33 @@ const snapRpm   = snap =>
       ? prpmToRpm(snap.iram?.[0x37] ?? 0)
       : null);
 // Latest-snapshot engine values for the LIVE banner (same sources as the Overview tiles)
-const liveEngine = snap => snap && {
-  t:        snap.t,
-  rpm:      snapRpm(snap),
-  fuelMs:   fuelMs(snap),
-  fuelCut:  ((snap.iram?.[0x23] ?? 0) >> 5) & 1,
-  afm:      snap._prevAfm ?? snap.iram?.[0x10],
-  tps:      snap._prevTps ?? snap.iram?.[0x16],
-  load:     snap.iram?.[0x49],
+// Engine values for the LIVE banner and its charts, one point per DME DS
+// snapshot, from the same sources as the Overview tiles. Boost is KLR
+// ram[0x52] / 1.2 = kPa absolute shown as gauge PSI (as on Boost Control);
+// ignition widths are the latest SIM: [IGN] pulse at or before each point.
+const liveSeries = (dmeSnaps, klrSnaps, ign) => {
+  const out = [];
+  let k = -1, di = -1, ki = -1;
+  for (const s of dmeSnaps) {
+    if (s.t == null) continue;
+    while (k + 1 < klrSnaps.length && klrSnaps[k + 1].t <= s.t) k++;
+    while (di + 1 < ign.dme.length && ign.dme[di + 1].t <= s.t) di++;
+    while (ki + 1 < ign.klr.length && ign.klr[ki + 1].t <= s.t) ki++;
+    const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
+    out.push({
+      t:       s.t,
+      rpm:     snapRpm(s),
+      fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
+      fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
+      afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,
+      tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
+      load:    s.iram?.[0x49] ?? null,
+      boost:   b != null ? +((b / 1.2 - 101.3) * 0.145038).toFixed(2) : null,
+      dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
+      klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
+    });
+  }
+  return out;
 };
 // NTC linearised byte → °C  (anchored: 0x00=−116°C, 0xE0=80°C → slope=0.875)
 // NTC linearised byte → °C.
@@ -785,6 +804,8 @@ export default function DMEDashboard() {
     }
   }, []);
   const live = useLiveSim(liveUrl, handleLiveText);
+  const liveSer = useMemo(() => liveUrl ? liveSeries(data.snapshots, klrData.snapshots, live.ign) : [],
+                          [liveUrl, data.snapshots, klrData.snapshots, live.ign]);
   useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
 
   // Playback engine
@@ -1115,7 +1136,7 @@ export default function DMEDashboard() {
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
-                               engine={liveEngine(data.snapshots[data.snapshots.length - 1])}
+                               series={liveSer}
                                onClose={()=>setLiveUrl(null)} />}
         {tab==='overview' && <OverviewTab snap={snap} iram={iram}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}

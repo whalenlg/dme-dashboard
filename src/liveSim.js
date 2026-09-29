@@ -7,6 +7,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    POST <url>/cmd      sim commands, one per line
 //    POST <url>/restart  fresh sim at t=0
 //    GET  <url>/asm/dme|klr  disassembly listing
+//  SIM: [IGN] lines (per-spark ignition pulse widths) collect into ign.
 //  DME:/KLR: lines are collected into a log text that the existing
 //  parseLog/parseKLRLog read; "SIM: [...]" lines update the debugger state.
 // ─────────────────────────────────────────────────────────────────
@@ -31,15 +32,19 @@ export function useLiveSim(url, onLogText) {
   const [trace, setTrace]   = useState({ dme: [], klr: [] });
   const [error, setError]   = useState(null);
   const [asm, setAsm]       = useState({ dme: [], klr: [] });
+  const [ign, setIgn]       = useState({ dme: [], klr: [] });   // [{t: ms, w: pulse ms}]
 
   const lines = useRef([]);
   const dirty = useRef(false);
+  const ignRef = useRef({ dme: [], klr: [] });
+  const ignDirty = useRef(false);
   const onLogRef = useRef(onLogText);
   useEffect(() => { onLogRef.current = onLogText; }, [onLogText]);
 
   useEffect(() => {
     if (!url) return;
     lines.current = [];
+    ignRef.current = { dme: [], klr: [] };
     const es = new EventSource(`${url}/events`);
     es.onopen = () => { setConnected(true); setError(null); };
     es.onerror = () => { setConnected(false); setError(`Can't reach the simulator bridge at ${url}`); };
@@ -49,8 +54,14 @@ export function useLiveSim(url, onLogText) {
       const tag = line.match(/^SIM: \[(\w+)\]\s*(.*)$/);
       if (!tag) return;
       const [, kind, rest] = tag;
-      if (kind === 'RESTART') {
+      if (kind === 'IGN') {
+        const [cpu] = rest.split(' ');
+        const kv = parseKV(rest);
+        ignRef.current[cpu]?.push({ t: +kv.t_ns / 1e6, w: +kv.width_ns / 1e6 });
+        ignDirty.current = true;
+      } else if (kind === 'RESTART') {
         lines.current = []; dirty.current = true;
+        ignRef.current = { dme: [], klr: [] }; ignDirty.current = true;
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setError(null);
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
@@ -77,6 +88,10 @@ export function useLiveSim(url, onLogText) {
       }
     };
     const flush = setInterval(() => {
+      if (ignDirty.current) {
+        ignDirty.current = false;
+        setIgn({ dme: [...ignRef.current.dme], klr: [...ignRef.current.klr] });
+      }
       if (!dirty.current) return;
       dirty.current = false;
       onLogRef.current?.(lines.current.join('\n'));
@@ -99,5 +114,5 @@ export function useLiveSim(url, onLogText) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, send, restart };
+  return { connected, sim, inputs, bps, trace, error, asm, ign, send, restart };
 }
