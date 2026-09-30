@@ -681,7 +681,12 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       // 4A:4B + 5 x iram[54h] dead time, 2 us/count). fuel: the firmware's
       // commanded FUEL_PULSE word 4A:4B alone, which is not clamped to a rev.
       inj:     ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null,
+      // No injector edge for 2+ revs while fuelling means P1.0 is held low
+      injHeld: ii >= 0 && snapRpm(s) > 0 && !(((s.iram?.[0x23] ?? 0) >> 5) & 1) &&
+               s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s),
       injDuty: ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
+      injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
+               fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
       fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
       fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
       afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,

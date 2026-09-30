@@ -81,6 +81,14 @@ export default function LivePanel({ live, url, follow, setFollow, series, onClos
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
       <EngineRow series={series} />
+      {live.warnings.length > 0 && (
+        <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto'}}>
+          <div style={{...title,color:C.red,marginBottom:'3px'}}>SIM WARNINGS ({live.warnings.length})</div>
+          {live.warnings.slice().reverse().map((w, i) => (
+            <div key={i} style={{color: i === 0 ? C.red : '#aa6666',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{w}</div>
+          ))}
+        </div>
+      )}
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -100,9 +108,11 @@ export default function LivePanel({ live, url, follow, setFollow, series, onClos
 const hexv = v => v == null ? '--' : `0x${hx(v)}`;
 const METRICS = [
   { k:'rpm',    label:'RPM',          col:'#66ffaa', fmt: v => v ?? '--' },
-  { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true,
-    fmt: (v, p) => p?.fuelCut ? 'CUT' : v == null ? '--' : `${v.toFixed(2)} ms${p?.injDuty != null ? ` ${p.injDuty}%` : ''}` },
-  { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', fmt: v => v == null ? '--' : `${v.toFixed(3)} ms` },
+  { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true, warn: p => p?.injHeld || p?.injDuty >= 100,
+    fmt: (v, p) => p?.fuelCut ? 'CUT' : p?.injHeld ? 'HELD OPEN' : v == null ? '--'
+      : `${v.toFixed(2)} ms${p?.injDuty >= 100 ? ' HELD OPEN' : p?.injDuty != null ? ` ${p.injDuty}%` : ''}` },
+  { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', warn: p => p?.injOver,
+    fmt: (v, p) => v == null ? '--' : `${v.toFixed(3)} ms${p?.injOver ? ' > 1 REV' : ''}` },
   { k:'afm',    label:'AFM RAW',      col:'#44cccc', hex:true, fmt: hexv },
   { k:'tps',    label:'TPS',          col:'#88ccff', hex:true, fmt: hexv },
   { k:'load',   label:'LOAD',         col:'#ffcc66', hex:true, fmt: hexv },
@@ -121,7 +131,7 @@ function EngineRow({ series }) {
         {METRICS.map(m => (
           <span key={m.k} style={{display:'inline-flex',gap:'6px',alignItems:'baseline'}}>
             <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{m.label}</span>
-            <span style={{color:m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
+            <span style={{color: m.warn?.(last) ? C.red : m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
           </span>
         ))}
         <span style={{marginLeft:'auto',display:'inline-flex',gap:'8px',alignItems:'baseline'}}>

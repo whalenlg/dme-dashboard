@@ -33,6 +33,7 @@ export function useLiveSim(url, onLogText) {
   const [trace, setTrace]   = useState({ dme: [], klr: [] });
   const [error, setError]   = useState(null);
   const [asm, setAsm]       = useState({ dme: [], klr: [] });
+  const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
 
   const lines = useRef([]);
@@ -51,7 +52,11 @@ export function useLiveSim(url, onLogText) {
     es.onerror = () => { setConnected(false); setError(`Can't reach the simulator bridge at ${url}`); };
     es.onmessage = ev => {
       const line = ev.data;
-      if (!line.startsWith('SIM: ')) { lines.current.push(line); dirty.current = true; return; }
+      if (!line.startsWith('SIM: ')) {
+        lines.current.push(line); dirty.current = true;
+        if (/^(DME|KLR): \[WARN\]/.test(line)) setWarnings(w => [...w.slice(-49), line]);
+        return;
+      }
       const tag = line.match(/^SIM: \[(\w+)\]\s*(.*)$/);
       if (!tag) return;
       const [, kind, rest] = tag;
@@ -63,6 +68,7 @@ export function useLiveSim(url, onLogText) {
       } else if (kind === 'RESTART') {
         lines.current = []; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
+        setWarnings([]);
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setError(null);
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
@@ -115,5 +121,5 @@ export function useLiveSim(url, onLogText) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, ign, send, restart };
+  return { connected, sim, inputs, bps, trace, error, asm, ign, warnings, send, restart };
 }
