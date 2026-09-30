@@ -662,19 +662,26 @@ const snapRpm   = snap =>
 // Engine values for the LIVE banner and its charts, one point per DME DS
 // snapshot, from the same sources as the Overview tiles. Boost is KLR
 // ram[0x52] / 1.2 = kPa absolute shown as gauge PSI (as on Boost Control);
-// ignition widths are the latest SIM: [IGN] pulse at or before each point.
+// ignition and injector widths are the latest SIM: [IGN] / [INJ] pulse at
+// or before each point.
 const liveSeries = (dmeSnaps, klrSnaps, ign) => {
   const out = [];
-  let k = -1, di = -1, ki = -1;
+  let k = -1, di = -1, ki = -1, ii = -1;
   for (const s of dmeSnaps) {
     if (s.t == null) continue;
     while (k + 1 < klrSnaps.length && klrSnaps[k + 1].t <= s.t) k++;
     while (di + 1 < ign.dme.length && ign.dme[di + 1].t <= s.t) di++;
     while (ki + 1 < ign.klr.length && ign.klr[ki + 1].t <= s.t) ki++;
+    while (ii + 1 < ign.inj.length && ign.inj[ii + 1].t <= s.t) ii++;
     const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
     out.push({
       t:       s.t,
       rpm:     snapRpm(s),
+      // inj: measured injector low time on P1.0 (fire_inj loads T0 with
+      // 4A:4B + 5 x iram[54h] dead time, 2 us/count). fuel: the firmware's
+      // commanded FUEL_PULSE word 4A:4B alone, which is not clamped to a rev.
+      inj:     ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null,
+      injDuty: ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
       fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
       fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
       afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,

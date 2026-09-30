@@ -100,7 +100,9 @@ export default function LivePanel({ live, url, follow, setFollow, series, onClos
 const hexv = v => v == null ? '--' : `0x${hx(v)}`;
 const METRICS = [
   { k:'rpm',    label:'RPM',          col:'#66ffaa', fmt: v => v ?? '--' },
-  { k:'fuel',   label:'FUEL PULSE',   col:'#aaffaa', unit:'ms', fmt: (v, p) => p?.fuelCut ? 'CUT' : v == null ? '--' : `${v.toFixed(3)} ms` },
+  { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true,
+    fmt: (v, p) => p?.fuelCut ? 'CUT' : v == null ? '--' : `${v.toFixed(2)} ms${p?.injDuty != null ? ` ${p.injDuty}%` : ''}` },
+  { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', fmt: v => v == null ? '--' : `${v.toFixed(3)} ms` },
   { k:'afm',    label:'AFM RAW',      col:'#44cccc', hex:true, fmt: hexv },
   { k:'tps',    label:'TPS',          col:'#88ccff', hex:true, fmt: hexv },
   { k:'load',   label:'LOAD',         col:'#ffcc66', hex:true, fmt: hexv },
