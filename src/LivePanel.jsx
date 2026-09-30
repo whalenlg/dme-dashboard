@@ -108,7 +108,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, onClos
 const hexv = v => v == null ? '--' : `0x${hx(v)}`;
 const METRICS = [
   { k:'rpm',    label:'RPM',          col:'#66ffaa', fmt: v => v ?? '--' },
-  { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true, warn: p => p?.injHeld || p?.injDuty >= 100,
+  { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true, overlay:'injHeldMs', warn: p => p?.injHeld || p?.injDuty >= 100,
     fmt: (v, p) => p?.fuelCut ? 'CUT' : p?.injHeld ? 'HELD OPEN' : v == null ? '--'
       : `${v.toFixed(2)} ms${p?.injDuty >= 100 ? ' HELD OPEN' : p?.injDuty != null ? ` ${p.injDuty}%` : ''}` },
   { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', warn: p => p?.injOver,
@@ -157,6 +157,10 @@ function EngineRow({ series }) {
                            labelFormatter={v => `${v} ms`} formatter={v => [m.fmt(v), m.label]} />
                   <Line dataKey={m.k} stroke={m.col} dot={false} isAnimationActive={false}
                         type={m.step ? 'stepAfter' : 'linear'} connectNulls />
+                  {m.overlay && (
+                    <Line dataKey={m.overlay} stroke={C.red} strokeWidth={2} dot={false} isAnimationActive={false}
+                          type={m.step ? 'stepAfter' : 'linear'} legendType="none" tooltipType="none" />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             </div>

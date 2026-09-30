@@ -674,17 +674,21 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
     while (ki + 1 < ign.klr.length && ign.klr[ki + 1].t <= s.t) ki++;
     while (ii + 1 < ign.inj.length && ign.inj[ii + 1].t <= s.t) ii++;
     const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
+    const cut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
+    // No injector edge for 2+ revs while fuelling means P1.0 is held low
+    const held = ii >= 0 && snapRpm(s) > 0 && !cut && s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s);
+    // Held open: the injector is on for the whole rev, so plot a full rev
+    const injMs = held ? +(60000 / snapRpm(s)).toFixed(3) : ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null;
     out.push({
       t:       s.t,
       rpm:     snapRpm(s),
       // inj: measured injector low time on P1.0 (fire_inj loads T0 with
       // 4A:4B + 5 x iram[54h] dead time, 2 us/count). fuel: the firmware's
       // commanded FUEL_PULSE word 4A:4B alone, which is not clamped to a rev.
-      inj:     ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null,
-      // No injector edge for 2+ revs while fuelling means P1.0 is held low
-      injHeld: ii >= 0 && snapRpm(s) > 0 && !(((s.iram?.[0x23] ?? 0) >> 5) & 1) &&
-               s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s),
-      injDuty: ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
+      inj:     injMs,
+      injHeld: held,
+      injHeldMs: held ? injMs : null,
+      injDuty: held ? 100 : ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
       injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
                fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
       fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
