@@ -3,6 +3,8 @@ import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine
 } from "recharts";
+import LivePanel from "./LivePanel.jsx";
+import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  GROUP COLOUR MAP
@@ -656,6 +658,72 @@ const snapRpm   = snap =>
   ?? ((snap.iram?.[0x21] & 1)                           // prpm fallback only after EngineSync
       ? prpmToRpm(snap.iram?.[0x37] ?? 0)
       : null);
+// Latest-snapshot engine values for the LIVE banner (same sources as the Overview tiles)
+// Engine values for the LIVE banner and its charts, one point per DME DS
+// snapshot, from the same sources as the Overview tiles. Boost is KLR
+// ram[0x52] / 1.2 = kPa absolute shown as gauge PSI (as on Boost Control);
+// ignition and injector widths are the latest SIM: [IGN] / [INJ] pulse at
+// or before each point.
+// Live DME registers at snapshot time t (the last [REGS] line at or before t)
+const regsAt = (hist, t) => {
+  if (!hist?.length || t == null) return null;
+  for (let i = hist.length - 1; i >= 0; i--) if (hist[i].t_ms <= t) return hist[i];
+  return null;
+};
+
+// 8051 timer tile: TH:TL, run bit, mode, overflow flag
+const timerTile = (n, regs) => {
+  if (!regs) return { lbl:`TIMER ${n}`, val:'--', unit:'live sim only', col:C.textDim, mmk:null, addr:null };
+  const th = regs[`th${n}`], tl = regs[`tl${n}`];
+  const run  = (regs.tcon >> (n ? 6 : 4)) & 1, tf = (regs.tcon >> (n ? 7 : 5)) & 1;
+  const mode = (regs.tmod >> (n ? 4 : 0)) & 3;
+  const cnt  = (th << 8) | tl;
+  // Mode 1 (16-bit), 2 us per count: time left until overflow
+  const left = mode === 1 ? ` ${((0x10000 - cnt) * 0.002).toFixed(2)}ms left` : '';
+  return { lbl:`TIMER ${n} (TH${n}:TL${n})`, val:`${h2(th)}${h2(tl)}`,
+           unit:`${run ? 'RUN' : 'STOP'} M${mode} TF${n}=${tf}${run ? left : ''}`,
+           col: run ? '#ccaaff' : C.textDim, mmk:null, addr:null };
+};
+
+const liveSeries = (dmeSnaps, klrSnaps, ign) => {
+  const out = [];
+  let k = -1, di = -1, ki = -1, ii = -1;
+  for (const s of dmeSnaps) {
+    if (s.t == null) continue;
+    while (k + 1 < klrSnaps.length && klrSnaps[k + 1].t <= s.t) k++;
+    while (di + 1 < ign.dme.length && ign.dme[di + 1].t <= s.t) di++;
+    while (ki + 1 < ign.klr.length && ign.klr[ki + 1].t <= s.t) ki++;
+    while (ii + 1 < ign.inj.length && ign.inj[ii + 1].t <= s.t) ii++;
+    const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
+    const cut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
+    // No injector edge for 2+ revs while fuelling means P1.0 is held low
+    const held = ii >= 0 && snapRpm(s) > 0 && !cut && s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s);
+    // Held open: the injector is on for the whole rev, so plot a full rev
+    const injMs = held ? +(60000 / snapRpm(s)).toFixed(3) : ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null;
+    out.push({
+      t:       s.t,
+      rpm:     snapRpm(s),
+      // inj: measured injector low time on P1.0 (fire_inj loads T0 with
+      // 4A:4B + 5 x iram[54h] dead time, 2 us/count). fuel: the firmware's
+      // commanded FUEL_PULSE word 4A:4B alone, which is not clamped to a rev.
+      inj:     injMs,
+      injHeld: held,
+      injHeldMs: held ? injMs : null,
+      injDuty: held ? 100 : ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
+      injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
+               fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
+      fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
+      fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
+      afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,
+      tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
+      load:    s.iram?.[0x49] ?? null,
+      boost:   b != null ? +((b / 1.2 - 101.3) * 0.145038).toFixed(2) : null,
+      dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
+      klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
+    });
+  }
+  return out;
+};
 // NTC linearised byte → °C  (anchored: 0x00=−116°C, 0xE0=80°C → slope=0.875)
 // NTC linearised byte → °C.
 // Returns null if below −40°C — that means the firmware's linearisation
@@ -753,6 +821,35 @@ export default function DMEDashboard() {
   const [playing, setPlaying]   = useState(false);
   const [playSpeed, setPlaySpeed] = useState(100); // ms between steps
   const logRef = useRef();
+
+  // Live simulator (dme_klr/live/bridge.mjs). ?live or ?live=<bridge url>
+  // connects on load; otherwise the LIVE button does.
+  const [liveUrl, setLiveUrl] = useState(() => {
+    const v = new URLSearchParams(window.location.search).get('live');
+    return v === null ? null : (v && v !== '1' ? v : DEFAULT_LIVE_URL);
+  });
+  const [follow, setFollow] = useState(true);
+  const followRef = useRef(follow);
+  useEffect(() => { followRef.current = follow; }, [follow]);
+  const handleLiveText = useCallback(text => {
+    const dme = parseLog(text);
+    setData(dme);
+    setKlrData(parseKLRLog(text));
+    if (followRef.current) {
+      setIdx(Math.max(0, dme.snapshots.length - 1));
+      setKlrIdx(0);
+    }
+  }, []);
+  const live = useLiveSim(liveUrl, handleLiveText);
+  const liveSer = useMemo(() => liveUrl ? liveSeries(data.snapshots, klrData.snapshots, live.ign) : [],
+                          [liveUrl, data.snapshots, klrData.snapshots, live.ign]);
+  // Latest RAM images for the asm panes' operand-value column
+  const liveMem = useMemo(() => {
+    if (!liveUrl) return null;
+    const d = data.snapshots.findLast(s => s.t != null), k = klrData.snapshots.at(-1);
+    return { dme: d?.iram ?? null, klr: k?.ram ?? null };
+  }, [liveUrl, data.snapshots, klrData.snapshots]);
+  useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
 
   // Playback engine
   useEffect(() => {
@@ -1037,6 +1134,11 @@ export default function DMEDashboard() {
               {data.snapshots.length} STATUS · {data.phases.length} PHASE
             </span>
           )}
+          <button style={S.btn(liveUrl ? 'p' : 's')}
+            onClick={()=>setLiveUrl(u => u ? null : DEFAULT_LIVE_URL)}
+            title="Drive the simulator through dme_klr/live/bridge.mjs">
+            {liveUrl ? '● LIVE' : 'LIVE ○'}
+          </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
         </div>
       </div>
@@ -1076,7 +1178,10 @@ export default function DMEDashboard() {
 
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
-        {tab==='overview' && <OverviewTab snap={snap} iram={iram}
+        {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
+                               series={liveSer} mem={liveMem}
+                               onClose={()=>setLiveUrl(null)} />}
+        {tab==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
           minmax={minmax} clEverActive={clEverActive} />}
         {tab==='ports'    && <PortsTab snap={snap}
@@ -1236,7 +1341,7 @@ export default function DMEDashboard() {
 // ─────────────────────────────────────────────────────────────────
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
-function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
+function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
@@ -1350,6 +1455,8 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
+    timerTile(0, cpuRegs),
+    timerTile(1, cpuRegs),
   ];
 
 
