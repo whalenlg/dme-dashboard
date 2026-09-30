@@ -265,7 +265,20 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
     return '';
   }, [pc, listing]);
 
+  // Disabled breakpoints are removed from the sim but stay listed here
+  const [disabled, setDisabled] = useState([]);
   const bpSet = useMemo(() => new Set(bps), [bps]);
+  const offSet = useMemo(() => new Set(disabled.filter(a => !bpSet.has(a))), [disabled, bpSet]);
+  const allBps = useMemo(() => [...new Set([...bps, ...offSet])].sort((x, y) => x - y), [bps, offSet]);
+  const bpCmd = (op, a) => `bp ${op} ${cpu} ${hx(a, 4)}`;
+  const setEnabled = (a, on) => {
+    send(bpCmd(on ? 'add' : 'del', a));
+    setDisabled(d => on ? d.filter(x => x !== a) : [...d.filter(x => x !== a), a]);
+  };
+  const removeBp = a => {
+    if (bpSet.has(a)) send(bpCmd('del', a));
+    setDisabled(d => d.filter(x => x !== a));
+  };
   const recent = useMemo(() => new Set(trace.slice(-16)), [trace]);
   const c = rowFor(listing, center ?? pc);
   const rows = listing.slice(Math.max(0, c - WINDOW), c + WINDOW);
@@ -292,24 +305,28 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
           {center != null && <button style={btn(false)} onClick={() => { setCenter(null); setJump(''); }}>PC</button>}
         </span>
       </div>
-      {bps.length > 0 && (
+      {allBps.length > 0 && (
         <div style={{display:'flex',gap:'4px',flexWrap:'wrap',alignItems:'center',fontSize:'10px',marginBottom:'4px'}}>
           <span style={{color:C.textDim}}>BREAKPOINTS</span>
-          {bps.map(a => {
+          {allBps.map(a => {
             const lbl = listing.length ? listing[rowFor(listing, a)] : null;
+            const on = bpSet.has(a);
             return (
-              <span key={a} style={{display:'inline-flex',border:`1px solid ${C.border}`,background:C.panelBg2}}>
-                <span style={{color:C.red,padding:'1px 5px',cursor:'pointer'}} title="Show in listing"
+              <span key={a} style={{display:'inline-flex',alignItems:'center',border:`1px solid ${C.border}`,background:C.panelBg2}}>
+                <input type="checkbox" checked={on} title={on ? 'Disable breakpoint' : 'Enable breakpoint'}
+                       onChange={e => setEnabled(a, e.target.checked)}
+                       style={{margin:'0 2px 0 4px',accentColor:C.red,cursor:'pointer'}} />
+                <span style={{color: on ? C.red : C.textDim,padding:'1px 5px 1px 2px',cursor:'pointer'}} title="Show in listing"
                       onClick={() => { setCenter(a); setJump(hx(a, 4)); }}>
-                  ● {hx(a, cpu === 'dme' ? 4 : 3)}{lbl?.a === a && lbl.label ? ` ${lbl.label}` : ''}
+                  {on ? '●' : '○'} {hx(a, cpu === 'dme' ? 4 : 3)}{lbl?.a === a && lbl.label ? ` ${lbl.label}` : ''}
                 </span>
                 <span style={{color:C.textDim,padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`}}
-                      title="Remove breakpoint" onClick={() => send(`bp del ${cpu} ${hx(a, 4)}`)}>✕</span>
+                      title="Remove breakpoint" onClick={() => removeBp(a)}>✕</span>
               </span>
             );
           })}
-          {bps.length > 1 && (
-            <button style={btn(false, C.red)} onClick={() => send(bps.map(a => `bp del ${cpu} ${hx(a, 4)}`).join('\n'))}>
+          {allBps.length > 1 && (
+            <button style={btn(false, C.red)} onClick={() => { send(bps.map(a => bpCmd('del', a)).join('\n')); setDisabled([]); }}>
               CLEAR ALL
             </button>
           )}
@@ -321,14 +338,15 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
         <div style={{fontSize:'10.5px',lineHeight:'15px',overflowX:'auto',overflowY:'hidden',whiteSpace:'nowrap'}}>
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
+            const isOff = offSet.has(r.a);
             const val = (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, ram, regs);
             return (
               <div key={r.a} title="Click to toggle a breakpoint"
-                   onClick={() => send(`bp ${hasBp ? 'del' : 'add'} ${cpu} ${hx(r.a, 4)}`)}
+                   onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
                    style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',
                            background: isPc ? '#1a4a1a' : wasRecent ? '#0c1d0c' : 'transparent',
                            borderLeft: `2px solid ${isPc ? C.textBright : 'transparent'}`}}>
-                <span style={{width:'10px',color:C.red}}>{hasBp ? '●' : ''}</span>
+                <span style={{width:'10px',color: hasBp ? C.red : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
                 <span style={{color:C.amber,width:'14ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
