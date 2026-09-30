@@ -34,6 +34,7 @@ export function useLiveSim(url, onLogText) {
   const [error, setError]   = useState(null);
   const [asm, setAsm]       = useState({ dme: [], klr: [] });
   const [regs, setRegs]     = useState({ dme: null, klr: null });
+  const [dmeRegsHist, setDmeRegsHist] = useState([]);   // every DME [REGS] line, by t_ms
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
 
@@ -70,7 +71,7 @@ export function useLiveSim(url, onLogText) {
         lines.current = []; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
         setWarnings([]);
-        setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null });
+        setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
         const kv = parseKV(rest);
@@ -92,8 +93,9 @@ export function useLiveSim(url, onLogText) {
       } else if (kind === 'REGS') {
         const cpu = rest.split(' ')[0];
         const r = {};
-        for (const [k, v] of Object.entries(parseKV(rest))) r[k] = parseInt(v, 16);
+        for (const [k, v] of Object.entries(parseKV(rest))) r[k] = k === 't_ms' ? +v : parseInt(v, 16);
         setRegs(g => ({ ...g, [cpu]: r }));
+        if (cpu === 'dme') setDmeRegsHist(h => [...h, r]);
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
@@ -127,5 +129,5 @@ export function useLiveSim(url, onLogText) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, regs, ign, warnings, send, restart };
+  return { connected, sim, inputs, bps, trace, error, asm, regs, dmeRegsHist, ign, warnings, send, restart };
 }

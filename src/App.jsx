@@ -664,6 +664,27 @@ const snapRpm   = snap =>
 // ram[0x52] / 1.2 = kPa absolute shown as gauge PSI (as on Boost Control);
 // ignition and injector widths are the latest SIM: [IGN] / [INJ] pulse at
 // or before each point.
+// Live DME registers at snapshot time t (the last [REGS] line at or before t)
+const regsAt = (hist, t) => {
+  if (!hist?.length || t == null) return null;
+  for (let i = hist.length - 1; i >= 0; i--) if (hist[i].t_ms <= t) return hist[i];
+  return null;
+};
+
+// 8051 timer tile: TH:TL, run bit, mode, overflow flag
+const timerTile = (n, regs) => {
+  if (!regs) return { lbl:`TIMER ${n}`, val:'--', unit:'live sim only', col:C.textDim, mmk:null, addr:null };
+  const th = regs[`th${n}`], tl = regs[`tl${n}`];
+  const run  = (regs.tcon >> (n ? 6 : 4)) & 1, tf = (regs.tcon >> (n ? 7 : 5)) & 1;
+  const mode = (regs.tmod >> (n ? 4 : 0)) & 3;
+  const cnt  = (th << 8) | tl;
+  // Mode 1 (16-bit), 2 us per count: time left until overflow
+  const left = mode === 1 ? ` ${((0x10000 - cnt) * 0.002).toFixed(2)}ms left` : '';
+  return { lbl:`TIMER ${n} (TH${n}:TL${n})`, val:`${h2(th)}${h2(tl)}`,
+           unit:`${run ? 'RUN' : 'STOP'} M${mode} TF${n}=${tf}${run ? left : ''}`,
+           col: run ? '#ccaaff' : C.textDim, mmk:null, addr:null };
+};
+
 const liveSeries = (dmeSnaps, klrSnaps, ign) => {
   const out = [];
   let k = -1, di = -1, ki = -1, ii = -1;
@@ -1160,7 +1181,7 @@ export default function DMEDashboard() {
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
                                series={liveSer} mem={liveMem}
                                onClose={()=>setLiveUrl(null)} />}
-        {tab==='overview' && <OverviewTab snap={snap} iram={iram}
+        {tab==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
           minmax={minmax} clEverActive={clEverActive} />}
         {tab==='ports'    && <PortsTab snap={snap}
@@ -1320,7 +1341,7 @@ export default function DMEDashboard() {
 // ─────────────────────────────────────────────────────────────────
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
-function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
+function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
@@ -1434,6 +1455,8 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
+    timerTile(0, cpuRegs),
+    timerTile(1, cpuRegs),
   ];
 
 
