@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { dmeOperandValues, klrOperandValues } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 // ─────────────────────────────────────────────────────────────────
@@ -40,8 +41,8 @@ const inp = { background:'#030803', border:`1px solid ${C.border}`, color:C.text
 const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadius:'2px', padding:'8px 10px' };
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
-export default function LivePanel({ live, url, follow, setFollow, series, onClose }) {
-  const { connected, sim, inputs, bps, trace, error, asm, send, restart } = live;
+export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
+  const { connected, sim, inputs, bps, trace, error, asm, regs, send, restart } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
@@ -93,12 +94,15 @@ export default function LivePanel({ live, url, follow, setFollow, series, onClos
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
 
-      <div style={{display:'grid',gridTemplateColumns:'minmax(280px,1fr) minmax(300px,1.2fr) minmax(300px,1.2fr)',gap:'8px'}}>
+      <div style={{display:'grid',gridTemplateColumns:'minmax(260px,300px) 1fr',gap:'8px'}}>
         <InputsPanel inputs={inputs} send={send} />
-        <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme}
-                  running={running} stopKey={stopKey} send={send} />
-        <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr}
-                  running={running} stopKey={stopKey} send={send} />
+        {/* Side by side when there is room for full operands, else stacked */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(520px,1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
+          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme}
+                    ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send} />
+          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr}
+                    ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send} />
+        </div>
       </div>
     </div>
   );
@@ -247,7 +251,7 @@ function rowFor(listing, a) {
   return lo;
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, trace, running, stopKey, send }) {
+function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stopKey, send }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
@@ -314,21 +318,24 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, running, stopKey, send }
       {!listing.length ? (
         <div style={{color:C.textDim,fontSize:'10px',padding:'20px'}}>No disassembly from the bridge.</div>
       ) : (
-        <div style={{fontSize:'10.5px',lineHeight:'15px',overflow:'hidden',whiteSpace:'nowrap'}}>
+        <div style={{fontSize:'10.5px',lineHeight:'15px',overflowX:'auto',overflowY:'hidden',whiteSpace:'nowrap'}}>
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
+            const val = (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, ram, regs);
             return (
               <div key={r.a} title="Click to toggle a breakpoint"
                    onClick={() => send(`bp ${hasBp ? 'del' : 'add'} ${cpu} ${hx(r.a, 4)}`)}
-                   style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',
+                   style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',
                            background: isPc ? '#1a4a1a' : wasRecent ? '#0c1d0c' : 'transparent',
                            borderLeft: `2px solid ${isPc ? C.textBright : 'transparent'}`}}>
                 <span style={{width:'10px',color:C.red}}>{hasBp ? '●' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
-                <span style={{color:C.amber,width:'110px',overflow:'hidden',textOverflow:'ellipsis'}}>{r.label}</span>
-                <span style={{color:C.textBright,width:'40px'}}>{r.instr}</span>
-                <span style={{color:C.textDim,flex:1,overflow:'hidden',textOverflow:'ellipsis'}}>{r.ops}</span>
-                <span style={{color:'#557755',width:'64px'}}>{r.bytes}</span>
+                <span style={{color:C.amber,width:'14ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
+                <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
+                <span style={{color:C.textDim,width:'20ch',flex:'none'}}>{r.ops}</span>
+                <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
+                      title={val}>{val}</span>
+                <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
               </div>
             );
           })}

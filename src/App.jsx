@@ -822,6 +822,12 @@ export default function DMEDashboard() {
   const live = useLiveSim(liveUrl, handleLiveText);
   const liveSer = useMemo(() => liveUrl ? liveSeries(data.snapshots, klrData.snapshots, live.ign) : [],
                           [liveUrl, data.snapshots, klrData.snapshots, live.ign]);
+  // Latest RAM images for the asm panes' operand-value column
+  const liveMem = useMemo(() => {
+    if (!liveUrl) return null;
+    const d = data.snapshots.findLast(s => s.t != null), k = klrData.snapshots.at(-1);
+    return { dme: d?.iram ?? null, klr: k?.ram ?? null };
+  }, [liveUrl, data.snapshots, klrData.snapshots]);
   useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
 
   // Playback engine
@@ -1152,7 +1158,7 @@ export default function DMEDashboard() {
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
-                               series={liveSer}
+                               series={liveSer} mem={liveMem}
                                onClose={()=>setLiveUrl(null)} />}
         {tab==='overview' && <OverviewTab snap={snap} iram={iram}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
