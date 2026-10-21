@@ -176,3 +176,35 @@ export function decodeStack(cpu, ram, regs, listing) {
   }
   return { sp, used, frames };
 }
+
+// ── Where execution came from ───────────────────────────────
+//
+//  Walks the recent instruction trace (oldest first, last = current PC)
+//  back to the most recent non-sequential step: a jump, branch, call,
+//  return, or an interrupt entry. Returns { from, to, ins, kind, ago }
+//  (ago = instructions executed since, 0 when the transfer landed on the
+//  current PC), or null.
+
+const VECTORS = { dme: [0x03, 0x0b, 0x13, 0x1b, 0x23], klr: [0x03, 0x07] };
+
+const insLen = (listing, byAddr, a) => {
+  const r = byAddr.get(a);
+  const n = r ? r.bytes.split(/\s+/).filter(b => /^[0-9a-f]{1,2}$/i.test(b)).length : 0;
+  if (n) return n;
+  const i = listing.findIndex(x => x.a > a);
+  return i >= 0 ? listing[i].a - a : 1;
+};
+
+export function cameFrom(cpu, trace, listing) {
+  if (!trace?.length || !listing.length) return null;
+  const byAddr = new Map(listing.map(r => [r.a, r]));
+  for (let i = trace.length - 1; i > 0; i--) {
+    const prev = trace[i - 1], cur = trace[i];
+    if (cur === prev + insLen(listing, byAddr, prev)) continue;
+    const ins = byAddr.get(prev);
+    // Landing on an interrupt vector means an interrupt was taken after prev
+    const kind = VECTORS[cpu].includes(cur) ? 'interrupt' : 'jump';
+    return { from: prev, to: cur, ins, kind, ago: trace.length - 1 - i };
+  }
+  return null;
+}

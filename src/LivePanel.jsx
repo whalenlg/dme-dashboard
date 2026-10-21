@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { dmeOperandValues, klrOperandValues, decodeStack, STACK } from "./asmValues.js";
+import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 // ─────────────────────────────────────────────────────────────────
@@ -251,6 +251,23 @@ function rowFor(listing, a) {
   return lo;
 }
 
+// The last jump / branch / interrupt that led to the current PC
+function CameFrom({ cpu, trace, listing, onJump }) {
+  const cf = useMemo(() => cameFrom(cpu, trace, listing), [cpu, trace, listing]);
+  if (!cf) return null;
+  const w = cpu === 'dme' ? 4 : 3;
+  return (
+    <div style={{fontSize:'10px',marginBottom:'4px',textAlign:'left',color:C.textDim}}>
+      {cf.kind === 'interrupt' ? 'INTERRUPT AFTER ' : 'CAME FROM '}
+      <span style={{color:C.blue,cursor:'pointer'}} title="Show in listing" onClick={() => onJump(cf.from)}>
+        {hx(cf.from, w)}{cf.ins ? `  ${cf.ins.instr} ${cf.ins.ops}` : ''}
+      </span>
+      {' → '}{hx(cf.to, w)}
+      {cf.ago > 0 && <span>  ({cf.ago} instruction{cf.ago > 1 ? 's' : ''} ago)</span>}
+    </div>
+  );
+}
+
 // Stack memory dump with decoded return addresses (top of stack first)
 function StackView({ cpu, ram, regs, listing, running, onJump }) {
   const st = useMemo(() => decodeStack(cpu, ram, regs, listing), [cpu, ram, regs, listing]);
@@ -384,6 +401,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
           )}
         </div>
       )}
+      {!running && <CameFrom cpu={cpu} trace={trace} listing={listing}
+                             onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />}
       <StackView cpu={cpu} ram={ram} regs={regs} listing={listing} running={running}
                  onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />
       {!listing.length ? (
