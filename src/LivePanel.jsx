@@ -349,6 +349,11 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
     setDisabled(d => d.filter(x => x !== a));
   };
   const recent = useMemo(() => new Set(trace.slice(-16)), [trace]);
+  // Label / operand columns sized to the longest entry so nothing is cut off
+  const colW = useMemo(() => ({
+    label: Math.min(22, Math.max(10, ...listing.map(r => r.label.length))),
+    ops:   Math.max(20, ...listing.map(r => r.ops.length)),
+  }), [listing]);
   // Register context from the last time each traced address ran
   const lastCtx = useMemo(() => {
     const m = new Map();
@@ -422,16 +427,16 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
             const st = running ? null : traceState(cpu, lastCtx.get(r.a), r);
             const val = st ? (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, st.ram, st.regs) : '';
             return (
-              <div key={r.a} title="Click to toggle a breakpoint"
+              <div key={r.a} title={`${r.desc ? `${r.desc}\n\n` : ''}Click to toggle a breakpoint`}
                    onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
                    style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',
                            background: isPc ? '#1a4a1a' : wasRecent ? '#0c1d0c' : 'transparent',
                            borderLeft: `2px solid ${isPc ? C.textBright : 'transparent'}`}}>
                 <span style={{width:'10px',color: hasBp ? C.red : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
-                <span style={{color:C.amber,width:'14ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
+                <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
-                <span style={{color:C.textDim,width:'20ch',flex:'none'}}>{r.ops}</span>
+                <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
                 <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
                       title={val && `${val}  (as this instruction last ran, before it executed)`}>{val}</span>
                 <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
