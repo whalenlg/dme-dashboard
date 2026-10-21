@@ -82,3 +82,68 @@ export function klrOperandValues(row, ram, regs) {
   }
   return out.join(' ');
 }
+
+// ── Stack decode for the LIVE asm panes ─────────────────────
+//
+//  DME 8051: stack in iram 63h..79h, SP = last byte pushed. A call pushes
+//  PCL then PCH, so a return address is (ram[sp], ram[sp-1]) = hi, lo.
+//  A pair counts as a return address when the instruction just before it
+//  is an acall/lcall ('call'); otherwise, if it lands on an instruction
+//  boundary, it is probably an interrupt return ('int?'); else one data byte.
+//  KLR 8048: 8 two-byte levels at 08h..17h, SP = i8048_core sp (= PSW[2:0]).
+//  Frame i: byte 08h+2i = PC[7:0], 09h+2i = PSW[7:4] | PC[11:8].
+
+export const STACK = {
+  dme: { lo: 0x63, hi: 0x79 },
+  klr: { lo: 0x08, hi: 0x17 },
+};
+
+const routineOf = (listing, a) => {
+  if (!listing.length) return '';
+  let i = listing.findIndex(r => r.a > a);
+  if (i < 0) i = listing.length;
+  for (i--; i >= 0; i--) if (listing[i].label) return listing[i].label;
+  return '';
+};
+
+// Returns { sp, used: Set of stack addresses in use, frames: [{kind, at, ret, routine}] }, top first
+export function decodeStack(cpu, ram, regs, listing) {
+  if (!ram || !regs) return null;
+  const byAddr = new Map(listing.map(r => [r.a, r]));
+  const frames = [], used = new Set();
+  if (cpu === 'dme') {
+    const sp = regs.sp, { lo } = STACK.dme;
+    for (let a = lo; a <= sp && a < 0x80; a++) used.add(a);
+    let a = sp;
+    while (a >= lo) {
+      const hi8 = ram[a], lo8 = ram[a - 1];
+      if (a - 1 >= lo && hi8 != null && lo8 != null) {
+        const ret = (hi8 << 8) | lo8;
+        const call = byAddr.get(ret - 2)?.instr === 'acall' || byAddr.get(ret - 3)?.instr === 'lcall';
+        if (call || byAddr.has(ret)) {
+          frames.push({ kind: call ? 'call' : 'int?', at: a - 1, ret, routine: routineOf(listing, ret) });
+          a -= 2; continue;
+        }
+      }
+      frames.push({ kind: 'data', at: a, val: hi8 });
+      a -= 1;
+    }
+    return { sp, used, frames };
+  }
+  // The 3-bit SP wraps, so all 8 levels are listed from the top down.
+  const sp = regs.sp ?? (regs.psw & 7);
+  let live = true;
+  for (let k = 0; k < 8; k++) {
+    const i = (sp - 1 - k) & 7, at = STACK.klr.lo + 2 * i, b0 = ram[at], b1 = ram[at + 1];
+    if (b0 == null || b1 == null) continue;
+    const ret = ((b1 & 0x0f) << 8) | b0;
+    const call = /^call$/i.test(byAddr.get(ret - 2)?.instr ?? '');
+    // Live levels run down from the top until one that is not a call
+    // return (the top one may be an interrupt return instead)
+    const kind = !live ? 'old' : call ? 'call' : k === 0 && byAddr.has(ret) ? 'int?' : 'old';
+    if (kind === 'old') live = false;
+    else { used.add(at); used.add(at + 1); }
+    frames.push({ kind, at, ret, psw: b1 >> 4, routine: routineOf(listing, ret) });
+  }
+  return { sp, used, frames };
+}

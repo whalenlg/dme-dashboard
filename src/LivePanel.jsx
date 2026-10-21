@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { dmeOperandValues, klrOperandValues } from "./asmValues.js";
+import { dmeOperandValues, klrOperandValues, decodeStack, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 // ─────────────────────────────────────────────────────────────────
@@ -251,6 +251,52 @@ function rowFor(listing, a) {
   return lo;
 }
 
+// Stack memory dump with decoded return addresses (top of stack first)
+function StackView({ cpu, ram, regs, listing, running, onJump }) {
+  const st = useMemo(() => decodeStack(cpu, ram, regs, listing), [cpu, ram, regs, listing]);
+  if (!st) return null;
+  const { lo, hi } = STACK[cpu];
+  const w = cpu === 'dme' ? 4 : 3;
+  const addrs = [];
+  for (let a = lo; a <= hi; a++) addrs.push(a);
+  const top = cpu === 'dme' ? st.sp : lo + 2 * ((st.sp - 1) & 7) + 1;
+  const depth = cpu === 'dme' ? `${Math.max(0, st.sp - lo + 1)} bytes` : '(3-bit, wraps after 8 levels)';
+  return (
+    <div style={{fontSize:'10px',marginBottom:'6px',border:`1px solid ${C.border}`,background:C.panelBg2,
+                 padding:'3px 6px',opacity: running ? 0.6 : 1,textAlign:'left',lineHeight:'14px'}}>
+      <div style={{color:C.textDim,marginBottom:'2px'}}>
+        STACK {hx(lo)}–{hx(hi)}h  SP={cpu === 'dme' ? `${hx(st.sp)}h` : st.sp}  {depth}
+        {cpu === 'dme' && (st.sp < lo - 1 || st.sp > hi) && <span style={{color:C.red}}>  SP OUTSIDE STACK AREA</span>}
+      </div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:'0 5px',fontFamily:'inherit'}}>
+        {addrs.map(a => (
+          <span key={a} title={`${hx(a)}h`}
+                style={{color: st.used.has(a) ? C.textBright : '#446644',
+                        outline: a === top ? `1px solid ${C.amber}` : 'none'}}>
+            {hx(ram[a])}
+          </span>
+        ))}
+      </div>
+      {st.frames.length > 0 && (
+        <div style={{marginTop:'3px',display:'flex',flexDirection:'column',gap:'1px'}}>
+          {st.frames.map((f, i) => f.kind === 'data' ? (
+            <span key={i} style={{color:'#779977'}}>{hx(f.at)}h  data {hx(f.val)}</span>
+          ) : (
+            <span key={i} style={{cursor:'pointer'}} title="Show in listing" onClick={() => onJump(f.ret)}>
+              <span style={{color:'#779977'}}>{hx(f.at)}h  </span>
+              <span style={{color: f.kind === 'call' ? C.blue : f.kind === 'old' ? '#557755' : C.amber}}>
+                {f.kind === 'call' ? 'ret' : f.kind} → {hx(f.ret, w)}
+              </span>
+              {f.routine && <span style={{color: f.kind === 'old' ? '#557755' : C.amber}}>  in {f.routine}</span>}
+              {f.psw != null && <span style={{color:'#779977'}}>  psw {hx(f.psw, 1)}x</span>}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stopKey, send }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
@@ -332,6 +378,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
           )}
         </div>
       )}
+      <StackView cpu={cpu} ram={ram} regs={regs} listing={listing} running={running}
+                 onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />
       {!listing.length ? (
         <div style={{color:C.textDim,fontSize:'10px',padding:'20px'}}>No disassembly from the bridge.</div>
       ) : (
