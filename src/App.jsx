@@ -1196,7 +1196,7 @@ export default function DMEDashboard() {
             logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
             logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
         {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_charts' && <KLRChartsTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr_charts' && <KLRChartsTab klrData={klrData} dmeSnaps={data.snapshots} currentT={klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_boost'  && <BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />}
@@ -2570,7 +2570,7 @@ function KLRTab({ klrData, currentT }) {
 //
 // Each chart uses Recharts ResponsiveContainer with the same
 // green-on-black theme as the DME charts tab.
-function KLRChartsTab({ klrData, currentT }) {
+function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   // Filter to KLR-only phases (exclude DME phase entries tagged cat:'dme')
   const klrPhases = (klrData?.phases ?? []).filter(p => p.cat === 'klr');
   const klrStatus = klrData?.status ?? [];
@@ -2601,13 +2601,19 @@ function KLRChartsTab({ klrData, currentT }) {
   // firing order repeats every 4 IGN_OUT assertions).
   const IGN_IGNORE_MS   = 5000;
   const IGN_NOISE_US    = 200;
+  const snaps = (dmeSnaps ?? []).filter(s => s.t != null);
+  let si = -1;
   const ignDelayEvents = klrPhases
     .filter(p => p.asserted && p.delay_us != null &&
                  (effectiveT == null || p.t <= effectiveT))
     .map(p => {
       const raw = +p.delay_us.toFixed(2);
       const noisy = p.t < IGN_IGNORE_MS || raw > IGN_NOISE_US;
-      return { t: p.t, delay: noisy ? 0 : raw };
+      // Crank degrees at the RPM of the latest DME snapshot: deg = us * rpm * 6e-6
+      while (si + 1 < snaps.length && snaps[si + 1].t <= p.t) si++;
+      const rpm = si >= 0 ? snapRpm(snaps[si]) : null;
+      const deg = !noisy && rpm ? +(raw * rpm * 6e-6).toFixed(2) : null;
+      return { t: p.t, delay: noisy ? 0 : raw, deg, rpm };
     });
 
   const ignDelayByCyl = [1, 2, 3, 4].map(cyl =>
@@ -2822,7 +2828,9 @@ function KLRChartsTab({ klrData, currentT }) {
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
-                    <Tooltip {...tt} formatter={v=>[v, c.unit]}/>
+                    <Tooltip {...tt} formatter={(v, _n, item) => c.key === 'delay' && item?.payload?.deg != null
+                      ? [`${v} μs  =  ${item.payload.deg}° crank @ ${item.payload.rpm} rpm`, 'delay']
+                      : [v, c.unit]}/>
                     {currentT != null &&
                       <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
                     {c.segments ? (
