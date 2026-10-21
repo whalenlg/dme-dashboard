@@ -85,7 +85,7 @@ export function klrOperandValues(row, ram, regs) {
 
 // ── Stack decode for the LIVE asm panes ─────────────────────
 //
-//  DME 8051: stack in iram 63h..79h, SP = last byte pushed. A call pushes
+//  DME 8051: stack in iram 64h..79h (SP = 63h when empty), SP = last byte pushed. A call pushes
 //  PCL then PCH, so a return address is (ram[sp], ram[sp-1]) = hi, lo.
 //  A pair counts as a return address when the instruction just before it
 //  is an acall/lcall ('call'); otherwise, if it lands on an instruction
@@ -94,7 +94,7 @@ export function klrOperandValues(row, ram, regs) {
 //  Frame i: byte 08h+2i = PC[7:0], 09h+2i = PSW[7:4] | PC[11:8].
 
 export const STACK = {
-  dme: { lo: 0x63, hi: 0x79 },
+  dme: { lo: 0x64, hi: 0x79 },   // SP = 63h when empty; first push goes to 64h
   klr: { lo: 0x08, hi: 0x17 },
 };
 
