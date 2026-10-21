@@ -92,6 +92,12 @@ export function useLiveSim(url, onLogText) {
         setTrace(t => ({ ...t, [cpu]: splitHex(list) }));
       } else if (kind === 'REGS') {
         const cpu = rest.split(' ')[0];
+        if (cpu === 'dmestk') {
+          // What wrote each DME stack byte 64h..79h (see the testbench)
+          const stk = parseKV(rest).stk?.split('.') ?? null;
+          setRegs(g => ({ ...g, dme: g.dme ? { ...g.dme, stk } : g.dme }));
+          return;
+        }
         const r = {};
         for (const [k, v] of Object.entries(parseKV(rest))) r[k] = k === 't_ms' ? +v : parseInt(v, 16);
         setRegs(g => ({ ...g, [cpu]: r }));

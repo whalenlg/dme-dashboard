@@ -90,6 +90,8 @@ export function klrOperandValues(row, ram, regs) {
 //  A pair counts as a return address when the instruction just before it
 //  is an acall/lcall ('call'); otherwise, if it lands on an instruction
 //  boundary, it is probably an interrupt return ('int?'); else one data byte.
+//  When the sim sends per-byte stack tags (SIM: [REGS] dmestk) those are
+//  used instead, which tells calls, interrupts and PUSHes apart exactly.
 //  KLR 8048: 8 two-byte levels at 08h..17h, SP = i8048_core sp (= PSW[2:0]).
 //  Frame i: byte 08h+2i = PC[7:0], 09h+2i = PSW[7:4] | PC[11:8].
 
@@ -106,6 +108,32 @@ const routineOf = (listing, a) => {
   return '';
 };
 
+// DME stack walk using the sim's per-byte tags (stk[i] is for 64h+i):
+// c/C call return lo/hi, i/I interrupt return lo/hi, pXXXX pushed by the
+// PUSH at XXXX, '-' unknown.
+function dmeTagged(sp, ram, stk, listing, byAddr) {
+  const tag = a => stk[a - STACK.dme.lo] ?? '-';
+  const frames = [];
+  let a = sp;
+  while (a >= STACK.dme.lo) {
+    const t = tag(a);
+    if ((t === 'C' || t === 'I') && tag(a - 1) === t.toLowerCase()) {
+      const ret = (ram[a] << 8) | ram[a - 1];
+      frames.push({ kind: t === 'C' ? 'call' : 'int', at: a - 1, ret, routine: routineOf(listing, ret) });
+      a -= 2;
+    } else if (t[0] === 'p') {
+      const src = parseInt(t.slice(1), 16), ins = byAddr.get(src);
+      const what = ins && /^push$/i.test(ins.instr) ? ins.ops : null;
+      frames.push({ kind: 'push', at: a, val: ram[a], src, what });
+      a -= 1;
+    } else {
+      frames.push({ kind: 'data', at: a, val: ram[a] });
+      a -= 1;
+    }
+  }
+  return frames;
+}
+
 // Returns { sp, used: Set of stack addresses in use, frames: [{kind, at, ret, routine}] }, top first
 export function decodeStack(cpu, ram, regs, listing) {
   if (!ram || !regs) return null;
@@ -114,6 +142,7 @@ export function decodeStack(cpu, ram, regs, listing) {
   if (cpu === 'dme') {
     const sp = regs.sp, { lo } = STACK.dme;
     for (let a = lo; a <= sp && a < 0x80; a++) used.add(a);
+    if (regs.stk) return { sp, used, frames: dmeTagged(sp, ram, regs.stk, listing, byAddr) };
     let a = sp;
     while (a >= lo) {
       const hi8 = ram[a], lo8 = ram[a - 1];

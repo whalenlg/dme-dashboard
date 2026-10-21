@@ -281,11 +281,17 @@ function StackView({ cpu, ram, regs, listing, running, onJump }) {
         <div style={{marginTop:'3px',display:'flex',flexDirection:'column',gap:'1px'}}>
           {st.frames.map((f, i) => f.kind === 'data' ? (
             <span key={i} style={{color:'#779977'}}>{hx(f.at)}h  data {hx(f.val)}</span>
+          ) : f.kind === 'push' ? (
+            <span key={i} style={{cursor:'pointer'}} title="Show the PUSH in listing" onClick={() => onJump(f.src)}>
+              <span style={{color:'#779977'}}>{hx(f.at)}h  </span>
+              <span style={{color:C.textDim}}>push {f.what ?? '?'} = {hx(f.val)}</span>
+              <span style={{color:'#779977'}}>  at {hx(f.src, w)}</span>
+            </span>
           ) : (
             <span key={i} style={{cursor:'pointer'}} title="Show in listing" onClick={() => onJump(f.ret)}>
               <span style={{color:'#779977'}}>{hx(f.at)}h  </span>
-              <span style={{color: f.kind === 'call' ? C.blue : f.kind === 'old' ? '#557755' : C.amber}}>
-                {f.kind === 'call' ? 'ret' : f.kind} → {hx(f.ret, w)}
+              <span style={{color: f.kind === 'call' ? C.blue : f.kind === 'int' ? '#ccaaff' : f.kind === 'old' ? '#557755' : C.amber}}>
+                {f.kind === 'call' ? 'ret' : f.kind === 'int' ? 'reti' : f.kind} → {hx(f.ret, w)}
               </span>
               {f.routine && <span style={{color: f.kind === 'old' ? '#557755' : C.amber}}>  in {f.routine}</span>}
               {f.psw != null && <span style={{color:'#779977'}}>  psw {hx(f.psw, 1)}x</span>}
