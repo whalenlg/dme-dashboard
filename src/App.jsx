@@ -832,12 +832,13 @@ export default function DMEDashboard() {
   const followRef = useRef(follow);
   useEffect(() => { followRef.current = follow; }, [follow]);
   const handleLiveText = useCallback(text => {
-    const dme = parseLog(text);
+    const dme = parseLog(text), klr = parseKLRLog(text);
     setData(dme);
-    setKlrData(parseKLRLog(text));
+    setKlrData(klr);
+    // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
     if (followRef.current) {
       setIdx(Math.max(0, dme.snapshots.length - 1));
-      setKlrIdx(0);
+      setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
     }
   }, []);
   const live = useLiveSim(liveUrl, handleLiveText);
