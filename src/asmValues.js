@@ -40,6 +40,9 @@ export function dmeOperandValues(row, ram, regs) {
   if (DME_BRANCH.test(row.instr)) ops = ops.slice(0, -1);
   const bank = ((regs.psw ?? 0) >> 3) & 3;
   const out = [];
+  // Implied operands the listing doesn't show
+  if (/^j[n]?c$/i.test(row.instr)) out.push(`C=${(regs.psw >> 7) & 1}`);
+  if (/^j[n]?z$/i.test(row.instr)) out.push(`A=${h2(regs.acc)}`);
   for (const op of ops) {
     let m;
     if (op === 'A') out.push(`A=${h2(regs.acc)}`);
@@ -53,9 +56,11 @@ export function dmeOperandValues(row, ram, regs) {
       const p = ram?.[bank * 8 + +m[1]];
       out.push(`@R${m[1]}[${h2(p)}]=${p != null && p < 0x80 ? h2(ram?.[p]) : '--'}`);
     }
-    else if ((m = op.match(/^\/?0x([0-9a-f]{2})\.([0-7])/i))) {
+    else if ((m = op.match(/^\/?0x([0-9a-f]{2})\.([0-7])(?:\s*\[0x([0-9a-f]{2})\])?/i))) {
       const a = parseInt(m[1], 16), v = dmeDirect(a, ram, regs);
-      out.push(`${dmeDirectName(a)}.${m[2]}=${v == null ? '-' : (v >> +m[2]) & 1}`);
+      // RAM bits show their bit address too, e.g. 1Dh(23.5)=1
+      const name = a < 0x80 && m[3] ? `${m[3].toUpperCase()}h(${h2(a)}.${m[2]})` : `${dmeDirectName(a)}.${m[2]}`;
+      out.push(`${name}=${v == null ? '-' : (v >> +m[2]) & 1}`);
     }
     else if ((m = op.match(/^0x([0-9a-f]{2})$/i))) {
       const a = parseInt(m[1], 16);
@@ -220,6 +225,7 @@ export function cameFrom(cpu, trace, listing) {
 //  instruction was fetched, i.e. before it ran (see the testbench):
 //    DME ctx0 = A B PSW SP DPH DPL [iram @ operand byte 1] [@ byte 2]
 //        ctx1 = R0..R7 (active bank), ctx2 = @R0 @R1 code[A+DPTR] code[A+PC+1]
+//               [byte holding the bit at operand byte 1] 0 0 0
 //    KLR ctx0 = A PSW T P1 P2 {F0,F1} @R0 @R1, ctx1 = R0..R7 (active bank)
 //  traceState turns one into the { ram, regs } the operand decoders take;
 //  ram holds only what was captured, so anything else reads as '--'.
@@ -237,12 +243,15 @@ export function traceState(cpu, ctx, row) {
   const r = bytesOf(ctx.c1, 8);
   const ram = {};
   if (cpu === 'dme') {
-    const [ri0, ri1, mdptr, mpc] = bytesOf(ctx.c2, 4);
+    const [ri0, ri1, mdptr, mpc, bitByte] = bytesOf(ctx.c2, 5);
     const regs = { acc: a0, b: a1, psw: a2, sp: a3, dptr: (a4 << 8) | a5, mdptr, mpc };
     // Direct operands: the instruction's 2nd / 3rd bytes are the addresses
     const ib = (row?.bytes ?? '').split(/\s+/).filter(b => /^[0-9a-f]{1,2}$/i.test(b)).map(b => parseInt(b, 16));
     if (ib[1] != null && ib[1] < 0x80) ram[ib[1]] = a6;
     if (ib[2] != null && ib[2] < 0x80) ram[ib[2]] = a7;
+    // Bit operand (byte 2 is a bit address 00-7F): the byte holding it
+    if (/0x[0-9a-f]{2}\.[0-7]/i.test(row?.num ?? '') && ib[1] != null && ib[1] < 0x80 && !isNaN(bitByte))
+      ram[0x20 + (ib[1] >> 3)] = bitByte;
     if (r[0] < 0x80) ram[r[0]] = ri0;
     if (r[1] < 0x80) ram[r[1]] = ri1;
     const bank = (a2 >> 3) & 3;
