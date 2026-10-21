@@ -1,13 +1,17 @@
 // ── Operand values for the LIVE assembly panes ──────────────
 //
 //  Resolves the data an instruction's operands refer to (registers,
-//  direct RAM, @Ri, bits, SFRs) against the latest snapshot:
+//  direct RAM, @Ri, bits, SFRs) against:
 //    ram  — internal RAM bytes (DME iram / KLR ram), indexed 0..127
-//    regs — CPU registers from "SIM: [REGS]" (lower-case names, numbers)
+//    regs — CPU registers (lower-case names, numbers)
+//  The panes build both from the sim's trace context for the last time
+//  that instruction ran (traceState below), so each row shows the values
+//  it actually saw, not the registers at the stop.
 //  Returns a short text such as "A=04 R7=1F @R0[5A]=12 23.2=1", or ''.
 //  Immediates and jump/call targets are skipped.
 
 const h2 = v => v == null || isNaN(v) ? '--' : v.toString(16).toUpperCase().padStart(2, '0');
+const h4 = v => v.toString(16).toUpperCase().padStart(4, '0');
 
 // 8051 SFRs by direct address
 const SFR = {
@@ -42,7 +46,8 @@ export function dmeOperandValues(row, ram, regs) {
     else if (op === 'AB') out.push(`A=${h2(regs.acc)} B=${h2(regs.b)}`);
     else if (op === 'C' || op === '/C') out.push(`C=${(regs.psw >> 7) & 1}`);
     else if (op === 'DPTR' || op === '@DPTR') out.push(`DPTR=${h2(regs.dptr >> 8)}${h2(regs.dptr & 0xff)}`);
-    else if (op === '@A+DPTR') out.push(`A+DPTR=${((regs.acc + regs.dptr) & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`);
+    else if (op === '@A+DPTR') out.push(`A+DPTR=${h4((regs.acc + regs.dptr) & 0xffff)}${regs.mdptr != null ? `→${h2(regs.mdptr)}` : ''}`);
+    else if (op === '@A+PC' && regs.mpc != null) out.push(`@A+PC→${h2(regs.mpc)}`);
     else if ((m = op.match(/^R([0-7])$/i))) out.push(`R${m[1]}=${h2(ram?.[bank * 8 + +m[1]])}`);
     else if ((m = op.match(/^@R([01])$/i))) {
       const p = ram?.[bank * 8 + +m[1]];
@@ -207,4 +212,47 @@ export function cameFrom(cpu, trace, listing) {
     return { from: prev, to: cur, ins, kind, ago: trace.length - 1 - i };
   }
   return null;
+}
+
+// ── Per-instruction register context from SIM: [TRACE] ─────
+//
+//  Each trace entry is "pc/ctx0/ctx1/ctx2" (hex), captured as the
+//  instruction was fetched, i.e. before it ran (see the testbench):
+//    DME ctx0 = A B PSW SP DPH DPL [iram @ operand byte 1] [@ byte 2]
+//        ctx1 = R0..R7 (active bank), ctx2 = @R0 @R1 code[A+DPTR] code[A+PC+1]
+//    KLR ctx0 = A PSW T P1 P2 {F0,F1} @R0 @R1, ctx1 = R0..R7 (active bank)
+//  traceState turns one into the { ram, regs } the operand decoders take;
+//  ram holds only what was captured, so anything else reads as '--'.
+
+const bytesOf = (hex, n) => Array.from({ length: n }, (_, i) => parseInt(hex.slice(2 * i, 2 * i + 2), 16));
+
+export function parseTraceEntry(s) {
+  const [pc, c0, c1, c2] = s.split('/');
+  return { pc: parseInt(pc, 16), ctx: c0 ? { c0, c1, c2 } : null };
+}
+
+export function traceState(cpu, ctx, row) {
+  if (!ctx) return null;
+  const [a0, a1, a2, a3, a4, a5, a6, a7] = bytesOf(ctx.c0, 8);
+  const r = bytesOf(ctx.c1, 8);
+  const ram = {};
+  if (cpu === 'dme') {
+    const [ri0, ri1, mdptr, mpc] = bytesOf(ctx.c2, 4);
+    const regs = { acc: a0, b: a1, psw: a2, sp: a3, dptr: (a4 << 8) | a5, mdptr, mpc };
+    // Direct operands: the instruction's 2nd / 3rd bytes are the addresses
+    const ib = (row?.bytes ?? '').split(/\s+/).filter(b => /^[0-9a-f]{1,2}$/i.test(b)).map(b => parseInt(b, 16));
+    if (ib[1] != null && ib[1] < 0x80) ram[ib[1]] = a6;
+    if (ib[2] != null && ib[2] < 0x80) ram[ib[2]] = a7;
+    if (r[0] < 0x80) ram[r[0]] = ri0;
+    if (r[1] < 0x80) ram[r[1]] = ri1;
+    const bank = (a2 >> 3) & 3;
+    r.forEach((v, n) => { ram[bank * 8 + n] = v; });
+    return { ram, regs };
+  }
+  const regs = { acc: a0, psw: a1, t: a2, p1: a3, p2: a4, f0: (a5 >> 1) & 1, f1: a5 & 1 };
+  ram[r[0] & 0x7f] = a6;
+  ram[r[1] & 0x7f] = a7;
+  const base = (a1 >> 4) & 1 ? 0x18 : 0;
+  r.forEach((v, n) => { ram[base + n] = v; });
+  return { ram, regs };
 }

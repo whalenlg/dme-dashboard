@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, STACK } from "./asmValues.js";
+import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 // ─────────────────────────────────────────────────────────────────
@@ -42,7 +42,7 @@ const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadi
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
 export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
-  const { connected, sim, inputs, bps, trace, error, asm, regs, send, restart } = live;
+  const { connected, sim, inputs, bps, trace, traceCtx, error, asm, regs, send, restart } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
@@ -50,7 +50,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
 
   // Ask for the instruction trace whenever the sim stops
   useEffect(() => {
-    if (sim.state === 'paused') send('trace dme 32\ntrace klr 32');
+    if (sim.state === 'paused') send('trace dme 64\ntrace klr 64');
   }, [sim.state, sim.tNs, send]);
 
   const tMs = (sim.tNs / 1e6).toFixed(3);
@@ -98,9 +98,9 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         <InputsPanel inputs={inputs} send={send} />
         {/* Side by side when there is room for full operands, else stacked */}
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(520px,1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
-          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme}
+          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme} traceCtx={traceCtx?.dme}
                     ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send} />
-          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr}
+          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr} traceCtx={traceCtx?.klr}
                     ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send} />
         </div>
       </div>
@@ -320,7 +320,7 @@ function StackView({ cpu, ram, regs, listing, running, onJump }) {
   );
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stopKey, send }) {
+function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, running, stopKey, send }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
@@ -349,6 +349,12 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
     setDisabled(d => d.filter(x => x !== a));
   };
   const recent = useMemo(() => new Set(trace.slice(-16)), [trace]);
+  // Register context from the last time each traced address ran
+  const lastCtx = useMemo(() => {
+    const m = new Map();
+    trace.forEach((a, i) => { if (traceCtx?.[i]) m.set(a, traceCtx[i]); });
+    return m;
+  }, [trace, traceCtx]);
   const c = rowFor(listing, center ?? pc);
   const rows = listing.slice(Math.max(0, c - WINDOW), c + WINDOW);
 
@@ -412,7 +418,9 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
             const isOff = offSet.has(r.a);
-            const val = (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, ram, regs);
+            // Values as this instruction saw them (blank if it isn't in the trace)
+            const st = running ? null : traceState(cpu, lastCtx.get(r.a), r);
+            const val = st ? (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, st.ram, st.regs) : '';
             return (
               <div key={r.a} title="Click to toggle a breakpoint"
                    onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
@@ -425,7 +433,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
                 <span style={{color:C.textDim,width:'20ch',flex:'none'}}>{r.ops}</span>
                 <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
-                      title={val}>{val}</span>
+                      title={val && `${val}  (as this instruction last ran, before it executed)`}>{val}</span>
                 <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
               </div>
             );
@@ -434,7 +442,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, ram, regs, running, stop
       )}
       {!running && trace.length > 0 && (
         <div style={{color:'#779977',fontSize:'9px',marginTop:'6px',whiteSpace:'normal',wordBreak:'break-all'}}>
-          last {trace.length}: {trace.map(a => hx(a, cpu === 'dme' ? 4 : 3)).join(' ')}
+          last {Math.min(32, trace.length)}: {trace.slice(-32).map(a => hx(a, cpu === 'dme' ? 4 : 3)).join(' ')}
         </div>
       )}
     </div>

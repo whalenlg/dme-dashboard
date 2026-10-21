@@ -1,3 +1,4 @@
+import { parseTraceEntry } from "./asmValues.js";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─────────────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ export function useLiveSim(url, onLogText) {
   const [inputs, setInputs] = useState({});
   const [bps, setBps]       = useState({ dme: [], klr: [] });
   const [trace, setTrace]   = useState({ dme: [], klr: [] });
+  const [traceCtx, setTraceCtx] = useState({ dme: [], klr: [] });   // per trace entry
   const [error, setError]   = useState(null);
   const [asm, setAsm]       = useState({ dme: [], klr: [] });
   const [regs, setRegs]     = useState({ dme: null, klr: null });
@@ -71,7 +73,7 @@ export function useLiveSim(url, onLogText) {
         lines.current = []; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
         setWarnings([]);
-        setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
+        setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
         const kv = parseKV(rest);
@@ -89,7 +91,10 @@ export function useLiveSim(url, onLogText) {
         setBps({ dme: splitHex(kv.dme), klr: splitHex(kv.klr) });
       } else if (kind === 'TRACE') {
         const [cpu, list] = rest.split(' ');
-        setTrace(t => ({ ...t, [cpu]: splitHex(list) }));
+        // Entries are pc/ctx0/ctx1/ctx2 (register context per instruction)
+        const steps = (list ?? '').split(',').filter(Boolean).map(parseTraceEntry);
+        setTrace(t => ({ ...t, [cpu]: steps.map(st => st.pc) }));
+        setTraceCtx(t => ({ ...t, [cpu]: steps.map(st => st.ctx) }));
       } else if (kind === 'REGS') {
         const cpu = rest.split(' ')[0];
         if (cpu === 'dmestk') {
@@ -135,5 +140,5 @@ export function useLiveSim(url, onLogText) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, regs, dmeRegsHist, ign, warnings, send, restart };
+  return { connected, sim, inputs, bps, trace, error, asm, regs, dmeRegsHist, traceCtx, ign, warnings, send, restart };
 }
