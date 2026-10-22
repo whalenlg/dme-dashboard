@@ -864,11 +864,15 @@ export default function DMEDashboard() {
   // to it later, state intact) and hides the debug pane. ?live stays in the
   // URL so a reload goes back to the sim.
   const lastLiveUrl = useRef(liveUrl);
+  // live is a new object every render, so reach send through a ref: a
+  // leaveLive that changed each render would re-run the ?log= loader
+  const sendRef = useRef(live.send);
+  sendRef.current = live.send;
   const leaveLive = useCallback(() => {
-    if (liveRef.current) { lastLiveUrl.current = liveRef.current; live.send('pause'); }
+    if (liveRef.current) { lastLiveUrl.current = liveRef.current; sendRef.current('pause'); }
     liveRef.current = null;
     setLiveUrl(null);
-  }, [live]);
+  }, []);
   // Connecting puts ?live in the URL; only the LIVE button's off clears it
   const setLiveParam = on => {
     const u = new URL(window.location.href);
@@ -2640,32 +2644,13 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   );
 
   // ── Build chart datasets ──────────────────────────────────
-  // IGN delay — one point per asserted event with a measured delay.
-  // First 5s is noisy cranking/sync data, and any single reading above
-  // 200μs is treated as sensor/measurement noise rather than a real spark
-  // delay — keep those points (so all 4 charts share the same time axis /
-  // line up) but zero their delay value instead of dropping them.
-  // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ... (4-stroke
-  // firing order repeats every 4 IGN_OUT assertions).
+  // First 5s is noisy cranking/sync data: those points stay (so all 4
+  // cylinder charts share one time axis) but have no degrees.
   const IGN_IGNORE_MS   = 5000;
-  const IGN_NOISE_US    = 200;
   const snaps = (dmeSnaps ?? []).filter(s => s.t != null);
-  let si = -1;
-  const ignDelayEvents = klrPhases
-    .filter(p => p.asserted && p.delay_us != null &&
-                 (effectiveT == null || p.t <= effectiveT))
-    .map(p => {
-      const raw = +p.delay_us.toFixed(2);
-      const noisy = p.t < IGN_IGNORE_MS || raw > IGN_NOISE_US;
-      // Crank degrees at the RPM of the latest DME snapshot: deg = us * rpm * 6e-6
-      while (si + 1 < snaps.length && snaps[si + 1].t <= p.t) si++;
-      const rpm = si >= 0 ? snapRpm(snaps[si]) : null;
-      const deg = !noisy && rpm ? +(raw * rpm * 6e-6).toFixed(2) : null;
-      return { t: p.t, delay: noisy ? 0 : raw, deg, rpm };
-    });
 
   // Spark retard: ign_in fall to ign_out fall (spark), in crank degrees at
-  // the RPM of the latest DME snapshot, same conversion as IGN DELAY
+  // the RPM of the latest DME snapshot: deg = us * rpm * 6e-6
   let sj = -1;
   const sparkData = klrPhases
     .filter(p => p.deasserted && p.spark_us != null && (effectiveT == null || p.t <= effectiveT))
@@ -2677,15 +2662,15 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       return { t: p.t, deg, us, rpm };
     });
 
-  const ignDelayByCyl = [1, 2, 3, 4].map(cyl =>
-    ignDelayEvents.filter((_, i) => (i % 4) + 1 === cyl)
+  // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ...
+  // (counted from the first logged spark; there's no cylinder-1 reference)
+  const sparkByCyl = [1, 2, 3, 4].map(cyl =>
+    sparkData.filter((_, i) => (i % 4) + 1 === cyl)
   );
 
   // Shared y-axis max across all 4 cylinder charts, so they're directly
   // comparable at a glance instead of each auto-scaling independently.
-  const ignDelayMax = Math.max(
-    1, ...ignDelayByCyl.flat().map(d => d.delay ?? 0)
-  );
+  const sparkMax = Math.max(1, ...sparkData.map(d => d.deg ?? 0));
 
   // A real pulse is a deassert right after an assert. Older logs also have
   // deasserts with no assert before them: IGN_OUT floated high while the
@@ -2788,25 +2773,15 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
 
   const charts = [
     ...[1, 2, 3, 4].map(cyl => ({
-      title: `IGN DELAY — CYL ${cyl} (μs)`,
-      data:  ignDelayByCyl[cyl-1],
-      key:   'delay',
-      col:   CYL_COLORS[cyl-1],
-      unit:  'μs',
-      dom:   [0, ignDelayMax],
-      note:  `Every 4th IGN_OUT assertion (firing #${cyl}, 4, 8, ...) — first ${IGN_IGNORE_MS/1000}s and readings >${IGN_NOISE_US}μs zeroed as noise`,
-      empty: ignDelayByCyl[cyl-1].length === 0,
-    })),
-    {
-      title: 'SPARK RETARD (° crank)',
-      data:  sparkData,
+      title: `SPARK RETARD — CYL ${cyl} (° crank)`,
+      data:  sparkByCyl[cyl-1],
       key:   'deg',
-      col:   '#ff5555',
+      col:   CYL_COLORS[cyl-1],
       unit:  '°',
-      dom:   [0, 'auto'],
-      note:  `ign_in falling edge (DME spark) to IGN_OUT falling edge (KLR spark), deg = μs × rpm × 6e-6 — first ${IGN_IGNORE_MS/1000}s omitted`,
-      empty: sparkData.length === 0,
-    },
+      dom:   [0, Math.ceil(sparkMax)],
+      note:  `ign_in fall (DME spark) to IGN_OUT fall (KLR spark), deg = us × rpm × 6e-6. Every 4th spark (#${cyl}, ${cyl + 4}, ${cyl + 8}, ...); ~150us floor is KLR processing, above it is knock retard — first ${IGN_IGNORE_MS/1000}s omitted`,
+      empty: sparkByCyl[cyl-1].length === 0,
+    })),
     {
       title: 'IGN PULSE WIDTH (ms)',
       data:  ignPulseData,
@@ -2885,9 +2860,9 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   return (
     <div>
       {/* Info banner when limited data */}
-      {(ignDelayEvents.length === 0 && ignPulseData.length === 0) && (
+      {(sparkData.length === 0 && ignPulseData.length === 0) && (
         <div style={{...S.panel, color:C.amber, fontSize:'10px', marginBottom:'8px'}}>
-          ⚠ IGN delay and pulse width require <code>KLR: [PHASE]</code> lines in the log.
+          ⚠ Spark retard and pulse width require <code>KLR: [PHASE]</code> lines in the log.
           CV_PWM and knock require <code>KLR: [STATUS]</code> lines.
         </div>
       )}
@@ -2908,9 +2883,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
-                    <Tooltip {...tt} formatter={(v, _n, item) => c.key === 'delay' && item?.payload?.deg != null
-                      ? [`${v} μs  =  ${item.payload.deg}° crank @ ${item.payload.rpm} rpm`, 'delay']
-                      : c.key === 'deg' && item?.payload?.us != null
+                    <Tooltip {...tt} formatter={(v, _n, item) => c.key === 'deg' && item?.payload?.us != null
                       ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, 'retard']
                       : [v, c.unit]}/>
                     {currentT != null &&
