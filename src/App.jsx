@@ -855,16 +855,23 @@ export default function DMEDashboard() {
   }, [liveUrl, data.snapshots, klrData.snapshots]);
   useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
   // Loading a static log leaves live mode: pauses the sim (LIVE reconnects
-  // to it later, state intact), hides the debug pane, and drops ?live so a
-  // reload doesn't reconnect.
+  // to it later, state intact) and hides the debug pane. ?live stays in the
+  // URL so a reload goes back to the sim.
   const lastLiveUrl = useRef(liveUrl);
   const leaveLive = useCallback(() => {
     if (liveRef.current) { lastLiveUrl.current = liveRef.current; live.send('pause'); }
     liveRef.current = null;
     setLiveUrl(null);
-    const u = new URL(window.location.href);
-    if (u.searchParams.has('live')) { u.searchParams.delete('live'); window.history.replaceState(null, '', u); }
   }, [live]);
+  // Connecting puts ?live in the URL; only the LIVE button's off clears it
+  const setLiveParam = on => {
+    const u = new URL(window.location.href);
+    if (on === u.searchParams.has('live')) return;
+    if (on) u.searchParams.set('live', lastLiveUrl.current && lastLiveUrl.current !== DEFAULT_LIVE_URL ? lastLiveUrl.current : '1');
+    else u.searchParams.delete('live');
+    window.history.replaceState(null, '', u);
+  };
+  useEffect(() => { if (liveUrl) { lastLiveUrl.current = liveUrl; setLiveParam(true); } }, [liveUrl]);
 
   // Playback engine
   useEffect(() => {
@@ -1153,7 +1160,7 @@ export default function DMEDashboard() {
             </span>
           )}
           <button style={S.btn(liveUrl ? 'p' : 's')}
-            onClick={()=>setLiveUrl(u => u ? null : (lastLiveUrl.current || DEFAULT_LIVE_URL))}
+            onClick={()=>{ if (liveUrl) setLiveParam(false); setLiveUrl(u => u ? null : (lastLiveUrl.current || DEFAULT_LIVE_URL)); }}
             title="Drive the simulator through dme_klr/live/bridge.mjs">
             {liveUrl ? '● LIVE' : 'LIVE ○'}
           </button>
@@ -1341,6 +1348,10 @@ export default function DMEDashboard() {
               {(data.snapshots.length > 0 || data.phases.length > 0 ||
                 klrData.snapshots.length > 0) && (
                 <button style={S.btn('s')} onClick={()=>setShowLog(false)}>CANCEL</button>
+              )}
+              {!liveUrl && (
+                <button style={S.btn('s')} title="Connect to the simulator (dme_klr/live/bridge.mjs)"
+                  onClick={()=>setLiveUrl(lastLiveUrl.current || DEFAULT_LIVE_URL)}>LIVE SIM</button>
               )}
               <button style={S.btn('p')} onClick={handleLoadAll}>
                 PARSE &amp; LOAD →
