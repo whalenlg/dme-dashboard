@@ -2788,13 +2788,13 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
 
   const charts = [
     ...[1, 2, 3, 4].map(cyl => ({
-      title: `IGN DELAY — CYL ${cyl} (μs)`,
+      title: `IGN DELAY — CYL ${cyl} (us)`,
       data:  ignDelayByCyl[cyl-1],
       key:   'delay',
       col:   CYL_COLORS[cyl-1],
       unit:  'μs',
       dom:   [0, ignDelayMax],
-      note:  `Every 4th IGN_OUT assertion (firing #${cyl}, 4, 8, ...) — first ${IGN_IGNORE_MS/1000}s and readings >${IGN_NOISE_US}μs zeroed as noise`,
+      note:  `ign_in rise to IGN_OUT rise (dwell start, set by the KLR ext-int routine). Every 4th assertion (firing #${cyl}, ${cyl + 4}, ${cyl + 8}, ...) — first ${IGN_IGNORE_MS/1000}s and readings >${IGN_NOISE_US}μs zeroed as noise`,
       empty: ignDelayByCyl[cyl-1].length === 0,
     })),
     {
