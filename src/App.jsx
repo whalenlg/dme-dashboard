@@ -831,7 +831,10 @@ export default function DMEDashboard() {
   const [follow, setFollow] = useState(true);
   const followRef = useRef(follow);
   useEffect(() => { followRef.current = follow; }, [follow]);
+  const liveRef = useRef(liveUrl);
+  useEffect(() => { liveRef.current = liveUrl; }, [liveUrl]);
   const handleLiveText = useCallback(text => {
+    if (!liveRef.current) return;
     const dme = parseLog(text), klr = parseKLRLog(text);
     setData(dme);
     setKlrData(klr);
@@ -851,6 +854,17 @@ export default function DMEDashboard() {
     return { dme: d?.iram ?? null, klr: k?.ram ?? null };
   }, [liveUrl, data.snapshots, klrData.snapshots]);
   useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
+  // Loading a static log leaves live mode: pauses the sim (LIVE reconnects
+  // to it later, state intact), hides the debug pane, and drops ?live so a
+  // reload doesn't reconnect.
+  const lastLiveUrl = useRef(liveUrl);
+  const leaveLive = useCallback(() => {
+    if (liveRef.current) { lastLiveUrl.current = liveRef.current; live.send('pause'); }
+    liveRef.current = null;
+    setLiveUrl(null);
+    const u = new URL(window.location.href);
+    if (u.searchParams.has('live')) { u.searchParams.delete('live'); window.history.replaceState(null, '', u); }
+  }, [live]);
 
   // Playback engine
   useEffect(() => {
@@ -903,6 +917,7 @@ export default function DMEDashboard() {
         // Derive test name from filename: cl_tippy_in.dash.log → cl_tippy_in
         const testName = fname.replace(/\.dash\.log$/, '').replace(/\.log$/, '');
         document.title = `DME 951 — ${testName}`;
+        leaveLive();
         setLogFileName(fname);
         setLogText(text);
         const dme = parseLog(text);
@@ -917,9 +932,11 @@ export default function DMEDashboard() {
             klr.snapshots.length || klr.phases.length) setShowLog(false);
       })
       .catch(err => console.warn('[DME951] ?log= fetch failed:', err));
-  }, []);
+  }, [leaveLive]);
 
   const handleLoadAll = useCallback(() => {
+    leaveLive();
+    setLogFileName(n => n === 'live simulation' ? 'pasted log' : n);
     const dme = parseLog(logText);
     const klr = parseKLRLog(logText);
     setData(dme);
@@ -930,7 +947,7 @@ export default function DMEDashboard() {
     setKlrPlaying(false);
     if (dme.snapshots.length || dme.phases.length ||
         klr.snapshots.length || klr.phases.length) setShowLog(false);
-  }, [logText]);
+  }, [logText, leaveLive]);
 
   // Drag-drop onto textarea
   const handleDrop = useCallback(e => {
@@ -1136,7 +1153,7 @@ export default function DMEDashboard() {
             </span>
           )}
           <button style={S.btn(liveUrl ? 'p' : 's')}
-            onClick={()=>setLiveUrl(u => u ? null : DEFAULT_LIVE_URL)}
+            onClick={()=>setLiveUrl(u => u ? null : (lastLiveUrl.current || DEFAULT_LIVE_URL))}
             title="Drive the simulator through dme_klr/live/bridge.mjs">
             {liveUrl ? '● LIVE' : 'LIVE ○'}
           </button>
