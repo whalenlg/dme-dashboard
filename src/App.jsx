@@ -4,6 +4,8 @@ import {
   ResponsiveContainer, CartesianGrid, ReferenceLine
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
+import LivePanel from "./LivePanel.jsx";
+import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  GROUP COLOUR MAP
@@ -657,6 +659,72 @@ const snapRpm   = snap =>
   ?? ((snap.iram?.[0x21] & 1)                           // prpm fallback only after EngineSync
       ? prpmToRpm(snap.iram?.[0x37] ?? 0)
       : null);
+// Latest-snapshot engine values for the LIVE banner (same sources as the Overview tiles)
+// Engine values for the LIVE banner and its charts, one point per DME DS
+// snapshot, from the same sources as the Overview tiles. Boost is KLR
+// ram[0x52] / 1.2 = kPa absolute shown as gauge PSI (as on Boost Control);
+// ignition and injector widths are the latest SIM: [IGN] / [INJ] pulse at
+// or before each point.
+// Live DME registers at snapshot time t (the last [REGS] line at or before t)
+const regsAt = (hist, t) => {
+  if (!hist?.length || t == null) return null;
+  for (let i = hist.length - 1; i >= 0; i--) if (hist[i].t_ms <= t) return hist[i];
+  return null;
+};
+
+// 8051 timer tile: TH:TL, run bit, mode, overflow flag
+const timerTile = (n, regs) => {
+  if (!regs) return { lbl:`TIMER ${n}`, val:'--', unit:'live sim only', col:C.textDim, mmk:null, addr:null };
+  const th = regs[`th${n}`], tl = regs[`tl${n}`];
+  const run  = (regs.tcon >> (n ? 6 : 4)) & 1, tf = (regs.tcon >> (n ? 7 : 5)) & 1;
+  const mode = (regs.tmod >> (n ? 4 : 0)) & 3;
+  const cnt  = (th << 8) | tl;
+  // Mode 1 (16-bit), 2 us per count: time left until overflow
+  const left = mode === 1 ? ` ${((0x10000 - cnt) * 0.002).toFixed(2)}ms left` : '';
+  return { lbl:`TIMER ${n} (TH${n}:TL${n})`, val:`${h2(th)}${h2(tl)}`,
+           unit:`${run ? 'RUN' : 'STOP'} M${mode} TF${n}=${tf}${run ? left : ''}`,
+           col: run ? '#ccaaff' : C.textDim, mmk:null, addr:null };
+};
+
+const liveSeries = (dmeSnaps, klrSnaps, ign) => {
+  const out = [];
+  let k = -1, di = -1, ki = -1, ii = -1;
+  for (const s of dmeSnaps) {
+    if (s.t == null) continue;
+    while (k + 1 < klrSnaps.length && klrSnaps[k + 1].t <= s.t) k++;
+    while (di + 1 < ign.dme.length && ign.dme[di + 1].t <= s.t) di++;
+    while (ki + 1 < ign.klr.length && ign.klr[ki + 1].t <= s.t) ki++;
+    while (ii + 1 < ign.inj.length && ign.inj[ii + 1].t <= s.t) ii++;
+    const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
+    const cut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
+    // No injector edge for 2+ revs while fuelling means P1.0 is held low
+    const held = ii >= 0 && snapRpm(s) > 0 && !cut && s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s);
+    // Held open: the injector is on for the whole rev, so plot a full rev
+    const injMs = held ? +(60000 / snapRpm(s)).toFixed(3) : ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null;
+    out.push({
+      t:       s.t,
+      rpm:     snapRpm(s),
+      // inj: measured injector low time on P1.0 (fire_inj loads T0 with
+      // 4A:4B + 5 x iram[54h] dead time, 2 us/count). fuel: the firmware's
+      // commanded FUEL_PULSE word 4A:4B alone, which is not clamped to a rev.
+      inj:     injMs,
+      injHeld: held,
+      injHeldMs: held ? injMs : null,
+      injDuty: held ? 100 : ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
+      injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
+               fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
+      fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
+      fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
+      afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,
+      tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
+      load:    s.iram?.[0x49] ?? null,
+      boost:   b != null ? +((b / 1.2 - 101.3) * 0.145038).toFixed(2) : null,
+      dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
+      klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
+    });
+  }
+  return out;
+};
 // NTC linearised byte → °C  (anchored: 0x00=−116°C, 0xE0=80°C → slope=0.875)
 // NTC linearised byte → °C.
 // Returns null if below −40°C — that means the firmware's linearisation
@@ -755,6 +823,57 @@ export default function DMEDashboard() {
   const [playSpeed, setPlaySpeed] = useState(100); // ms between steps
   const logRef = useRef();
 
+  // Live simulator (dme_klr/live/bridge.mjs). ?live or ?live=<bridge url>
+  // connects on load; otherwise the LIVE button does.
+  const [liveUrl, setLiveUrl] = useState(() => {
+    const v = new URLSearchParams(window.location.search).get('live');
+    return v === null ? null : (v && v !== '1' ? v : DEFAULT_LIVE_URL);
+  });
+  const [follow, setFollow] = useState(true);
+  const followRef = useRef(follow);
+  useEffect(() => { followRef.current = follow; }, [follow]);
+  const liveRef = useRef(liveUrl);
+  useEffect(() => { liveRef.current = liveUrl; }, [liveUrl]);
+  const handleLiveText = useCallback(text => {
+    if (!liveRef.current) return;
+    const dme = parseLog(text), klr = parseKLRLog(text);
+    setData(dme);
+    setKlrData(klr);
+    // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
+    if (followRef.current) {
+      setIdx(Math.max(0, dme.snapshots.length - 1));
+      setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
+    }
+  }, []);
+  const live = useLiveSim(liveUrl, handleLiveText);
+  const liveSer = useMemo(() => liveUrl ? liveSeries(data.snapshots, klrData.snapshots, live.ign) : [],
+                          [liveUrl, data.snapshots, klrData.snapshots, live.ign]);
+  // Latest RAM images for the asm panes' operand-value column
+  const liveMem = useMemo(() => {
+    if (!liveUrl) return null;
+    const d = data.snapshots.findLast(s => s.t != null), k = klrData.snapshots.at(-1);
+    return { dme: d?.iram ?? null, klr: k?.ram ?? null };
+  }, [liveUrl, data.snapshots, klrData.snapshots]);
+  useEffect(() => { if (liveUrl) { setShowLog(false); setLogFileName('live simulation'); } }, [liveUrl]);
+  // Loading a static log leaves live mode: pauses the sim (LIVE reconnects
+  // to it later, state intact) and hides the debug pane. ?live stays in the
+  // URL so a reload goes back to the sim.
+  const lastLiveUrl = useRef(liveUrl);
+  const leaveLive = useCallback(() => {
+    if (liveRef.current) { lastLiveUrl.current = liveRef.current; live.send('pause'); }
+    liveRef.current = null;
+    setLiveUrl(null);
+  }, [live]);
+  // Connecting puts ?live in the URL; only the LIVE button's off clears it
+  const setLiveParam = on => {
+    const u = new URL(window.location.href);
+    if (on === u.searchParams.has('live')) return;
+    if (on) u.searchParams.set('live', lastLiveUrl.current && lastLiveUrl.current !== DEFAULT_LIVE_URL ? lastLiveUrl.current : '1');
+    else u.searchParams.delete('live');
+    window.history.replaceState(null, '', u);
+  };
+  useEffect(() => { if (liveUrl) { lastLiveUrl.current = liveUrl; setLiveParam(true); } }, [liveUrl]);
+
   // Playback engine
   useEffect(() => {
     if (!playing || data.snapshots.length === 0) return;
@@ -806,6 +925,7 @@ export default function DMEDashboard() {
         // Derive test name from filename: cl_tippy_in.dash.log → cl_tippy_in
         const testName = fname.replace(/\.dash\.log$/, '').replace(/\.log$/, '');
         document.title = `DME 951 — ${testName}`;
+        leaveLive();
         setLogFileName(fname);
         setLogText(text);
         const dme = parseLog(text);
@@ -820,9 +940,11 @@ export default function DMEDashboard() {
             klr.snapshots.length || klr.phases.length) setShowLog(false);
       })
       .catch(err => console.warn('[DME951] ?log= fetch failed:', err));
-  }, []);
+  }, [leaveLive]);
 
   const handleLoadAll = useCallback(() => {
+    leaveLive();
+    setLogFileName(n => n === 'live simulation' ? 'pasted log' : n);
     const dme = parseLog(logText);
     const klr = parseKLRLog(logText);
     setData(dme);
@@ -833,7 +955,7 @@ export default function DMEDashboard() {
     setKlrPlaying(false);
     if (dme.snapshots.length || dme.phases.length ||
         klr.snapshots.length || klr.phases.length) setShowLog(false);
-  }, [logText]);
+  }, [logText, leaveLive]);
 
   // Drag-drop onto textarea
   const handleDrop = useCallback(e => {
@@ -1048,6 +1170,11 @@ export default function DMEDashboard() {
               {data.snapshots.length} STATUS · {data.phases.length} PHASE
             </span>
           )}
+          <button style={S.btn(liveUrl ? 'p' : 's')}
+            onClick={()=>{ if (liveUrl) setLiveParam(false); setLiveUrl(u => u ? null : (lastLiveUrl.current || DEFAULT_LIVE_URL)); }}
+            title="Drive the simulator through dme_klr/live/bridge.mjs">
+            {liveUrl ? '● LIVE' : 'LIVE ○'}
+          </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
         </div>
       </div>
@@ -1088,7 +1215,10 @@ export default function DMEDashboard() {
 
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
-        {tab==='overview' && <OverviewTab snap={snap} iram={iram}
+        {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
+                               series={liveSer} mem={liveMem}
+                               onClose={()=>setLiveUrl(null)} />}
+        {tab==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
           fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
           minmax={minmax} clEverActive={clEverActive} />}
         {tab==='ports'    && <PortsTab snap={snap}
@@ -1105,7 +1235,7 @@ export default function DMEDashboard() {
             logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
             logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
         {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_charts' && <KLRChartsTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr_charts' && <KLRChartsTab klrData={klrData} dmeSnaps={data.snapshots} currentT={klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_boost'  && <BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />}
@@ -1233,6 +1363,10 @@ export default function DMEDashboard() {
                 klrData.snapshots.length > 0) && (
                 <button style={S.btn('s')} onClick={()=>setShowLog(false)}>CANCEL</button>
               )}
+              {!liveUrl && (
+                <button style={S.btn('s')} title="Connect to the simulator (dme_klr/live/bridge.mjs)"
+                  onClick={()=>setLiveUrl(lastLiveUrl.current || DEFAULT_LIVE_URL)}>LIVE SIM</button>
+              )}
               <button style={S.btn('p')} onClick={handleLoadAll}>
                 PARSE &amp; LOAD →
               </button>
@@ -1250,7 +1384,7 @@ export default function DMEDashboard() {
 // ─────────────────────────────────────────────────────────────────
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
-function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
+function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
@@ -1364,6 +1498,8 @@ function OverviewTab({ snap, iram, fuelMsV, fuelNext, load16, wu16, lmbd16, minm
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
+    timerTile(0, cpuRegs),
+    timerTile(1, cpuRegs),
   ];
 
 
@@ -2477,7 +2613,7 @@ function KLRTab({ klrData, currentT }) {
 //
 // Each chart uses Recharts ResponsiveContainer with the same
 // green-on-black theme as the DME charts tab.
-function KLRChartsTab({ klrData, currentT }) {
+function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   // Filter to KLR-only phases (exclude DME phase entries tagged cat:'dme')
   const klrPhases = (klrData?.phases ?? []).filter(p => p.cat === 'klr');
   const klrStatus = klrData?.status ?? [];
@@ -2508,13 +2644,19 @@ function KLRChartsTab({ klrData, currentT }) {
   // firing order repeats every 4 IGN_OUT assertions).
   const IGN_IGNORE_MS   = 5000;
   const IGN_NOISE_US    = 200;
+  const snaps = (dmeSnaps ?? []).filter(s => s.t != null);
+  let si = -1;
   const ignDelayEvents = klrPhases
     .filter(p => p.asserted && p.delay_us != null &&
                  (effectiveT == null || p.t <= effectiveT))
     .map(p => {
       const raw = +p.delay_us.toFixed(2);
       const noisy = p.t < IGN_IGNORE_MS || raw > IGN_NOISE_US;
-      return { t: p.t, delay: noisy ? 0 : raw };
+      // Crank degrees at the RPM of the latest DME snapshot: deg = us * rpm * 6e-6
+      while (si + 1 < snaps.length && snaps[si + 1].t <= p.t) si++;
+      const rpm = si >= 0 ? snapRpm(snaps[si]) : null;
+      const deg = !noisy && rpm ? +(raw * rpm * 6e-6).toFixed(2) : null;
+      return { t: p.t, delay: noisy ? 0 : raw, deg, rpm };
     });
 
   const ignDelayByCyl = [1, 2, 3, 4].map(cyl =>
@@ -2729,7 +2871,9 @@ function KLRChartsTab({ klrData, currentT }) {
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
-                    <Tooltip {...tt} formatter={v=>[v, c.unit]}/>
+                    <Tooltip {...tt} formatter={(v, _n, item) => c.key === 'delay' && item?.payload?.deg != null
+                      ? [`${v} μs  =  ${item.payload.deg}° crank @ ${item.payload.rpm} rpm`, 'delay']
+                      : [v, c.unit]}/>
                     {currentT != null &&
                       <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
                     {c.segments ? (
