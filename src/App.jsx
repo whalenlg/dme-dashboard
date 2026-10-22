@@ -2641,14 +2641,13 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
 
   // ── Build chart datasets ──────────────────────────────────
   // IGN delay — one point per asserted event with a measured delay.
-  // First 5s is noisy cranking/sync data, and any single reading above
-  // 200μs is treated as sensor/measurement noise rather than a real spark
-  // delay — keep those points (so all 4 charts share the same time axis /
-  // line up) but zero their delay value instead of dropping them.
+  // First 5s is noisy cranking/sync data — keep those points (so all 4
+  // charts share the same time axis / line up) but zero their value.
+  // Readings above 200us are NOT noise: under knock the KLR retards the
+  // whole IGN_OUT pulse, so dwell start moves out by 400-900us too.
   // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ... (4-stroke
   // firing order repeats every 4 IGN_OUT assertions).
   const IGN_IGNORE_MS   = 5000;
-  const IGN_NOISE_US    = 200;
   const snaps = (dmeSnaps ?? []).filter(s => s.t != null);
   let si = -1;
   const ignDelayEvents = klrPhases
@@ -2656,7 +2655,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
                  (effectiveT == null || p.t <= effectiveT))
     .map(p => {
       const raw = +p.delay_us.toFixed(2);
-      const noisy = p.t < IGN_IGNORE_MS || raw > IGN_NOISE_US;
+      const noisy = p.t < IGN_IGNORE_MS;
       // Crank degrees at the RPM of the latest DME snapshot: deg = us * rpm * 6e-6
       while (si + 1 < snaps.length && snaps[si + 1].t <= p.t) si++;
       const rpm = si >= 0 ? snapRpm(snaps[si]) : null;
@@ -2794,7 +2793,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       col:   CYL_COLORS[cyl-1],
       unit:  'μs',
       dom:   [0, ignDelayMax],
-      note:  `ign_in rise to IGN_OUT rise (dwell start, set by the KLR ext-int routine). Every 4th assertion (firing #${cyl}, ${cyl + 4}, ${cyl + 8}, ...) — first ${IGN_IGNORE_MS/1000}s and readings >${IGN_NOISE_US}μs zeroed as noise`,
+      note:  `ign_in rise to IGN_OUT rise (dwell start, set by the KLR ext-int routine). Every 4th assertion (firing #${cyl}, ${cyl + 4}, ${cyl + 8}, ...) — first ${IGN_IGNORE_MS/1000}s zeroed; values above ~150us are knock retard`,
       empty: ignDelayByCyl[cyl-1].length === 0,
     })),
     {
