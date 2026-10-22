@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, memo } from "react";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
@@ -125,6 +125,33 @@ const METRICS = [
   { k:'klrIgn', label:'KLR IGN PULSE', col:'#ff66cc', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
 ];
 
+// Memoized: the live view re-renders on every sim tick, but a chart only
+// needs redrawing when its series changes (recharts is the costly part).
+const MetricChart = memo(function MetricChart({ m, series, t0, t1 }) {
+  return (
+    <div style={{background:C.panelBg2,border:`1px solid ${C.border}`,padding:'3px 4px 0'}}>
+      <div style={{color:m.col,fontSize:'9px',letterSpacing:'0.12em'}}>{m.label}{m.unit ? ` (${m.unit})` : ''}</div>
+      <ResponsiveContainer width="100%" height={86}>
+        <LineChart data={series} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine">
+          <CartesianGrid stroke="#123312" strokeDasharray="2 4" />
+          <XAxis dataKey="t" type="number" domain={[t0, t1]} tick={{fill:'#557755',fontSize:8}}
+                 tickFormatter={v => `${(v / 1000).toFixed(1)}s`} />
+          <YAxis width={40} domain={['auto','auto']} tick={{fill:'#557755',fontSize:8}}
+                 tickFormatter={v => m.hex ? hx(v) : v} />
+          <Tooltip contentStyle={{background:'#030803',border:`1px solid ${C.border}`,fontSize:10}}
+                   labelFormatter={v => `${v} ms`} formatter={v => [m.fmt(v), m.label]} />
+          <Line dataKey={m.k} stroke={m.col} dot={false} isAnimationActive={false}
+                type={m.step ? 'stepAfter' : 'linear'} connectNulls />
+          {m.overlay && (
+            <Line dataKey={m.overlay} stroke={C.red} strokeWidth={2} dot={false} isAnimationActive={false}
+                  type={m.step ? 'stepAfter' : 'linear'} legendType="none" tooltipType="none" />
+          )}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+});
+
 function EngineRow({ series }) {
   const [charts, setCharts] = useState(true);
   const last = series[series.length - 1];
@@ -148,26 +175,7 @@ function EngineRow({ series }) {
       {charts && series.length > 1 && (
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(330px,1fr))',gap:'6px'}}>
           {METRICS.map(m => (
-            <div key={m.k} style={{background:C.panelBg2,border:`1px solid ${C.border}`,padding:'3px 4px 0'}}>
-              <div style={{color:m.col,fontSize:'9px',letterSpacing:'0.12em'}}>{m.label}{m.unit ? ` (${m.unit})` : ''}</div>
-              <ResponsiveContainer width="100%" height={86}>
-                <LineChart data={series} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine">
-                  <CartesianGrid stroke="#123312" strokeDasharray="2 4" />
-                  <XAxis dataKey="t" type="number" domain={[t0, t1]} tick={{fill:'#557755',fontSize:8}}
-                         tickFormatter={v => `${(v / 1000).toFixed(1)}s`} />
-                  <YAxis width={40} domain={['auto','auto']} tick={{fill:'#557755',fontSize:8}}
-                         tickFormatter={v => m.hex ? hx(v) : v} />
-                  <Tooltip contentStyle={{background:'#030803',border:`1px solid ${C.border}`,fontSize:10}}
-                           labelFormatter={v => `${v} ms`} formatter={v => [m.fmt(v), m.label]} />
-                  <Line dataKey={m.k} stroke={m.col} dot={false} isAnimationActive={false}
-                        type={m.step ? 'stepAfter' : 'linear'} connectNulls />
-                  {m.overlay && (
-                    <Line dataKey={m.overlay} stroke={C.red} strokeWidth={2} dot={false} isAnimationActive={false}
-                          type={m.step ? 'stepAfter' : 'linear'} legendType="none" tooltipType="none" />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <MetricChart key={m.k} m={m} series={series} t0={t0} t1={t1} />
           ))}
         </div>
       )}

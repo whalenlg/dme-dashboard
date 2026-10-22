@@ -15,7 +15,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ─────────────────────────────────────────────────────────────────
 
 export const DEFAULT_LIVE_URL = 'http://127.0.0.1:8951';
-const FLUSH_MS = 400;
+const FLUSH_MS = 150;   // handle queued bridge lines
+const LOG_MS = 500;     // re-parse the accumulated log
 
 const EMPTY_SIM = { state: 'connecting', tNs: 0, dmePc: null, klrPc: null, reason: '', rate: null };
 
@@ -54,8 +55,20 @@ export function useLiveSim(url, onLogText) {
     const es = new EventSource(`${url}/events`);
     es.onopen = () => { setConnected(true); setError(null); };
     es.onerror = () => { setConnected(false); setError(`Can't reach the simulator bridge at ${url}`); };
+    // Lines are queued and handled together on the flush tick, so a burst
+    // of bridge messages costs one React render instead of one per line
+    // (a render per line kept the page busy enough to freeze it).
+    const queue = [];
+    let lastLog = 0;
+    // Rare control replies (breakpoints, run state, errors) skip the queue
+    // so clicks feel immediate; queued lines are handled first to keep order.
+    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART)\]/;
     es.onmessage = ev => {
-      const line = ev.data;
+      if (!URGENT.test(ev.data)) { queue.push(ev.data); return; }
+      for (const line of queue.splice(0)) handle(line);
+      handle(ev.data);
+    };
+    const handle = line => {
       if (!line.startsWith('SIM: ')) {
         lines.current.push(line); dirty.current = true;
         if (/^(DME|KLR): \[WARN\]/.test(line)) setWarnings(w => [...w.slice(-49), line]);
@@ -113,13 +126,21 @@ export function useLiveSim(url, onLogText) {
         setSim(s => ({ ...s, state: 'exited', reason: rest }));
       }
     };
+    // Adaptive pacing: after each update, wait ~3x what it cost (handling
+    // plus React's render) so the page stays responsive on slow machines.
+    let nextAt = 0;
     const flush = setInterval(() => {
+      const t0 = performance.now();
+      if (t0 < nextAt) return;
+      setTimeout(() => { nextAt = performance.now() + 3 * (performance.now() - t0); }, 0);
+      if (queue.length) for (const line of queue.splice(0)) handle(line);
       if (ignDirty.current) {
         ignDirty.current = false;
         setIgn({ dme: [...ignRef.current.dme], klr: [...ignRef.current.klr], inj: [...ignRef.current.inj] });
       }
-      if (!dirty.current) return;
-      dirty.current = false;
+      // Re-parsing the whole log is the costly part, so it runs less often
+      if (!dirty.current || Date.now() - lastLog < LOG_MS) return;
+      dirty.current = false; lastLog = Date.now();
       onLogRef.current?.(lines.current.join('\n'));
     }, FLUSH_MS);
 
