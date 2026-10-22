@@ -3,6 +3,7 @@ import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine
 } from "recharts";
+import TimelineTab from "./TimelineTab.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  GROUP COLOUR MAP
@@ -846,6 +847,16 @@ export default function DMEDashboard() {
   }, []);
 
   const snap     = data.snapshots[idx] || { iram:{} };
+  // Move the scrubber to the snapshot nearest time t (Timeline tab clicks)
+  const seekTo = useCallback(t => {
+    const sn = data.snapshots;
+    if (!sn.length) return;
+    let best = 0;
+    for (let i = 1; i < sn.length; i++)
+      if (Math.abs(sn[i].t - t) < Math.abs(sn[best].t - t)) best = i;
+    setPlaying(false);
+    setIdx(best);
+  }, [data.snapshots]);
   // Build merged iram: current snap + fill gaps from nearest prior DS snapshot
   const iram = useMemo(() => {
     if (!data.snapshots?.length) return snap.iram ?? {};
@@ -1015,7 +1026,7 @@ export default function DMEDashboard() {
     data.snapshots.some(s => ((s.iram?.[0x21] ?? 0) >> 1) & 1),
   [data.snapshots]);
 
-  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'];
+  const TABS = ['overview','timeline','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'];
 
   return (
     <div style={S.root}>
@@ -1045,9 +1056,10 @@ export default function DMEDashboard() {
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','ports','iram','charts','phase','diag'].map(t=>(
+          {['overview','timeline','ports','iram','charts','phase','diag'].map(t=>(
             <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
               {t==='overview'?'DME OVERVIEW':
+               t==='timeline'?'TIMELINE'   :
                t==='ports'   ?'DME PORTS'  :
                t==='iram'    ?'DME IRAM'   :
                t==='charts'  ?'DME CHARTS' :
@@ -1084,6 +1096,8 @@ export default function DMEDashboard() {
             logLoaded={data.snapshots.length>0} />}
         {tab==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
         {tab==='charts'   && <ChartsTab chartData={chartData} currentT={snap.t} />}
+        {tab==='timeline' && <TimelineTab chartData={chartData} dmeSnapshots={data.snapshots}
+            dmePhases={data.phases} klrData={klrData} currentT={snap.t} onSeek={seekTo} />}
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
         {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
