@@ -2687,8 +2687,17 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
     1, ...ignDelayByCyl.flat().map(d => d.delay ?? 0)
   );
 
+  // A real pulse is a deassert right after an assert. Older logs also have
+  // deasserts with no assert before them: IGN_OUT floated high while the
+  // DME trigger held the KLR in reset, which isn't a dwell, so skip those.
+  let lastIgn = null;
   const ignPulseData = klrPhases
-    .filter(p => p.deasserted && p.pulse_ms != null && (effectiveT == null || p.t <= effectiveT))
+    .filter(p => {
+      if (!/IGN_OUT (asserted|deasserted)/.test(p.msg)) return false;
+      const prev = lastIgn; lastIgn = p.deasserted ? 'off' : 'on';
+      return p.deasserted && prev === 'on';
+    })
+    .filter(p => p.pulse_ms != null && (effectiveT == null || p.t <= effectiveT))
     .map(p => ({ t: p.t, pulse: p.t < IGN_IGNORE_MS ? 0 : +p.pulse_ms.toFixed(3) }));
 
   // CV_PWM and knock from STATUS lines
