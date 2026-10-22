@@ -611,6 +611,9 @@ function parseKLRLog(text) {
       // Extract timing measurements
       const dm = msg.match(/delay_from_ign_in=([\d.]+)\s*(us|ms)/);
       const pm = msg.match(/pulse_width=([\d.]+)\s*(us|ms)/);
+      // spark_delay: ign_in falling edge to ign_out falling edge (the spark)
+      const sm = msg.match(/spark_delay=([\d.]+)\s*(us|ms)/);
+      const spark_us = sm ? parseFloat(sm[1]) * (sm[2] === 'ms' ? 1000 : 1) : null;
       const delay_us = dm ? parseFloat(dm[1]) * (dm[2] === 'ms' ? 1000 : 1) : null;
       const pulse_ms = pm ? parseFloat(pm[1]) * (pm[2] === 'us' ? 0.001 : 1) : null;
       // Timing-only lines (no parenthetical context) — merge into previous entry
@@ -621,10 +624,12 @@ function parseKLRLog(text) {
         const prev = phases[phases.length - 1];
         if (delay_us != null) prev.delay_us = delay_us;
         if (pulse_ms != null) prev.pulse_ms = pulse_ms;
+        if (spark_us != null) prev.spark_us = spark_us;
       } else {
         const p = { t: parseInt(tm[1]), msg, cat: 'klr' };
         if (delay_us != null) p.delay_us = delay_us;
         if (pulse_ms != null) p.pulse_ms = pulse_ms;
+        if (spark_us != null) p.spark_us = spark_us;
         p.asserted   = /asserted/i.test(msg);
         p.deasserted = /deasserted/i.test(msg);
         phases.push(p);
@@ -2659,6 +2664,19 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       return { t: p.t, delay: noisy ? 0 : raw, deg, rpm };
     });
 
+  // Spark retard: ign_in fall to ign_out fall (spark), in crank degrees at
+  // the RPM of the latest DME snapshot, same conversion as IGN DELAY
+  let sj = -1;
+  const sparkData = klrPhases
+    .filter(p => p.deasserted && p.spark_us != null && (effectiveT == null || p.t <= effectiveT))
+    .map(p => {
+      while (sj + 1 < snaps.length && snaps[sj + 1].t <= p.t) sj++;
+      const rpm = sj >= 0 ? snapRpm(snaps[sj]) : null;
+      const us  = +p.spark_us.toFixed(2);
+      const deg = p.t >= IGN_IGNORE_MS && rpm ? +(us * rpm * 6e-6).toFixed(2) : null;
+      return { t: p.t, deg, us, rpm };
+    });
+
   const ignDelayByCyl = [1, 2, 3, 4].map(cyl =>
     ignDelayEvents.filter((_, i) => (i % 4) + 1 === cyl)
   );
@@ -2771,6 +2789,16 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       empty: ignDelayByCyl[cyl-1].length === 0,
     })),
     {
+      title: 'SPARK RETARD (° crank)',
+      data:  sparkData,
+      key:   'deg',
+      col:   '#ff5555',
+      unit:  '°',
+      dom:   [0, 'auto'],
+      note:  `ign_in falling edge (DME spark) to IGN_OUT falling edge (KLR spark), deg = μs × rpm × 6e-6 — first ${IGN_IGNORE_MS/1000}s omitted`,
+      empty: sparkData.length === 0,
+    },
+    {
       title: 'IGN PULSE WIDTH (ms)',
       data:  ignPulseData,
       key:   'pulse',
@@ -2873,6 +2901,8 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, _n, item) => c.key === 'delay' && item?.payload?.deg != null
                       ? [`${v} μs  =  ${item.payload.deg}° crank @ ${item.payload.rpm} rpm`, 'delay']
+                      : c.key === 'deg' && item?.payload?.us != null
+                      ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, 'retard']
                       : [v, c.unit]}/>
                     {currentT != null &&
                       <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
