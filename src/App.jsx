@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
 import LivePanel from "./LivePanel.jsx";
+import { mapKpa, gaugePsi, fmtBoost, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -667,7 +668,7 @@ const snapRpm   = snap =>
 // Latest-snapshot engine values for the LIVE banner (same sources as the Overview tiles)
 // Engine values for the LIVE banner and its charts, one point per DME DS
 // snapshot, from the same sources as the Overview tiles. Boost is KLR
-// ram[0x52] / 1.2 = kPa absolute shown as gauge PSI (as on Boost Control);
+// ram[0x52] as gauge PSI (boost.js, as on Boost Control);
 // ignition and injector widths are the latest SIM: [IGN] / [INJ] pulse at
 // or before each point.
 // Live DME registers at snapshot time t (the last [REGS] line at or before t)
@@ -723,7 +724,9 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,
       tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
       load:    s.iram?.[0x49] ?? null,
-      boost:   b != null ? +((b / 1.2 - 101.3) * 0.145038).toFixed(2) : null,
+      boost:   b != null ? +gaugePsi(b).toFixed(2) : null,
+      // DME A_5 is high for all but ~30 us of each spark, so its high time
+      // is the spark-to-spark interval (60000 / rpm / 2), not a dwell
       dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
       klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
     });
@@ -2477,13 +2480,11 @@ function KLRTab({ klrData, currentT }) {
   if (latestStatus?.ramVals) Object.assign(ramDisplay, latestStatus.ramVals);
 
   // Boost / MAP pressure — ram[0x52]. ADC-read routine adds 10 units
-  // before storing here (software-units scale), and per the KLR memory
-  // map docs, ~1.2 software units = 1 kPa absolute. Converted to gauge
-  // PSI (relative to ~101.3kPa atmospheric) — conventional boost-gauge units.
-  //   https://jhnbyrn.github.io/951-KLR-PAGES/klr_memory_map.html
+  // before storing here (software-units scale); boost.js converts it with
+  // the KLR memory map's x = 1.22 * kPa - 4. Shown as a boost gauge:
+  // inHg below 1 bar, psi above.
   const boostRaw = ramDisplay[0x52];
-  const boostKpa = boostRaw != null ? boostRaw / 1.2 : null;
-  const boostPsiGauge = boostKpa != null ? +((boostKpa - 101.3) * 0.145038).toFixed(1) : null;
+  const boostPsiGauge = boostRaw != null ? gaugePsi(boostRaw) : null;
 
   const sig = [
     { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
@@ -2497,7 +2498,7 @@ function KLRTab({ klrData, currentT }) {
     { l:'TIMER',      v: latestStatus?.timer_val != null ? `0x${h2(latestStatus.timer_val)}` : '--',
       col: C.textBright },
     { l:'IGN FIRES',  v: totalFires, col: '#ff8844' },
-    { l:'BOOST',      v: boostPsiGauge != null ? `${boostPsiGauge>=0?'+':''}${boostPsiGauge}psi` : '--',
+    { l:'BOOST',      v: fmtBoost(boostPsiGauge),
       col: boostPsiGauge != null && boostPsiGauge > 0 ? C.amber : '#88ccff', addr: 0x52 },
   ];
 
@@ -2695,10 +2696,8 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
 
   // Boost / MAP pressure (ram[0x52]) — merged from periodic [DS] hex
   // snapshots (always has it) and any explicit STATUS ram[52]= lines,
-  // sorted chronologically. ~1.2 software units = 1 kPa absolute, per
-  // https://jhnbyrn.github.io/951-KLR-PAGES/klr_memory_map.html
-  // Converted to gauge PSI (relative to ~101.3kPa atmospheric) — the
-  // conventional units for a boost gauge readout.
+  // sorted chronologically. Converted to gauge PSI (relative to 1 bar)
+  // with the KLR memory map's scaling (boost.js).
   const boostData = [
     ...(klrData.snapshots ?? [])
       .filter(s => (effectiveT == null || s.t <= effectiveT) && s.ram?.[0x52] != null)
@@ -2709,8 +2708,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   ]
     .sort((a, b) => a.t - b.t)
     .map(d => {
-      const kpa = d.raw / 1.2;
-      return { t: d.t, boost_psi: +((kpa - 101.3) * 0.145038).toFixed(1) };
+      return { t: d.t, boost_psi: +gaugePsi(d.raw).toFixed(1) };
     });
 
   // KLR knock output (P1.6), from the KNOCK_OUT [PHASE] edges — the same
@@ -3559,8 +3557,8 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
 
   // ── Boost Input — actual observed reading, ram[0x52] ──────────
   const boostInputRaw = ramMerged[0x52];
-  const boostInputKpa = boostInputRaw != null ? boostInputRaw / 1.2 : null;
-  const boostInputPsi = boostInputKpa != null ? (boostInputKpa - 101.3) * 0.145038 : null;
+  const boostInputKpa = boostInputRaw != null ? mapKpa(boostInputRaw) : null;
+  const boostInputPsi = boostInputRaw != null ? gaugePsi(boostInputRaw) : null;
 
   // ── Throttle % — from ram[0x43], the same source klr_tb.v's boost
   // model now reads directly (see ram43ToThrottlePct above) ─────────
@@ -3597,8 +3595,7 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
   const boostTargetApprox = (rpmValidForBoost && throttleInTableRange) ? boostTargetSoftwareUnits(rpm, throttlePct) : null;
 
   const boostTargetRaw = usingLoggedTarget ? boostTargetLogged : boostTargetApprox;
-  const boostTargetKpa = boostTargetRaw != null ? boostTargetRaw / 1.2 : null;
-  const boostTargetPsi = boostTargetKpa != null ? (boostTargetKpa - 101.3) * 0.145038 : null;
+  const boostTargetPsi = boostTargetRaw != null ? gaugePsi(boostTargetRaw) : null;
 
   const boostDeltaPsi = (boostInputPsi != null && boostTargetPsi != null)
     ? boostInputPsi - boostTargetPsi : null;
@@ -3622,10 +3619,10 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
   return (
     <div>
       <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'10px'}}>
-        <Card label="BOOST INPUT" value={fmt1(boostInputPsi)} unit="psi"
+        <Card label="BOOST INPUT" value={boostParts(boostInputPsi)[0]} unit={boostParts(boostInputPsi)[1]}
               sub={boostInputRaw != null ? `ram[0x52]=0x${h2(boostInputRaw)} (${fmt1(boostInputKpa)}kPa)` : 'no data'}
               col={boostInputPsi != null && boostInputPsi > 0 ? C.amber : '#88ccff'} />
-        <Card label="BOOST TARGET" value={fmt1(boostTargetPsi)} unit="psi"
+        <Card label="BOOST TARGET" value={boostParts(boostTargetPsi)[0]} unit={boostParts(boostTargetPsi)[1]}
               sub={boostTargetRaw != null
                    ? `hex=0x${h2(Math.round(boostTargetRaw))}${usingLoggedTarget ? ' [sim]' : ` [approx @ ${rpm}rpm, ${fmt1(throttlePct)}%]`}`
                    : rpm != null && rpm < 400 ? `cranking (${rpm}rpm) — not meaningful below 400rpm`
