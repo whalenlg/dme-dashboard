@@ -483,7 +483,7 @@ function parseLog(text) {
   }
   // Annotate each snapshot with last valid raw temp bytes so Overview
   // can carry-forward across mid-scan raw ADC artifacts.
-  // Inline threshold: val*0.875-116 >= -40  →  val >= 87 (0x57)
+  // Same 0x57 floor as ntcToC (a raw ADC scan byte, not yet linearised)
   const validTemp = v => v !== undefined && v >= 0x57;
   const validAfm  = v => v !== undefined && v >= 0x08 && v <= 0xF0;
   const validTps  = v => v !== undefined && v >= 0x50;
@@ -733,15 +733,18 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
   }
   return out;
 };
-// NTC linearised byte → °C  (anchored: 0x00=−116°C, 0xE0=80°C → slope=0.875)
-// NTC linearised byte → °C.
-// Returns null if below −40°C — that means the firmware's linearisation
-// subtask hasn't run yet and iram still holds the raw ADC scan value.
-// Engine coolant/intake air can never be below −40°C in any valid state.
+// NTC linearised byte → °C. The DME's NTC map (maps 1/2) outputs
+// iram[12h]/[13h] on a linear −40…+125 °C scale, which puts the ROM's own
+// thresholds where the disassembly notes have them (55h ≈ 14.7 °C,
+// 8Ch ≈ 50 °C, A2h ≈ 65 °C). Same scale as the sim's ntc_celsius().
+const ntcLinToC = v => Math.round(v * 165 / 255 - 40);
+// Returns null below 0x57 (≈16 °C): kept from the earlier scale's −40 °C
+// cut-off, where iram still holds the raw ADC scan byte because the
+// firmware's linearisation hasn't run yet. A genuinely cold engine reads
+// here too; the sim's STATUS degC is preferred wherever it exists.
 const ntcToC = v => {
   if (v == null || v === undefined) return null;
-  const c = Math.round(v * 0.875 - 116);
-  return c >= -40 ? c : null;
+  return v >= 0x57 ? ntcLinToC(v) : null;
 };
 // Dwell: iram[0x2F] is in half-teeth (132 teeth × 2 edges = 264 ht/rev)
 // 1 half-tooth = 360°/264 = 1.364°
@@ -2038,7 +2041,7 @@ function IRAMTab({ iram, tooltip, setTooltip }) {
                   const rowBg  = i%2===0 ? C.panelBg : C.panelBg2;
                   let derived = '';
                   if (entry.a === 0x12 || entry.a === 0x13) {
-                    if (hasVal) derived = ` (${Math.round(val*0.875-116)}°C)`;
+                    if (hasVal) derived = ` (${ntcLinToC(val)}°C)`;
                   }
                   if (entry.a === 0x16 && hasVal) {
                     derived = val>=0xD1?' (CLOSED/IDLE)':val>=0x77?' (WOT)':' (PART LOAD)';
@@ -2308,7 +2311,7 @@ function DiagTab({ iram, snap }) {
   const rpm = prpm >= 3 ? Math.round(17640 / prpm) : 0;
 
   // Coolant decode (linearised → °C approx)
-  const coolC = Math.round(coolant * 0.875 - 116);
+  const coolC = ntcLinToC(coolant);
 
   // Lambda integrator decode (0x80 = stoich centre)
   const lmbSigned = lmbLo - 0x80;
@@ -2355,7 +2358,7 @@ function DiagTab({ iram, snap }) {
     {
       p2: '0x1F', name: 'COOLANT TEMP', src: 'iram[0x13]  COOLANT',
       raw: coolant, tx: coolant,
-      decode: `0x${h2(coolant)} → ${coolC}°C  |  air temp: iram[0x12]=0x${h2(ir[0x12]??0)} → ${Math.round((ir[0x12]??0)*0.875-116)}°C`,
+      decode: `0x${h2(coolant)} → ${coolC}°C  |  air temp: iram[0x12]=0x${h2(ir[0x12]??0)} → ${ntcLinToC(ir[0x12]??0)}°C`,
       col: '#44aaff',
       detail: `Cold start enrich: ${(ir[0x25]??0)>>5&1?'ACTIVE':'off'}  cold timing: ${(ir[0x25]??0)>>4&1?'ACTIVE':'off'}`,
     },
