@@ -2732,19 +2732,14 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       knockLow = false;
     }
   }
+  // Idle-high anchors at both ends, drawn solid like the FST: knock_out
+  // idles high, any drop is logged as KNOCK_OUT cleared, and every KLR
+  // reset floats it back high.
   const knockPulseData = knockPulseEvents.length
     ? [
         { t: firstKlrT ?? 0, knock_out: 1 },
         ...knockPulseEvents,
         { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 },
-      ]
-    : [];
-  const knockPulseSegments = knockPulseEvents.length
-    ? [
-        { dashed: true,  data: [{ t: firstKlrT ?? 0, knock_out: 1 }, knockPulseEvents[0]] },
-        { dashed: false, data: knockPulseEvents },
-        { dashed: true,  data: [knockPulseEvents[knockPulseEvents.length-1],
-                                 { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 }] },
       ]
     : [];
 
@@ -2811,13 +2806,12 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
     {
       title: 'KNOCK OUTPUT (KLR P1.6)',
       data:  knockPulseData,
-      segments: knockPulseSegments,
       key:   'knock_out',
       col:   '#cc66ff',
       unit:  '',
       dom:   [-0.1, 1.1],
       type:  'stepAfter',
-      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. Dashed ends = anchored high, no data across that gap.',
+      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops.',
       empty: knockPulseData.length === 0,
     },
     {
