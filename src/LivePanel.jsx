@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, memo } from "react";
+import { fmtBoost } from "./boost.js";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
@@ -22,7 +23,7 @@ const INPUTS = [
   { k:'tps',       label:'THROTTLE (TPS)', hint:'28 idle · 72 ≈3000 rpm · D8 ≈6400 rpm' },
   { k:'rpm',       label:'RPM',          auto:true, max:7000, step:10, dec:true, pin:840, hint:'auto = torque-balance model' },
   { k:'afm',       label:'AFM (ch0)',    auto:true, pin:0x28, hint:'auto follows throttle ~250 ms later' },
-  { k:'boost',     label:'BOOST MAP (KLR ch4)', auto:true, pin:0x85, hint:'auto = MAP-table model · 85 nominal' },
+  { k:'boost',     label:'BOOST MAP (KLR ch4)', auto:true, pin:0x85, hint:'auto = MAP model (vacuum below boost onset, then the boost table)' },
   { k:'fuel_qual', label:'FQS (ch7)',    positions:[0x00,0x3B,0x5A,0x75,0x81,0x91,0x9C,0xA7],
     hint:'switch position (ch7 raw 00…A7, as the FQS0..7 tests); also scales model fuel energy' },
   { k:'coolant',   label:'COOLANT (ch3)', hint:'20 warm · 68 ≈5°C · 00 shorted' },
@@ -120,7 +121,7 @@ const METRICS = [
   { k:'afm',    label:'AFM RAW',      col:'#44cccc', hex:true, fmt: hexv },
   { k:'tps',    label:'TPS',          col:'#88ccff', hex:true, fmt: hexv },
   { k:'load',   label:'LOAD',         col:'#ffcc66', hex:true, fmt: hexv },
-  { k:'boost',  label:'BOOST',        col:'#ffaa00', unit:'psi', fmt: v => v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} psi` },
+  { k:'boost',  label:'BOOST',        col:'#ffaa00', unit:'psi', fmt: fmtBoost },
   { k:'dmeIgn', label:'DME IGN PULSE', col:'#ff8888', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
   { k:'klrIgn', label:'KLR IGN PULSE', col:'#ff66cc', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
 ];
