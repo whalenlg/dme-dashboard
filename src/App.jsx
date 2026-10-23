@@ -725,6 +725,8 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
       load:    s.iram?.[0x49] ?? null,
       boost:   b != null ? +gaugePsi(b).toFixed(2) : null,
+      // DME A_5 is high for all but ~30 us of each spark, so its high time
+      // is the spark-to-spark interval (60000 / rpm / 2), not a dwell
       dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
       klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
     });

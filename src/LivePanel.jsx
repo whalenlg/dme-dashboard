@@ -122,7 +122,7 @@ const METRICS = [
   { k:'tps',    label:'TPS',          col:'#88ccff', hex:true, fmt: hexv },
   { k:'load',   label:'LOAD',         col:'#ffcc66', hex:true, fmt: hexv },
   { k:'boost',  label:'BOOST',        col:'#ffaa00', unit:'psi', fmt: fmtBoost },
-  { k:'dmeIgn', label:'DME IGN PULSE', col:'#ff8888', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
+  { k:'dmeIgn', label:'DME SPARK INTERVAL', col:'#ff8888', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
   { k:'klrIgn', label:'KLR IGN PULSE', col:'#ff66cc', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
 ];
 
