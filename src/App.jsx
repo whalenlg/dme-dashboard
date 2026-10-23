@@ -2713,20 +2713,25 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       return { t: d.t, boost_psi: +((kpa - 101.3) * 0.145038).toFixed(1) };
     });
 
-  // Real knock pulses, from [PHASE] lines rather than the coarse 100ms
-  // STATUS sample — STATUS is too infrequent to ever catch the ~6-8ms-wide
-  // knock window, so its "knock" bit always reads high/idle. The [PHASE]
-  // log records the actual drop/restore edges of the comparator output.
-  const knockPulseEvents = klrPhases
-    .filter(p => /Knock pulse: (dropping|restoring)/i.test(p.msg) &&
-                 (effectiveT == null || p.t <= effectiveT))
-    .map(p => ({ t: p.t, knock_out: /dropping/i.test(p.msg) ? 0 : 1 }));
-  // Anchor the line at idle-high for the full visible time range so the
-  // chart reads as a mostly-flat trace with brief low pulses, not just a
-  // handful of points floating in isolation. The lead-in/lead-out anchor
-  // segments are NOT real samples (there's no data confirming the signal
-  // stayed high across that whole gap) — they're dashed to flag that,
-  // while the real recorded pulse edges in the middle stay solid.
+  // KLR knock output (P1.6), from the KNOCK_OUT [PHASE] edges — the same
+  // signal as knock_out in the FST. STATUS is too infrequent to catch it,
+  // and the "Knock pulse: dropping/restoring" lines are the replay's
+  // injected knock_sensor input, not the KLR's output. The KLR is reset
+  // every ignition cycle and its ports float high during reset, so the
+  // rise back to idle is not logged as "KNOCK_OUT asserted"; a low output
+  // is taken back high at the next cycle (next IGN_OUT assert / reset line).
+  const knockPulseEvents = [];
+  let knockLow = false;
+  for (const p of klrPhases) {
+    if (effectiveT != null && p.t > effectiveT) continue;
+    if (/KNOCK_OUT cleared/i.test(p.msg)) {
+      if (!knockLow) knockPulseEvents.push({ t: p.t, knock_out: 0 });
+      knockLow = true;
+    } else if (knockLow && /KNOCK_OUT asserted|IGN_OUT asserted|after KLR reset/i.test(p.msg)) {
+      knockPulseEvents.push({ t: p.t, knock_out: 1 });
+      knockLow = false;
+    }
+  }
   const knockPulseData = knockPulseEvents.length
     ? [
         { t: firstKlrT ?? 0, knock_out: 1 },
@@ -2804,7 +2809,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       empty: statusData.every(d => d.cv_pwm == null),
     },
     {
-      title: 'KNOCK OUTPUT (pulse edges)',
+      title: 'KNOCK OUTPUT (KLR P1.6)',
       data:  knockPulseData,
       segments: knockPulseSegments,
       key:   'knock_out',
@@ -2812,7 +2817,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       unit:  '',
       dom:   [-0.1, 1.1],
       type:  'stepAfter',
-      note:  'Comparator output — briefly drops low during each knock window (from [PHASE] pulse events, not the 100ms STATUS sample). Dashed ends = no data confirming state across that gap, just anchored high.',
+      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. Dashed ends = anchored high, no data across that gap.',
       empty: knockPulseData.length === 0,
     },
     {
