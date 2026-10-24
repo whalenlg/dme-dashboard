@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, memo } from "react";
 import { fmtBoost } from "./boost.js";
+import { thin, syncNearest } from "./thin.js";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
@@ -129,11 +130,12 @@ const METRICS = [
 // Memoized: the live view re-renders on every sim tick, but a chart only
 // needs redrawing when its series changes (recharts is the costly part).
 const MetricChart = memo(function MetricChart({ m, series, t0, t1 }) {
+  const data = useMemo(() => thin(series, m.overlay ? [m.k, m.overlay] : m.k, 800), [series, m]);
   return (
     <div style={{background:C.panelBg2,border:`1px solid ${C.border}`,padding:'3px 4px 0'}}>
       <div style={{color:m.col,fontSize:'9px',letterSpacing:'0.12em'}}>{m.label}{m.unit ? ` (${m.unit})` : ''}</div>
       <ResponsiveContainer width="100%" height={86}>
-        <LineChart data={series} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine">
+        <LineChart data={data} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine" syncMethod={syncNearest}>
           <CartesianGrid stroke="#123312" strokeDasharray="2 4" />
           <XAxis dataKey="t" type="number" domain={[t0, t1]} tick={{fill:'#557755',fontSize:8}}
                  tickFormatter={v => `${(v / 1000).toFixed(1)}s`} />

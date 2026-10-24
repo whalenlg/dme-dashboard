@@ -1,8 +1,11 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, memo } from "react";
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, ReferenceLine, ReferenceArea
+  ResponsiveContainer, CartesianGrid, ReferenceArea,
+  useXAxisScale, usePlotArea
 } from "recharts";
+import { thin, syncNearest } from "./thin.js";
+import { CursorLine } from "./cursor.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  TIMELINE TAB
@@ -38,7 +41,7 @@ const ADCS = [
 // every ~40 ms in real logs) — plotted as data, not markers
 const KLR_NOISY_PHASE = /IGN_OUT|Knock pulse|KNOCK_LOGIC|KNOCK_OUT|FULL_LOAD/i;
 const MAX_MARKERS = 400;
-const MAX_IGN_POINTS = 3000;
+const MAX_IGN_POINTS = 1500;
 const DEFAULT_PICKS = [{src:'dme', addr:0x7D}, {src:'klr', addr:0x33}];
 const PICKS_KEY = 'dme951.timeline.picks';
 
@@ -95,7 +98,8 @@ function savePicks(p) {
   try { localStorage.setItem(PICKS_KEY, JSON.stringify(p)); } catch { /* storage unavailable */ }
 }
 
-export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrData, currentT, onSeek }) {
+// Memoized: live mode re-renders the page on every sim tick
+const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrData, onSeek }) {
   const [range, setRange]   = useState(null);   // [t0, t1] or null = whole log
   const [drag, setDrag]     = useState(null);   // {a, b} while selecting
   const [showDmeMk, setShowDmeMk] = useState(true);
@@ -141,6 +145,24 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
 
   const tMin = rows[0]?.t ?? 0, tMax = rows[rows.length - 1]?.t ?? 0;
   const [t0, t1] = range ?? [tMin, tMax];
+
+  // Rows in the zoom range (plus one either side so lines reach the edges),
+  // thinned per chart to the series it draws
+  const pickSig = picks.map(pickKey).join(',');
+  const shown = useMemo(() => {
+    let a = 0, b = rows.length;
+    while (a < rows.length && rows[a].t < t0) a++;
+    while (b > a && rows[b - 1].t > t1) b--;
+    const vis = rows.slice(Math.max(0, a - 1), Math.min(rows.length, b + 1));
+    return {
+      rpm:   thin(vis, ['rpm', 'fwRpm']),
+      ign:   thin(vis, ['timingAdv', 'dwell']),
+      fuel:  thin(vis, ['fuel', 'isv']),
+      adc:   thin(vis, ADCS.map(x => `adc_${hx(x.addr)}`)),
+      klr:   thin(vis, ['klr52', 'klr33', 'fullLoad']),
+      picks: thin(vis, pickSig ? pickSig.split(',') : []),
+    };
+  }, [rows, t0, t1, pickSig]);
 
   // ── Event markers ─────────────────────────────────────────────
   const markers = useMemo(() => {
@@ -214,9 +236,9 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
 
   // Every chart gets a right axis of the same width so the plot areas,
   // and therefore the time axes, line up vertically.
-  const chart = (height, children, yAxes, rightAxis) => (
+  const chart = (data, height, children, yAxes, rightAxis) => (
     <ResponsiveContainer width="100%" height={height}>
-      <ComposedChart data={rows} syncId="timeline" syncMethod="value"
+      <ComposedChart data={data} syncId="timeline" syncMethod={syncNearest}
         margin={{top:4,right:8,bottom:0,left:0}}
         onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}>
         <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
@@ -225,11 +247,8 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
         {yAxes}
         {rightAxis ?? <YAxis yAxisId="r" orientation="right" width={36} tick={false} axisLine={false} />}
         <Tooltip content={<TipBox markers={markers} />} isAnimationActive={false} />
-        {shownMarkers.map((m, i) => (
-          <ReferenceLine key={i} yAxisId="l" x={m.t} stroke={m.col} strokeOpacity={0.45} strokeDasharray="2 3"
-                         ifOverflow="hidden" />
-        ))}
-        {currentT != null && <ReferenceLine yAxisId="l" x={currentT} stroke={C.textBright} strokeWidth={1.5} ifOverflow="hidden" />}
+        <MarkerLines markers={shownMarkers} />
+        <CursorLine stroke={C.textBright} strokeWidth={1.5} />
         {drag && <ReferenceArea yAxisId="l" x1={Math.min(drag.a, drag.b)} x2={Math.max(drag.a, drag.b)}
                                 fill={C.textBright} fillOpacity={0.12} ifOverflow="hidden" />}
         {children}
@@ -266,7 +285,7 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
           {chip("rpm", "stimulus (ref sensor)", C.textBright)}
           {chip("fwRpm", "firmware prpm(37h)", "#ffaa00")}
         </div>
-        {chart(140, [line('rpm', C.textBright), line('fwRpm', '#ffaa00', 'l', {strokeDasharray:'4 2'})],
+        {chart(shown.rpm, 140, [line('rpm', C.textBright), line('fwRpm', '#ffaa00', 'l', {strokeDasharray:'4 2'})],
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 'auto']} width={44} />)}
       </div>
 
@@ -277,7 +296,7 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
           {chip("dwell", "dwell 2Fh (ms)", "#ff8844")}
           {chip("ignPulse", `KLR IGN_OUT pulse (ms)${ignPts.total > ignPts.pts.length ? ` · 1 in ${Math.ceil(ignPts.total / ignPts.pts.length)}` : ''}`, "#ffcc44")}
         </div>
-        {chart(150, [
+        {chart(shown.ign, 150, [
           line('timingAdv', '#ff4444'),
           line('dwell', '#ff8844', 'r'),
           !hidden.ignPulse && <Scatter key="ign" yAxisId="r" data={ignPts.pts} dataKey="ignPulse" name={seriesLabel('ignPulse')}
@@ -293,7 +312,7 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
           {chip("fuel", "injection 4B:4Ah (ms)", "#66ff66")}
           {chip("isv", "ISV 7Fh", "#ff44aa")}
         </div>
-        {chart(130, [line('fuel', '#66ff66'), line('isv', '#ff44aa', 'r')],
+        {chart(shown.fuel, 130, [line('fuel', '#66ff66'), line('isv', '#ff44aa', 'r')],
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 'auto']} width={44} />,
           <YAxis yAxisId="r" orientation="right" tick={ax} stroke="#ff44aa" domain={[0, 255]} width={36} />)}
       </div>
@@ -303,7 +322,7 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
         <div style={title}>ADC RAW (DME iram)
           {ADCS.map(a => chip(`adc_${hx(a.addr)}`, `${a.name} ${hx(a.addr)}h`, a.col))}
         </div>
-        {chart(170, ADCS.map(a => line(`adc_${hx(a.addr)}`, a.col)),
+        {chart(shown.adc, 170, ADCS.map(a => line(`adc_${hx(a.addr)}`, a.col)),
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} />)}
       </div>
 
@@ -315,7 +334,7 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
             {chip("klr33", "DTC ram[33h]", "#ff4444")}
             {chip("fullLoad", "full_load pin", "#66ff66")}
           </div>
-          {chart(140, [line('klr52', C.blue), line('klr33', '#ff4444'),
+          {chart(shown.klr, 140, [line('klr52', C.blue), line('klr33', '#ff4444'),
                        line('fullLoad', '#66ff66', 'r', {type:'stepAfter'})],
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} />,
           <YAxis yAxisId="r" orientation="right" tick={ax} stroke="#66ff66" domain={[0, 1]} ticks={[0, 1]} width={36} />)}
@@ -343,7 +362,7 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
             <button style={btn} onClick={addPick}>ADD</button>
           </span>
         </div>
-        {picks.length > 0 && chart(170, [
+        {picks.length > 0 && chart(shown.picks, 170, [
           ...picks.filter(p => p.bit == null).map(p => line(pickKey(p), PICK_COLS[picks.indexOf(p) % PICK_COLS.length])),
           ...picks.filter(p => p.bit != null).map(p => line(pickKey(p), PICK_COLS[picks.indexOf(p) % PICK_COLS.length], 'r', {type:'stepAfter'})),
         ],
@@ -352,6 +371,29 @@ export default function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrDat
       </div>
     </div>
   );
+});
+
+// PHASE markers drawn as one dashed SVG path per colour. As <ReferenceLine>s
+// each marker was its own chart-store subscriber, and hundreds of them per
+// chart made the tab take tens of seconds to render.
+function MarkerLines({ markers }) {
+  const x = useXAxisScale();
+  const area = usePlotArea();
+  if (!x || !area) return null;
+  const lo = area.x, hi = area.x + area.width;
+  const paths = {};
+  for (const m of markers) {
+    const px = x(m.t);
+    if (px == null || px < lo || px > hi) continue;
+    paths[m.col] = (paths[m.col] ?? '') + `M${px.toFixed(1)},${area.y}v${area.height}`;
+  }
+  return (
+    <g className="timeline-markers" pointerEvents="none">
+      {Object.entries(paths).map(([col, d]) => (
+        <path key={col} d={d} stroke={col} strokeOpacity={0.45} strokeDasharray="2 3" fill="none" />
+      ))}
+    </g>
+  );
 }
 
 // Short vertical tick for each IGN_OUT pulse
@@ -359,3 +401,5 @@ function IgnTick({ cx, cy, fill }) {
   if (cx == null || cy == null) return null;
   return <line x1={cx} x2={cx} y1={cy - 4} y2={cy + 4} stroke={fill} strokeWidth={1} />;
 }
+
+export default TimelineTab;

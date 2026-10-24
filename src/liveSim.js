@@ -10,13 +10,20 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    GET  <url>/asm/dme|klr  disassembly listing
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
-//  DME:/KLR: lines are collected into a log text that the existing
-//  parseLog/parseKLRLog read; "SIM: [...]" lines update the debugger state.
+//  DME:/KLR: lines are handed to onLogLines in batches, for the
+//  incremental log parsers; "SIM: [...]" lines update the debugger state.
+//  Nothing here keeps the whole run: per-spark and register history are
+//  capped (oldest dropped), so a long session can't exhaust memory.
 // ─────────────────────────────────────────────────────────────────
 
 export const DEFAULT_LIVE_URL = 'http://127.0.0.1:8951';
 const FLUSH_MS = 150;   // handle queued bridge lines
-const LOG_MS = 500;     // re-parse the accumulated log
+const LOG_MS = 500;     // hand new log lines to the parsers
+const MAX_IGN  = 40000; // [IGN] / [INJ] pulses kept per series (~8 sim minutes at idle)
+const MAX_REGS = 12000; // DME [REGS] lines kept (one per snapshot)
+
+// Cap a history list, dropping to 3/4 so it happens only occasionally
+const capped = (arr, max) => arr.length > max ? arr.slice(-Math.floor(max * 3 / 4)) : arr;
 
 const EMPTY_SIM = { state: 'connecting', tNs: 0, dmePc: null, klrPc: null, reason: '', rate: null };
 
@@ -27,7 +34,7 @@ function parseKV(s) {
 }
 const splitHex = s => (s ? s.split(',').filter(Boolean).map(h => parseInt(h, 16)) : []);
 
-export function useLiveSim(url, onLogText) {
+export function useLiveSim(url, onLogLines) {
   const [connected, setConnected] = useState(false);
   const [sim, setSim]       = useState(EMPTY_SIM);
   const [inputs, setInputs] = useState({});
@@ -41,16 +48,18 @@ export function useLiveSim(url, onLogText) {
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
 
-  const lines = useRef([]);
+  const lines = useRef([]);         // log lines not yet handed to onLogLines
+  const reset = useRef(false);      // next hand-off starts the log over
   const dirty = useRef(false);
   const ignRef = useRef({ dme: [], klr: [], inj: [] });
   const ignDirty = useRef(false);
-  const onLogRef = useRef(onLogText);
-  useEffect(() => { onLogRef.current = onLogText; }, [onLogText]);
+  const onLogRef = useRef(onLogLines);
+  useEffect(() => { onLogRef.current = onLogLines; }, [onLogLines]);
 
   useEffect(() => {
     if (!url) return;
-    lines.current = [];
+    // The bridge replays its history on connect, so start the log over
+    lines.current = []; reset.current = true; dirty.current = true;
     ignRef.current = { dme: [], klr: [], inj: [] };
     const es = new EventSource(`${url}/events`);
     es.onopen = () => { setConnected(true); setError(null); };
@@ -80,10 +89,14 @@ export function useLiveSim(url, onLogText) {
       if (kind === 'IGN' || kind === 'INJ') {
         const cpu = kind === 'INJ' ? 'inj' : rest.split(' ')[0];
         const kv = parseKV(rest);
-        ignRef.current[cpu]?.push({ t: +kv.t_ns / 1e6, w: +kv.width_ns / 1e6 });
+        const list = ignRef.current[cpu];
+        if (list) {
+          list.push({ t: +kv.t_ns / 1e6, w: +kv.width_ns / 1e6 });
+          if (list.length > MAX_IGN) ignRef.current[cpu] = capped(list, MAX_IGN);
+        }
         ignDirty.current = true;
       } else if (kind === 'RESTART') {
-        lines.current = []; dirty.current = true;
+        lines.current = []; reset.current = true; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
         setWarnings([]);
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
@@ -119,7 +132,7 @@ export function useLiveSim(url, onLogText) {
         const r = {};
         for (const [k, v] of Object.entries(parseKV(rest))) r[k] = k === 't_ms' ? +v : parseInt(v, 16);
         setRegs(g => ({ ...g, [cpu]: r }));
-        if (cpu === 'dme') setDmeRegsHist(h => [...h, r]);
+        if (cpu === 'dme') setDmeRegsHist(h => capped([...h, r], MAX_REGS));
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
@@ -134,14 +147,19 @@ export function useLiveSim(url, onLogText) {
       if (t0 < nextAt) return;
       setTimeout(() => { nextAt = performance.now() + 3 * (performance.now() - t0); }, 0);
       if (queue.length) for (const line of queue.splice(0)) handle(line);
+      // Parsing and the re-render it causes are the costly part, so less often.
+      // Pulses go out with the log lines, so both land in one render.
+      if (!(dirty.current || ignDirty.current) || Date.now() - lastLog < LOG_MS) return;
+      lastLog = Date.now();
       if (ignDirty.current) {
         ignDirty.current = false;
         setIgn({ dme: [...ignRef.current.dme], klr: [...ignRef.current.klr], inj: [...ignRef.current.inj] });
       }
-      // Re-parsing the whole log is the costly part, so it runs less often
-      if (!dirty.current || Date.now() - lastLog < LOG_MS) return;
-      dirty.current = false; lastLog = Date.now();
-      onLogRef.current?.(lines.current.join('\n'));
+      if (!dirty.current) return;
+      dirty.current = false;
+      const batch = lines.current, fresh = reset.current;
+      lines.current = []; reset.current = false;
+      onLogRef.current?.(batch, fresh);
     }, FLUSH_MS);
 
     Promise.all(['dme', 'klr'].map(c => fetch(`${url}/asm/${c}`).then(r => r.ok ? r.json() : []).catch(() => [])))

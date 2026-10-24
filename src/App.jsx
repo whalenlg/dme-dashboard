@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine
@@ -7,6 +7,8 @@ import TimelineTab from "./TimelineTab.jsx";
 import LivePanel from "./LivePanel.jsx";
 import { mapKpa, gaugePsi, fmtBoost, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
+import { thin, extent } from "./thin.js";
+import { CursorContext, CursorLine } from "./cursor.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  GROUP COLOUR MAP
@@ -472,15 +474,34 @@ function parsePhaseLine(line) {
   return { t: parseInt(tm[1]), msg, category };
 }
 
-function parseLog(text) {
+// Stable sorted insert by t: same order as pushing everything and then
+// Array.sort (stable), without re-sorting the whole list on every line.
+function insertByT(arr, item) {
+  if (!arr.length || arr[arr.length - 1].t <= item.t) { arr.push(item); return; }
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid].t <= item.t) lo = mid + 1; else hi = mid; }
+  arr.splice(lo, 0, item);
+}
+
+// Drop the oldest entries once a list passes max (down to 3/4 of max, so
+// trimming is occasional). Returns how many were dropped.
+function trimFront(arr, max) {
+  if (!max || arr.length <= max) return 0;
+  const n = arr.length - Math.floor(max * 3 / 4);
+  arr.splice(0, n);
+  return n;
+}
+
+// What live mode keeps: about the last 10 simulated minutes (DS + STATUS
+// every 100 ms per CPU, ~100 KLR [PHASE] lines per second at idle)
+const LIVE_MAX = { snapshots: 12000, status: 6000, phases: 60000 };
+
+// Incremental DME log parser: push() lines as they arrive (live sim) and
+// read result() whenever needed, instead of re-parsing the whole log text.
+// max = { snapshots, phases } caps what is kept (oldest dropped first).
+function dmeLogParser(max = {}) {
   const snapshots = [], phases = [];
-  for (const line of text.split('\n')) {
-    const t = line.trim();
-    if (t.startsWith('[DS]') || t.startsWith('DME: [DS]'))             { const s = parseDsLine(t);      if (s) snapshots.push(s); }
-    else if (t.startsWith('[STATUS]'))                                  { const s = parseStatusLine(t);  if (s) snapshots.push(s); }
-    else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t);   if (p) phases.push(p);    }
-    else if (t.startsWith('DME: [STATUS]'))                            { const s = parseStatusLine(t.replace(/^DME: /,'')); if (s) snapshots.push(s); }
-  }
+  let dropped = 0, out = null;   // out: last result's arrays, reused while nothing changes
   // Annotate each snapshot with last valid raw temp bytes so Overview
   // can carry-forward across mid-scan raw ADC artifacts.
   // Same 0x57 floor as ntcToC (a raw ADC scan byte, not yet linearised)
@@ -490,7 +511,8 @@ function parseLog(text) {
   let lastCoolantRaw = undefined, lastAirRaw = undefined, lastAfmRaw = undefined, lastTpsRaw = undefined;
   let lastCoolantC = undefined, lastAirC = undefined;
   let lastDsIram = {};
-  for (const s of snapshots) {
+  const addSnap = s => {
+    if (!s) return;
     if (validTemp(s.iram[0x13])) lastCoolantRaw = s.iram[0x13];
     if (validTemp(s.iram[0x12])) lastAirRaw     = s.iram[0x12];
     // Only use STATUS snapshots for AFM shadow — DS iram[0x10] is unreliable
@@ -511,8 +533,37 @@ function parseLog(text) {
       // Fill STATUS iram gaps from previous DS snapshot
       s.iram = { ...lastDsIram, ...s.iram };
     }
-  }
-  phases.sort((a, b) => a.t - b.t);
+    snapshots.push(s);
+    out = null;
+  };
+  return {
+    push(lines) {
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith('[DS]') || t.startsWith('DME: [DS]'))             addSnap(parseDsLine(t));
+        else if (t.startsWith('[STATUS]'))                                  addSnap(parseStatusLine(t));
+        else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t); if (p) { insertByT(phases, p); out = null; } }
+        else if (t.startsWith('DME: [STATUS]'))                            addSnap(parseStatusLine(t.replace(/^DME: /,'')));
+      }
+      const n = trimFront(snapshots, max.snapshots);
+      if (n || trimFront(phases, max.phases)) out = null;
+      dropped += n;
+    },
+    // Fresh arrays after any change, so memos keyed on them see it, and the
+    // same arrays otherwise. dropped: snapshots trimmed since the last call.
+    result() {
+      out ??= { snapshots: snapshots.slice(), phases: phases.slice() };
+      const r = { ...out, dropped };
+      dropped = 0;
+      return r;
+    },
+  };
+}
+
+function parseLog(text) {
+  const p = dmeLogParser();
+  p.push(text.split('\n'));
+  const { snapshots, phases } = p.result();
   return { snapshots, phases };
 }
 
@@ -528,122 +579,152 @@ function parseLog(text) {
 //    ignout   : p2[7] ignition output
 //    fl       : p1[5] full-load flag
 // ─────────────────────────────────────────────────────────────────
-function parseKLRLog(text) {
+// Incremental, like dmeLogParser; max = { snapshots, phases, status }
+function klrLogParser(max = {}) {
   const snapshots = [], phases = [], status = [];
-  for (const line of text.split('\n')) {
-    const t = line.trim();
+  let lastPhase = null;   // last phase added, which timing-only lines merge into
+  let dropped = 0;        // phases trimmed off the front since the last result()
+  let out = null;         // last result's arrays, reused while nothing changes
+  const addPhase = p => { insertByT(phases, p); lastPhase = p; };
+  const push = lines => {
+    const before = snapshots.length + status.length + phases.length;
+    let merged = false;
+    for (const line of lines) {
+      const t = line.trim();
 
-    // ── [KLR] hex snapshot ──────────────────────────────────
-    if (t.startsWith('KLR: [DS]')) {
-      const parts = t.slice('KLR: [DS]'.length).trim().split(',');
-      if (parts.length < 2) continue;
-      const time = parseInt(parts[0]);
-      if (isNaN(time)) continue;
-      const hex = parts[1].trim();
-      const snap = { t: time, ram: {} };
-      for (let i = 0; i < Math.min(hex.length / 2, 128); i++) {
-        const bs = hex.slice(i * 2, i * 2 + 2);
-        if (bs && !/x/i.test(bs)) {
-          const v = parseInt(bs, 16); if (!isNaN(v)) snap.ram[i] = v;
+      // ── [KLR] hex snapshot ──────────────────────────────────
+      if (t.startsWith('KLR: [DS]')) {
+        const parts = t.slice('KLR: [DS]'.length).trim().split(',');
+        if (parts.length < 2) continue;
+        const time = parseInt(parts[0]);
+        if (isNaN(time)) continue;
+        const hex = parts[1].trim();
+        const snap = { t: time, ram: {} };
+        for (let i = 0; i < Math.min(hex.length / 2, 128); i++) {
+          const bs = hex.slice(i * 2, i * 2 + 2);
+          if (bs && !/x/i.test(bs)) {
+            const v = parseInt(bs, 16); if (!isNaN(v)) snap.ram[i] = v;
+          }
         }
-      }
-      // Ports field may contain X for unknown bits e.g. "X76X"
-      // Parse each nibble separately — skip only the unknown nibbles
-      if (parts[2]) {
-        const pf = parts[2].trim();
-        // P1 = first two chars, P2 = next two chars
-        // A nibble is valid if it's 0-9 or a-f; X/x means unknown
-        const parsePartial = (hi, lo) => {
-          const hv = /^[0-9a-fA-F]$/.test(hi) ? parseInt(hi, 16) : null;
-          const lv = /^[0-9a-fA-F]$/.test(lo)  ? parseInt(lo, 16)  : null;
-          if (hv === null && lv === null) return null;
-          // Fill unknown nibble with 0 and mark as partial
-          return { val: ((hv ?? 0) << 4) | (lv ?? 0), partial: hv===null||lv===null };
-        };
-        const p1r = parsePartial(pf[0], pf[1]);
-        const p2r = parsePartial(pf[2], pf[3]);
-        if (p1r !== null) { snap.p1 = p1r.val; snap.p1partial = p1r.partial; }
-        if (p2r !== null) { snap.p2 = p2r.val; snap.p2partial = p2r.partial; }
-      }
-      if (parts[3]) snap.extra = parts[3].trim();
-      snapshots.push(snap);
+        // Ports field may contain X for unknown bits e.g. "X76X"
+        // Parse each nibble separately — skip only the unknown nibbles
+        if (parts[2]) {
+          const pf = parts[2].trim();
+          // P1 = first two chars, P2 = next two chars
+          // A nibble is valid if it's 0-9 or a-f; X/x means unknown
+          const parsePartial = (hi, lo) => {
+            const hv = /^[0-9a-fA-F]$/.test(hi) ? parseInt(hi, 16) : null;
+            const lv = /^[0-9a-fA-F]$/.test(lo)  ? parseInt(lo, 16)  : null;
+            if (hv === null && lv === null) return null;
+            // Fill unknown nibble with 0 and mark as partial
+            return { val: ((hv ?? 0) << 4) | (lv ?? 0), partial: hv===null||lv===null };
+          };
+          const p1r = parsePartial(pf[0], pf[1]);
+          const p2r = parsePartial(pf[2], pf[3]);
+          if (p1r !== null) { snap.p1 = p1r.val; snap.p1partial = p1r.partial; }
+          if (p2r !== null) { snap.p2 = p2r.val; snap.p2partial = p2r.partial; }
+        }
+        if (parts[3]) snap.extra = parts[3].trim();
+        snapshots.push(snap);
 
-    // ── KLR: [STATUS] text line ─────────────────────────────
-    } else if (t.startsWith('KLR: [STATUS]')) {
-      const body = t.slice('KLR: [STATUS]'.length).trim();
-      const tm = body.match(/t=(\d+)\s*ms/);
-      if (!tm) continue;
-      const s = { t: parseInt(tm[1]) };
-      // Named fields
-      const fields = ['pc','mb','SP','irq','ign_out','full_load','CV_PWM','tps_raw','tps_deg','timer_val'];
-      for (const f of fields) {
-        const m = body.match(new RegExp(f + '=(\\w+)'));
-        if (m && m[1] !== 'x' && m[1] !== 'xx') s[f] = parseInt(m[1], 16);
-      }
-      // knock — may be 'x'
-      const km = body.match(/knock=(\w+)/);
-      if (km) s.knock = km[1] === 'x' ? null : parseInt(km[1], 16);
-      // knock_count — cumulative decimal counter (not hex)
-      const kcm = body.match(/knock_count=(\d+)/);
-      if (kcm) s.knock_count = parseInt(kcm[1], 10);
-      // boost_target — real internal MAP-table lookup from klr_tb.v itself
-      // (authoritative — replaces the dashboard's own independent JS
-      // reconstruction when present in the log). 0 when -DBOOST wasn't set.
-      const btm = body.match(/boost_target=([0-9a-fA-F]+)/);
-      if (btm) s.boost_target = parseInt(btm[1], 16);
-      // Registers R0/R2/R4/R5
-      for (const r of ['R0','R2','R4','R5']) {
-        const m = body.match(new RegExp(r + '=(\\w+)'));
-        if (m && m[1] !== 'x') s[r] = parseInt(m[1], 16);
-      }
-      // ram[n] values — bracket index is HEX (e.g. ram[33] means address 0x33),
-      // matching how the KLR firmware log labels RAM addresses.
-      s.ramVals = {};
-      for (const m of body.matchAll(/ram\[([0-9a-fA-F]+)\]=([0-9a-fA-F]+)/g))
-        s.ramVals[parseInt(m[1], 16)] = parseInt(m[2], 16);
-      status.push(s);
+      // ── KLR: [STATUS] text line ─────────────────────────────
+      } else if (t.startsWith('KLR: [STATUS]')) {
+        const body = t.slice('KLR: [STATUS]'.length).trim();
+        const tm = body.match(/t=(\d+)\s*ms/);
+        if (!tm) continue;
+        const s = { t: parseInt(tm[1]) };
+        // Named fields
+        const fields = ['pc','mb','SP','irq','ign_out','full_load','CV_PWM','tps_raw','tps_deg','timer_val'];
+        for (const f of fields) {
+          const m = body.match(new RegExp(f + '=(\\w+)'));
+          if (m && m[1] !== 'x' && m[1] !== 'xx') s[f] = parseInt(m[1], 16);
+        }
+        // knock — may be 'x'
+        const km = body.match(/knock=(\w+)/);
+        if (km) s.knock = km[1] === 'x' ? null : parseInt(km[1], 16);
+        // knock_count — cumulative decimal counter (not hex)
+        const kcm = body.match(/knock_count=(\d+)/);
+        if (kcm) s.knock_count = parseInt(kcm[1], 10);
+        // boost_target — real internal MAP-table lookup from klr_tb.v itself
+        // (authoritative — replaces the dashboard's own independent JS
+        // reconstruction when present in the log). 0 when -DBOOST wasn't set.
+        const btm = body.match(/boost_target=([0-9a-fA-F]+)/);
+        if (btm) s.boost_target = parseInt(btm[1], 16);
+        // Registers R0/R2/R4/R5
+        for (const r of ['R0','R2','R4','R5']) {
+          const m = body.match(new RegExp(r + '=(\\w+)'));
+          if (m && m[1] !== 'x') s[r] = parseInt(m[1], 16);
+        }
+        // ram[n] values — bracket index is HEX (e.g. ram[33] means address 0x33),
+        // matching how the KLR firmware log labels RAM addresses.
+        s.ramVals = {};
+        for (const m of body.matchAll(/ram\[([0-9a-fA-F]+)\]=([0-9a-fA-F]+)/g))
+          s.ramVals[parseInt(m[1], 16)] = parseInt(m[2], 16);
+        status.push(s);
 
-    // ── KLR: [PHASE] timing event ───────────────────────────
-    } else if (t.startsWith('KLR: [PHASE]')) {
-      const body = t.slice('KLR: [PHASE]'.length).trim();
-      const tm = body.match(/t=(\d+)\s*ms/);
-      if (!tm) continue;
-      const msg = body.replace(/t=\d+\s*ms\s*/, '').trim();
-      // Extract timing measurements
-      const dm = msg.match(/delay_from_ign_in=([\d.]+)\s*(us|ms)/);
-      const pm = msg.match(/pulse_width=([\d.]+)\s*(us|ms)/);
-      // spark_delay: ign_in falling edge to ign_out falling edge (the spark)
-      const sm = msg.match(/spark_delay=([\d.]+)\s*(us|ms)/);
-      const spark_us = sm ? parseFloat(sm[1]) * (sm[2] === 'ms' ? 1000 : 1) : null;
-      const delay_us = dm ? parseFloat(dm[1]) * (dm[2] === 'ms' ? 1000 : 1) : null;
-      const pulse_ms = pm ? parseFloat(pm[1]) * (pm[2] === 'us' ? 0.001 : 1) : null;
-      // Timing-only lines (no parenthetical context) — merge into previous entry
-      // Never merge asserted/deasserted lines — they always need their own entry
-      const isTiming = (dm || pm) && !/\(/.test(msg) &&
-                       !/asserted|deasserted/i.test(msg);
-      if (isTiming && phases.length > 0) {
-        const prev = phases[phases.length - 1];
-        if (delay_us != null) prev.delay_us = delay_us;
-        if (pulse_ms != null) prev.pulse_ms = pulse_ms;
-        if (spark_us != null) prev.spark_us = spark_us;
-      } else {
-        const p = { t: parseInt(tm[1]), msg, cat: 'klr' };
-        if (delay_us != null) p.delay_us = delay_us;
-        if (pulse_ms != null) p.pulse_ms = pulse_ms;
-        if (spark_us != null) p.spark_us = spark_us;
-        p.asserted   = /asserted/i.test(msg);
-        p.deasserted = /deasserted/i.test(msg);
-        phases.push(p);
-      }
+      // ── KLR: [PHASE] timing event ───────────────────────────
+      } else if (t.startsWith('KLR: [PHASE]')) {
+        const body = t.slice('KLR: [PHASE]'.length).trim();
+        const tm = body.match(/t=(\d+)\s*ms/);
+        if (!tm) continue;
+        const msg = body.replace(/t=\d+\s*ms\s*/, '').trim();
+        // Extract timing measurements
+        const dm = msg.match(/delay_from_ign_in=([\d.]+)\s*(us|ms)/);
+        const pm = msg.match(/pulse_width=([\d.]+)\s*(us|ms)/);
+        // spark_delay: ign_in falling edge to ign_out falling edge (the spark)
+        const sm = msg.match(/spark_delay=([\d.]+)\s*(us|ms)/);
+        const spark_us = sm ? parseFloat(sm[1]) * (sm[2] === 'ms' ? 1000 : 1) : null;
+        const delay_us = dm ? parseFloat(dm[1]) * (dm[2] === 'ms' ? 1000 : 1) : null;
+        const pulse_ms = pm ? parseFloat(pm[1]) * (pm[2] === 'us' ? 0.001 : 1) : null;
+        // Timing-only lines (no parenthetical context) — merge into previous entry
+        // Never merge asserted/deasserted lines — they always need their own entry
+        const isTiming = (dm || pm) && !/\(/.test(msg) &&
+                         !/asserted|deasserted/i.test(msg);
+        if (isTiming && lastPhase) {
+          const prev = lastPhase;
+          merged = true;
+          if (delay_us != null) prev.delay_us = delay_us;
+          if (pulse_ms != null) prev.pulse_ms = pulse_ms;
+          if (spark_us != null) prev.spark_us = spark_us;
+        } else {
+          const p = { t: parseInt(tm[1]), msg, cat: 'klr' };
+          if (delay_us != null) p.delay_us = delay_us;
+          if (pulse_ms != null) p.pulse_ms = pulse_ms;
+          if (spark_us != null) p.spark_us = spark_us;
+          p.asserted   = /asserted/i.test(msg);
+          p.deasserted = /deasserted/i.test(msg);
+          addPhase(p);
+        }
 
-    // ── DME [PHASE] — bare or DME: prefixed (combined log) ───
-    // Tag as cat:'dme' so KLR charts filter these out
-    } else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]')) {
-      const p = parsePhaseLine(t);
-      if (p) { p.cat = 'dme'; phases.push(p); }
+      // ── DME [PHASE] — bare or DME: prefixed (combined log) ───
+      // Tag as cat:'dme' so KLR charts filter these out
+      } else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]')) {
+        const p = parsePhaseLine(t);
+        if (p) { p.cat = 'dme'; addPhase(p); }
+      }
     }
-  }
-  phases.sort((a, b) => a.t - b.t);
+    const added = snapshots.length + status.length + phases.length !== before;
+    trimFront(snapshots, max.snapshots);
+    trimFront(status, max.status);
+    const n = trimFront(phases, max.phases);
+    if (added || merged) out = null;
+    dropped += n;
+  };
+  return {
+    push,
+    result() {
+      out ??= { snapshots: snapshots.slice(), phases: phases.slice(), status: status.slice() };
+      const r = { ...out, dropped };
+      dropped = 0;
+      return r;
+    },
+  };
+}
+
+function parseKLRLog(text) {
+  const p = klrLogParser();
+  p.push(text.split('\n'));
+  const { snapshots, phases, status } = p.result();
   return { snapshots, phases, status };
 }
 // ─────────────────────────────────────────────────────────────────
@@ -692,22 +773,28 @@ const timerTile = (n, regs) => {
            col: run ? '#ccaaff' : C.textDim, mmk:null, addr:null };
 };
 
+// A point is final once a later DME snapshot exists (the KLR snapshot and
+// pulses at its time are logged before that), so it is built only once
+const livePoints = new WeakMap();   // DME snapshot → its series point
 const liveSeries = (dmeSnaps, klrSnaps, ign) => {
   const out = [];
   let k = -1, di = -1, ki = -1, ii = -1;
+  const lastT = dmeSnaps.findLast(s => s.t != null)?.t;
   for (const s of dmeSnaps) {
     if (s.t == null) continue;
     while (k + 1 < klrSnaps.length && klrSnaps[k + 1].t <= s.t) k++;
     while (di + 1 < ign.dme.length && ign.dme[di + 1].t <= s.t) di++;
     while (ki + 1 < ign.klr.length && ign.klr[ki + 1].t <= s.t) ki++;
     while (ii + 1 < ign.inj.length && ign.inj[ii + 1].t <= s.t) ii++;
+    const done = s.t < lastT ? livePoints.get(s) : null;
+    if (done) { out.push(done); continue; }
     const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
     const cut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
     // No injector edge for 2+ revs while fuelling means P1.0 is held low
     const held = ii >= 0 && snapRpm(s) > 0 && !cut && s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s);
     // Held open: the injector is on for the whole rev, so plot a full rev
     const injMs = held ? +(60000 / snapRpm(s)).toFixed(3) : ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null;
-    out.push({
+    const pt = {
       t:       s.t,
       rpm:     snapRpm(s),
       // inj: measured injector low time on P1.0 (fire_inj loads T0 with
@@ -729,9 +816,18 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       // is the spark-to-spark interval (60000 / rpm / 2), not a dwell
       dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
       klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
-    });
+    };
+    if (s.t < lastT) livePoints.set(s, pt);
+    out.push(pt);
   }
   return out;
+};
+// Same length, same first time, same newest point (earlier points only
+// depend on data that had already arrived when they were computed)
+const sameSeries = (a, b) => {
+  if (a.length !== b.length || a[0]?.t !== b[0]?.t) return false;
+  const x = a[a.length - 1], y = b[b.length - 1];
+  return !x || Object.keys(y).every(k => x[k] === y[k]);
 };
 // NTC linearised byte → °C. The DME's NTC map (maps 1/2) outputs
 // iram[12h]/[13h] on a linear −40…+125 °C scale, which puts the ROM's own
@@ -818,6 +914,21 @@ const S = {
 // ─────────────────────────────────────────────────────────────────
 //  MAIN APP
 // ─────────────────────────────────────────────────────────────────
+// Latest value, but passed on at most once per ms (0 = straight through)
+function useThrottled(value, ms) {
+  const [shown, setShown] = useState(value);
+  const last = useRef(0);
+  useEffect(() => {
+    if (!ms) return;
+    const id = setTimeout(() => { last.current = Date.now(); setShown(value); },
+                          Math.max(0, last.current + ms - Date.now()));
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return ms ? shown : value;
+}
+const LIVE_CHART_MS = 2000;
+const NO_ROWS = [];
+
 export default function DMEDashboard() {
   const [logText, setLogText]   = useState('');
   const [logFileName, setLogFileName] = useState('');
@@ -845,20 +956,41 @@ export default function DMEDashboard() {
   useEffect(() => { followRef.current = follow; }, [follow]);
   const liveRef = useRef(liveUrl);
   useEffect(() => { liveRef.current = liveUrl; }, [liveUrl]);
-  const handleLiveText = useCallback(text => {
+  // New sim lines go through incremental parsers (re-parsing the whole run
+  // every tick grew without bound); fresh = the bridge replayed from scratch
+  const liveParsers = useRef(null);
+  const handleLiveLines = useCallback((lines, fresh) => {
     if (!liveRef.current) return;
-    const dme = parseLog(text), klr = parseKLRLog(text);
-    setData(dme);
-    setKlrData(klr);
-    // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
-    if (followRef.current) {
-      setIdx(Math.max(0, dme.snapshots.length - 1));
-      setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
-    }
+    if (fresh || !liveParsers.current)
+      liveParsers.current = { dme: dmeLogParser(LIVE_MAX), klr: klrLogParser(LIVE_MAX) };
+    liveParsers.current.dme.push(lines);
+    liveParsers.current.klr.push(lines);
+    const { dropped: dmeDropped, ...dme } = liveParsers.current.dme.result();
+    const { dropped: klrDropped, ...klr } = liveParsers.current.klr.result();
+    // A transition: React renders the new data in short slices that the
+    // browser can interrupt, instead of one long frame per update
+    startTransition(() => {
+      setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases ? d : dme);
+      setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status ? k : klr);
+      // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
+      if (followRef.current) {
+        setIdx(Math.max(0, dme.snapshots.length - 1));
+        setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
+      } else {
+        // Keep the cursors on the same entries when old ones are trimmed
+        if (dmeDropped) setIdx(i => Math.max(0, i - dmeDropped));
+        if (klrDropped) setKlrIdx(i => Math.max(0, i - klrDropped));
+      }
+    });
   }, []);
-  const live = useLiveSim(liveUrl, handleLiveText);
-  const liveSer = useMemo(() => liveUrl ? liveSeries(data.snapshots, klrData.snapshots, live.ign) : [],
+  const live = useLiveSim(liveUrl, handleLiveLines);
+  const nextSer = useMemo(() => liveUrl ? liveSeries(data.snapshots, klrData.snapshots, live.ign) : [],
                           [liveUrl, data.snapshots, klrData.snapshots, live.ign]);
+  // Pulses arrive with nearly every batch but only those before the newest
+  // snapshot show up in the series, so keep the old array (and skip
+  // redrawing nine charts) when the recomputed one has the same points
+  const [liveSer, setLiveSer] = useState(nextSer);
+  if (nextSer !== liveSer && !sameSeries(liveSer, nextSer)) setLiveSer(nextSer);
   // Latest RAM images for the asm panes' operand-value column
   const liveMem = useMemo(() => {
     if (!liveUrl) return null;
@@ -985,15 +1117,19 @@ export default function DMEDashboard() {
 
   const snap     = data.snapshots[idx] || { iram:{} };
   // Move the scrubber to the snapshot nearest time t (Timeline tab clicks)
+  // Stable (reads the snapshots through a ref) so it doesn't re-render the
+  // memoized Timeline on every live update
+  const snapsRef = useRef(data.snapshots);
+  useEffect(() => { snapsRef.current = data.snapshots; }, [data.snapshots]);
   const seekTo = useCallback(t => {
-    const sn = data.snapshots;
+    const sn = snapsRef.current;
     if (!sn.length) return;
     let best = 0;
     for (let i = 1; i < sn.length; i++)
       if (Math.abs(sn[i].t - t) < Math.abs(sn[best].t - t)) best = i;
     setPlaying(false);
     setIdx(best);
-  }, [data.snapshots]);
+  }, []);
   // Build merged iram: current snap + fill gaps from nearest prior DS snapshot
   const iram = useMemo(() => {
     if (!data.snapshots?.length) return snap.iram ?? {};
@@ -1015,7 +1151,11 @@ export default function DMEDashboard() {
   const wu16     = ((iram[0x58]||0)<<8)|(iram[0x59]||0);
   const lmbd16   = ((iram[0x1B]||0)<<8)|(iram[0x1C]||0);
 
+  // Only the chart tabs read these, and on long runs they cost a pass
+  // over every snapshot per update, so they are skipped on other tabs
+  const needCharts = tab === 'charts' || tab === 'timeline';
   const chartData = useMemo(() => {
+    if (!needCharts) return NO_ROWS;
     // Compute timing advance baseline from first stable snapshots (RPM > 1000)
     // Used to show FQS timing retard as deviation from no-retard baseline
     const stableAdvs = data.snapshots
@@ -1131,37 +1271,53 @@ export default function DMEDashboard() {
         loadIdx:   ir[0x49] ?? null,  // load index — fuel map row selector
       };
     });
-  }, [data.snapshots]);
+  }, [data.snapshots, needCharts]);
 
   // Min/max over all snapshots for the 8 top metrics
+  const onOverview = tab === 'overview';
   const minmax = useMemo(() => {
+    if (!onOverview) return null;
+    // One allocation-free pass per metric; rounding is applied to the
+    // result only (min/max of rounded values = rounded min/max)
     const mm = (fn, fmt) => {
-      const vals = data.snapshots.map(fn).filter(v => v !== null && v !== undefined && !isNaN(v));
-      if (!vals.length) return { mn:'--', mx:'--' };
-      const lo = Math.min(...vals), hi = Math.max(...vals);
-      return { mn: fmt(lo), mx: fmt(hi) };
+      let lo = Infinity, hi = -Infinity;
+      for (const s of data.snapshots) {
+        const v = fn(s);
+        if (v == null || isNaN(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      return lo === Infinity ? { mn:'--', mx:'--' } : { mn: fmt(lo), mx: fmt(hi) };
     };
 
     return {
-      fuel:    mm(s => +fuelMs(s).toFixed(3),    v => v.toFixed(3)),
+      fuel:    mm(s => fuelMs(s),                 v => v.toFixed(3)),
       rpm:     mm(s => snapRpm(s) || null,        v => v.toString()),
       isv:     mm(s => s.iram?.[0x7F]??null,        v => h2(v)),
-      dwell:   mm(s => { const ht=s.iram?.[0x2F]; const r=s.refRpm??s.explicitRpm; return (ht!=null&&r>=40) ? +(ht*60000/(r*HT_PER_REV)).toFixed(2) : null; }, v=>`${v}ms`),
+      dwell:   mm(s => { const ht=s.iram?.[0x2F]; const r=s.refRpm??s.explicitRpm; return (ht!=null&&r>=40) ? ht*60000/(r*HT_PER_REV) : null; }, v=>`${+v.toFixed(2)}ms`),
       coolant: mm(s => s._prevCoolantC ?? ntcToC(s.iram?.[0x13]), v=>`${v}°C`),
       airtemp: mm(s => s._prevAirC     ?? ntcToC(s.iram?.[0x12]), v=>`${v}°C`),
-      batt:    mm(s => s.iram?.[0x11]!=null ? +(s.iram[0x11]*0.05263+2.132).toFixed(1) : null, v=>`${v}V`),
+      batt:    mm(s => s.iram?.[0x11]!=null ? s.iram[0x11]*0.05263+2.132 : null, v=>`${+v.toFixed(1)}V`),
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
       wdog:    mm(s => s.iram?.[0x2A]??null,        v => h2(v)),
       load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
     };
-  }, [data.snapshots]);
+  }, [data.snapshots, onOverview]);
 
   // True once any snapshot has FLAGS21.bit1 set — never goes false.
   // Prevents AFR display flickering from snapshot timing artifacts.
   const clEverActive = useMemo(() =>
     data.snapshots.some(s => ((s.iram?.[0x21] ?? 0) >> 1) & 1),
   [data.snapshots]);
+
+  // The chart tabs redraw every chart on each update, so a live run feeds
+  // them at most every LIVE_CHART_MS (cursor included while FOLLOW moves it)
+  const feedNow = useMemo(() => ({ chartData, data, klrData, t: snap.t, klrT: klrData.phases?.[klrIdx]?.t }),
+                          [chartData, data, klrData, snap.t, klrIdx]);
+  const throttled = useThrottled(feedNow, liveUrl ? LIVE_CHART_MS : 0);
+  // ...except the first rows after switching to a chart tab
+  const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
   const TABS = ['overview','timeline','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'];
 
@@ -1240,9 +1396,11 @@ export default function DMEDashboard() {
             logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
             logLoaded={data.snapshots.length>0} />}
         {tab==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
-        {tab==='charts'   && <ChartsTab chartData={chartData} currentT={snap.t} />}
-        {tab==='timeline' && <TimelineTab chartData={chartData} dmeSnapshots={data.snapshots}
-            dmePhases={data.phases} klrData={klrData} currentT={snap.t} onSeek={seekTo} />}
+        <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
+          {tab==='charts'   && <ChartsTab chartData={feed.chartData} />}
+          {tab==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
+              dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo} />}
+        </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
         {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
@@ -1250,7 +1408,8 @@ export default function DMEDashboard() {
             logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
             logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
         {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_charts' && <KLRChartsTab klrData={klrData} dmeSnaps={data.snapshots} currentT={klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots}
+            currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_boost'  && <BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />}
@@ -2130,7 +2289,28 @@ function IRAMTooltip({ tip }) {
 // ─────────────────────────────────────────────────────────────────
 //  CHARTS TAB
 // ─────────────────────────────────────────────────────────────────
-function ChartsTab({ chartData, currentT }) {
+// ChartsTab charts (each also overlays rpm on the right axis)
+const DME_CHARTS = [
+  {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
+  {title:'ENGINE SPEED (RPM)',     k:'rpm',     col:C.textBright,unit:'RPM',   dom:[0,'auto']},
+  {title:'AFM RAW (10h)',          k:'afm',     col:'#44cccc', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'AFM DELTA (snapshot)',   k:'afm_delta',col:'#ff9944', unit:'Δhex',   dom:['auto','auto'], cn:false},
+  {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
+  {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
+  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
+  {title:'IGNITION ADVANCE (31)',   k:'timingAdv',    col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
+  {title:'FQS TIMING RETARD (°)',   k:'timingRetard', col:'#ff8800', unit:'°retard',  dom:['auto','auto'], cn:true},
+  {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
+  {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
+];
+
+// Memoized: live mode re-renders the page on every sim tick, and the charts
+// only need redrawing when their data changes (the cursor is a CursorLine)
+const ChartsTab = memo(function ChartsTab({ chartData }) {
+  // Thinned per chart (keeping each series' peaks), only when the data changes
+  const thinned = useMemo(() => Object.fromEntries(DME_CHARTS.map(c => [c.k, thin(chartData, [c.k, 'rpm'])])), [chartData]);
   if (!chartData.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
       No snapshot data loaded — use LOAD LOG to parse a log file
@@ -2138,29 +2318,14 @@ function ChartsTab({ chartData, currentT }) {
   );
 
   const ax = {fill:C.textDim,fontSize:10,fontFamily:"'Share Tech Mono',monospace"};
-  const charts = [
-    {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
-    {title:'ENGINE SPEED (RPM)',     k:'rpm',     col:C.textBright,unit:'RPM',   dom:[0,'auto']},
-    {title:'AFM RAW (10h)',          k:'afm',     col:'#44cccc', unit:'hex',     dom:[0,255],    cn:true},
-    {title:'AFM DELTA (snapshot)',   k:'afm_delta',col:'#ff9944', unit:'Δhex',   dom:['auto','auto'], cn:false},
-    {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
-    {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
-    {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
-    {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
-    {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
-    {title:'IGNITION ADVANCE (31)',   k:'timingAdv',    col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
-    {title:'FQS TIMING RETARD (°)',   k:'timingRetard', col:'#ff8800', unit:'°retard',  dom:['auto','auto'], cn:true},
-    {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
-    {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
-  ];
 
   return (
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
-      {charts.map(c=>(
+      {DME_CHARTS.map(c=>(
         <div key={c.k} style={S.panel}>
           <div style={S.panelTitle}>{c.title}</div>
           <ResponsiveContainer width="100%" height={150}>
-            <ComposedChart data={chartData} margin={{top:2,right:36,bottom:0,left:0}}>
+            <ComposedChart data={thinned[c.k]} margin={{top:2,right:36,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
               <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
               <YAxis yAxisId="left"  tick={ax} domain={c.dom} stroke={C.textDim} />
@@ -2172,20 +2337,19 @@ function ChartsTab({ chartData, currentT }) {
                 formatter={(v,n)=>n==='rpm'?[`${v} RPM`,'RPM']:c.unit==='hex'?[`0x${v.toString(16).toUpperCase().padStart(2,'0')} (${v}d)`,n]:c.unit==='°BTDC'?[`${v}°BTDC`,n]:c.unit==='°retard'?[`${v}° retard`,n]:[v,n]}
                 labelFormatter={t=>`t=${t} ms`}
               />
-              {currentT !== undefined &&
-                <ReferenceLine yAxisId="left" x={currentT} stroke={C.textDim} strokeDasharray="3 3" />}
+              <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
               <Line yAxisId="left"  type="monotone" dataKey={c.k}    stroke={c.col}
-                    dot={false} strokeWidth={1.5} connectNulls={c.cn??false} />
+                    dot={false} strokeWidth={1.5} connectNulls={c.cn??false} isAnimationActive={false} />
               {c.k !== 'rpm' &&
                 <Line yAxisId="right" type="monotone" dataKey="rpm" stroke="#888855"
-                      dot={false} strokeWidth={1} connectNulls={false} strokeDasharray="4 2" />}
+                      dot={false} strokeWidth={1} connectNulls={false} strokeDasharray="4 2" isAnimationActive={false} />}
             </ComposedChart>
           </ResponsiveContainer>
         </div>
       ))}
     </div>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────────
 //  PHASE EVENTS TAB
@@ -2579,11 +2743,15 @@ function KLRTab({ klrData, currentT }) {
         {ignEvents.length > 0 && (() => {
           const maxT = klrData.phases[klrData.phases.length-1]?.t || 1;
           const pct = currentT != null ? (currentT/maxT)*100 : null;
+          // One tick per pulse is thousands of divs on a long run, re-rendered
+          // on every update; ticks that close together merge anyway
+          const fires = ignEvents.filter(p=>p.asserted);
+          const step = Math.ceil(fires.length / 800);
           return (
             <div style={{position:'relative',height:'24px',background:'#040904',
                          border:`1px solid ${C.border}`,borderRadius:'2px',
                          overflow:'hidden',marginBottom:'8px'}}>
-              {ignEvents.filter(p=>p.asserted).map((p,i) => (
+              {fires.filter((_,i)=>i%step===0).map((p,i) => (
                 <div key={i} title={`${p.t}ms — ${p.msg}`}
                      style={{position:'absolute',left:`${(p.t/maxT)*100}%`,
                              top:0,width:'2px',height:'100%',background:'#ff8844',opacity:.9}}/>
@@ -2616,48 +2784,26 @@ function KLRTab({ klrData, currentT }) {
   );
 }
 
-// ── KLRChartsTab ──────────────────────────────────────────────────
-// Charts for KLR knock controller signals over simulation time.
-//
-// Data sources:
-//   klrData.phases (KLR: [PHASE]) → IGN delay, IGN pulse width
-//   klrData.status (KLR: [STATUS]) → CV_PWM, knock
-//   klrData.snapshots ([KLR]) → p1/p2 port state
-//
-// Each chart uses Recharts ResponsiveContainer with the same
-// green-on-black theme as the DME charts tab.
-function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
+const IGN_IGNORE_MS = 5000;
+
+// KLR chart series over the whole log; KLRChartsTab cuts them at the cursor
+function klrChartSeries(klrData, dmeSnaps) {
   // Filter to KLR-only phases (exclude DME phase entries tagged cat:'dme')
   const klrPhases = (klrData?.phases ?? []).filter(p => p.cat === 'klr');
   const klrStatus = klrData?.status ?? [];
-  // If currentT predates KLR data (e.g. from a DME phase entry at t=2ms),
-  // default to showing all data up to the last KLR timestamp.
   const firstKlrT = klrPhases[0]?.t ?? klrStatus[0]?.t;
   const lastKlrT  = klrPhases[klrPhases.length-1]?.t ?? klrStatus[klrStatus.length-1]?.t;
-  const effectiveT = (currentT == null || (firstKlrT != null && currentT < firstKlrT))
-    ? lastKlrT
-    : currentT;
-
-  const empty = !klrData ||
-    (klrData.phases?.length === 0 && klrData.status?.length === 0 && klrData.snapshots?.length === 0);
-
-  if (empty) return (
-    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
-      No KLR data — use <strong style={{color:C.textBright}}>PARSE &amp; LOAD</strong> with a combined log
-    </div>
-  );
 
   // ── Build chart datasets ──────────────────────────────────
   // First 5s is noisy cranking/sync data: those points stay (so all 4
   // cylinder charts share one time axis) but have no degrees.
-  const IGN_IGNORE_MS   = 5000;
   const snaps = (dmeSnaps ?? []).filter(s => s.t != null);
 
   // Spark retard: ign_in fall to ign_out fall (spark), in crank degrees at
   // the RPM of the latest DME snapshot: deg = us * rpm * 6e-6
   let sj = -1;
   const sparkData = klrPhases
-    .filter(p => p.deasserted && p.spark_us != null && (effectiveT == null || p.t <= effectiveT))
+    .filter(p => p.deasserted && p.spark_us != null)
     .map(p => {
       while (sj + 1 < snaps.length && snaps[sj + 1].t <= p.t) sj++;
       const rpm = sj >= 0 ? snapRpm(snaps[sj]) : null;
@@ -2665,16 +2811,6 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       const deg = p.t >= IGN_IGNORE_MS && rpm ? +(us * rpm * 6e-6).toFixed(2) : null;
       return { t: p.t, deg, us, rpm };
     });
-
-  // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ...
-  // (counted from the first logged spark; there's no cylinder-1 reference)
-  const sparkByCyl = [1, 2, 3, 4].map(cyl =>
-    sparkData.filter((_, i) => (i % 4) + 1 === cyl)
-  );
-
-  // Shared y-axis max across all 4 cylinder charts, so they're directly
-  // comparable at a glance instead of each auto-scaling independently.
-  const sparkMax = Math.max(1, ...sparkData.map(d => d.deg ?? 0));
 
   // A real pulse is a deassert right after an assert. Older logs also have
   // deasserts with no assert before them: IGN_OUT floated high while the
@@ -2686,11 +2822,11 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       const prev = lastIgn; lastIgn = p.deasserted ? 'off' : 'on';
       return p.deasserted && prev === 'on';
     })
-    .filter(p => p.pulse_ms != null && (effectiveT == null || p.t <= effectiveT))
+    .filter(p => p.pulse_ms != null)
     .map(p => ({ t: p.t, pulse: p.t < IGN_IGNORE_MS ? 0 : +p.pulse_ms.toFixed(3) }));
 
   // CV_PWM and knock from STATUS lines
-  const statusData = klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
+  const statusData = klrStatus.map(s => ({
     t: s.t,
     cv_pwm: s.CV_PWM ?? null,
     knock:  s.knock  ?? null,
@@ -2703,10 +2839,10 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   // with the KLR memory map's scaling (boost.js).
   const boostData = [
     ...(klrData.snapshots ?? [])
-      .filter(s => (effectiveT == null || s.t <= effectiveT) && s.ram?.[0x52] != null)
+      .filter(s => s.ram?.[0x52] != null)
       .map(s => ({ t: s.t, raw: s.ram[0x52] })),
     ...klrStatus
-      .filter(s => (effectiveT == null || s.t <= effectiveT) && s.ramVals?.[0x52] != null)
+      .filter(s => s.ramVals?.[0x52] != null)
       .map(s => ({ t: s.t, raw: s.ramVals[0x52] })),
   ]
     .sort((a, b) => a.t - b.t)
@@ -2724,7 +2860,6 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
   const knockPulseEvents = [];
   let knockLow = false;
   for (const p of klrPhases) {
-    if (effectiveT != null && p.t > effectiveT) continue;
     if (/KNOCK_OUT cleared/i.test(p.msg)) {
       if (!knockLow) knockPulseEvents.push({ t: p.t, knock_out: 0 });
       knockLow = true;
@@ -2733,6 +2868,86 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       knockLow = false;
     }
   }
+
+  // TPS (raw ADC + scaled degrees) from STATUS lines
+  const tpsData = klrStatus.map(s => ({
+    t: s.t,
+    tps_raw: s.tps_raw ?? null,
+    tps_deg: s.tps_deg ?? null,
+  }));
+
+  // ign_out state from [KLR] snapshots or status
+  const ignOutData = [
+    ...(klrData.snapshots ?? []).map(s => ({
+      t: s.t,
+      ign_out: s.p2 != null ? ((s.p2 >> 7) & 1) : null,
+      full_load: s.p1 != null ? ((s.p1 >> 5) & 1) : null,
+    })),
+    ...klrStatus.map(s => ({
+      t: s.t,
+      ign_out:   s.ign_out   ?? null,
+      full_load: s.full_load ?? null,
+    })),
+  ].sort((a,b) => a.t - b.t);
+
+  return { firstKlrT, lastKlrT, sparkData, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData };
+}
+
+// Entries with t <= T (series are time-sorted); all of them when T is null
+const upTo = (arr, T) => {
+  if (T == null || !arr.length || arr[arr.length - 1].t <= T) return arr;
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid].t <= T) lo = mid + 1; else hi = mid; }
+  return arr.slice(0, lo);
+};
+
+// ── KLRChartsTab ──────────────────────────────────────────────────
+// Charts for KLR knock controller signals over simulation time.
+//
+// Data sources:
+//   klrData.phases (KLR: [PHASE]) → IGN delay, IGN pulse width
+//   klrData.status (KLR: [STATUS]) → CV_PWM, knock
+//   klrData.snapshots ([KLR]) → p1/p2 port state
+//
+// Each chart uses Recharts ResponsiveContainer with the same
+// green-on-black theme as the DME charts tab. Series are built once per
+// log update (klrChartSeries); playback only cuts them at the cursor.
+const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
+  const all = useMemo(() => klrChartSeries(klrData, dmeSnaps), [klrData, dmeSnaps]);
+  const { firstKlrT, lastKlrT } = all;
+  // If currentT predates KLR data (e.g. from a DME phase entry at t=2ms),
+  // default to showing all data up to the last KLR timestamp.
+  const effectiveT = (currentT == null || (firstKlrT != null && currentT < firstKlrT))
+    ? lastKlrT
+    : currentT;
+
+  const empty = !klrData ||
+    (klrData.phases?.length === 0 && klrData.status?.length === 0 && klrData.snapshots?.length === 0);
+
+  if (empty) return (
+    <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
+      No KLR data — use <strong style={{color:C.textBright}}>PARSE &amp; LOAD</strong> with a combined log
+    </div>
+  );
+
+  const sparkData     = upTo(all.sparkData, effectiveT);
+  const ignPulseData  = upTo(all.ignPulseData, effectiveT);
+  const statusData    = upTo(all.statusData, effectiveT);
+  const boostData     = upTo(all.boostData, effectiveT);
+  const tpsData       = upTo(all.tpsData, effectiveT);
+  const ignOutData    = upTo(all.ignOutData, effectiveT);
+  const knockPulseEvents = upTo(all.knockPulseEvents, effectiveT);
+
+  // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ...
+  // (counted from the first logged spark; there's no cylinder-1 reference)
+  const sparkByCyl = [1, 2, 3, 4].map(cyl =>
+    sparkData.filter((_, i) => (i % 4) + 1 === cyl)
+  );
+
+  // Shared y-axis max across all 4 cylinder charts, so they're directly
+  // comparable at a glance instead of each auto-scaling independently.
+  const sparkMax = Math.max(1, extent(sparkData.map(d => d.deg ?? 0))[1]);
+
   const knockPulseData = knockPulseEvents.length
     ? [
         { t: firstKlrT ?? 0, knock_out: 1 },
@@ -2748,27 +2963,6 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
                                  { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 }] },
       ]
     : [];
-
-  // TPS (raw ADC + scaled degrees) from STATUS lines
-  const tpsData = klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
-    t: s.t,
-    tps_raw: s.tps_raw ?? null,
-    tps_deg: s.tps_deg ?? null,
-  }));
-
-  // ign_out state from [KLR] snapshots or status
-  const ignOutData = [
-    ...(klrData.snapshots ?? []).filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
-      t: s.t,
-      ign_out: s.p2 != null ? ((s.p2 >> 7) & 1) : null,
-      full_load: s.p1 != null ? ((s.p1 >> 5) & 1) : null,
-    })),
-    ...klrStatus.filter(s => effectiveT == null || s.t <= effectiveT).map(s => ({
-      t: s.t,
-      ign_out:   s.ign_out   ?? null,
-      full_load: s.full_load ?? null,
-    })),
-  ].sort((a,b) => a.t - b.t);
 
   const ax = { fill: C.textDim, fontSize: 9, fontFamily: "'Courier New',monospace" };
   const tt = { contentStyle: { background:'#060e06', border:'1px solid #0d2e0d',
@@ -2885,7 +3079,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
             ) : (
               <>
                 <ResponsiveContainer width="100%" height={130}>
-                  <LineChart data={c.data} margin={{top:2,right:6,bottom:0,left:0}}>
+                  <LineChart data={c.segments ? c.data : thin(c.data, c.key)} margin={{top:2,right:6,bottom:0,left:0}}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
@@ -2906,7 +3100,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
                       <Line type={c.type || 'monotone'} dataKey={c.key} stroke={c.col}
                             dot={c.data.length < 100}
                             strokeWidth={c.data.length < 50 ? 1.5 : 1}
-                            connectNulls={false}/>
+                            connectNulls={false} isAnimationActive={false}/>
                     )}
                   </LineChart>
                 </ResponsiveContainer>
@@ -2922,7 +3116,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
         <div style={S.panel}>
           <div style={S.panelTitle}>FULL LOAD STATE</div>
           <ResponsiveContainer width="100%" height={120}>
-            <LineChart data={ignOutData} margin={{top:2,right:6,bottom:0,left:0}}>
+            <LineChart data={thin(ignOutData, 'full_load')} margin={{top:2,right:6,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
               <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
               <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
@@ -2930,7 +3124,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
               {currentT != null &&
                 <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
               <Line type="stepAfter" dataKey="full_load" stroke={C.amber} dot={false}
-                    strokeWidth={1.5} connectNulls={false} name="FULL LOAD"/>
+                    strokeWidth={1.5} connectNulls={false} name="FULL LOAD" isAnimationActive={false}/>
             </LineChart>
           </ResponsiveContainer>
           <div style={{display:'flex', gap:'12px', marginTop:'3px', fontSize:'9px'}}>
@@ -2940,7 +3134,7 @@ function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
       )}
     </div>
   );
-}
+});
 
 // ── KLRPhaseTab ───────────────────────────────────────────────────
 function KLRPhaseTab({ klrData, klrIdx }) {
