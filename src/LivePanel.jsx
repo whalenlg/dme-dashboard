@@ -173,9 +173,9 @@ function EngineRow({ series }) {
           <button style={btn(charts)} onClick={() => setCharts(c => !c)}>CHARTS</button>
         </span>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:'4px 12px'}}>
+      <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
         {METRICS.map(m => (
-          <span key={m.k} style={{display:'flex',flexDirection:'column'}}>
+          <span key={m.k} style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:'12px'}}>
             <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{m.label}</span>
             <span style={{color: m.warn?.(last) ? C.red : m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
           </span>
