@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
 import LivePanel from "./LivePanel.jsx";
-import { mapKpa, gaugePsi, fmtBoost, boostParts } from "./boost.js";
+import { ATM_KPA, mapKpa, gaugePsi, fmtBoost, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 import { thin, extent } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
@@ -499,8 +499,18 @@ const LIVE_MAX = { snapshots: 12000, status: 6000, phases: 60000 };
 // Incremental DME log parser: push() lines as they arrive (live sim) and
 // read result() whenever needed, instead of re-parsing the whole log text.
 // max = { snapshots, phases } caps what is kept (oldest dropped first).
+// Replay runs (944turbo_dme_klr dme_klr/replay, expect_to_dash.py) add the
+// recorded car log's own outputs at each log row's sim time:
+//   REPLAY: [EXPECT] t=<ms> row=<i> seg=<n> ign_adv=30.0 inj_ms=3.8 ...
+// One object per line: t plus every key=value as a number
+function parseExpectLine(line) {
+  const e = {};
+  for (const [, k, v] of line.matchAll(/(\w+)=(-?[\d.]+)/g)) e[k] = +v;
+  return e.t == null || Number.isNaN(e.t) ? null : e;
+}
+
 function dmeLogParser(max = {}) {
-  const snapshots = [], phases = [];
+  const snapshots = [], phases = [], expect = [];
   let dropped = 0, out = null;   // out: last result's arrays, reused while nothing changes
   // Annotate each snapshot with last valid raw temp bytes so Overview
   // can carry-forward across mid-scan raw ADC artifacts.
@@ -544,6 +554,7 @@ function dmeLogParser(max = {}) {
         else if (t.startsWith('[STATUS]'))                                  addSnap(parseStatusLine(t));
         else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t); if (p) { insertByT(phases, p); out = null; } }
         else if (t.startsWith('DME: [STATUS]'))                            addSnap(parseStatusLine(t.replace(/^DME: /,'')));
+        else if (t.startsWith('REPLAY: [EXPECT]'))                         { const e = parseExpectLine(t); if (e) { insertByT(expect, e); out = null; } }
       }
       const n = trimFront(snapshots, max.snapshots);
       if (n || trimFront(phases, max.phases)) out = null;
@@ -552,7 +563,7 @@ function dmeLogParser(max = {}) {
     // Fresh arrays after any change, so memos keyed on them see it, and the
     // same arrays otherwise. dropped: snapshots trimmed since the last call.
     result() {
-      out ??= { snapshots: snapshots.slice(), phases: phases.slice() };
+      out ??= { snapshots: snapshots.slice(), phases: phases.slice(), expect: expect.slice() };
       const r = { ...out, dropped };
       dropped = 0;
       return r;
@@ -563,8 +574,8 @@ function dmeLogParser(max = {}) {
 function parseLog(text) {
   const p = dmeLogParser();
   p.push(text.split('\n'));
-  const { snapshots, phases } = p.result();
-  return { snapshots, phases };
+  const { snapshots, phases, expect } = p.result();
+  return { snapshots, phases, expect };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -932,7 +943,7 @@ const NO_ROWS = [];
 export default function DMEDashboard() {
   const [logText, setLogText]   = useState('');
   const [logFileName, setLogFileName] = useState('');
-  const [data, setData]         = useState({ snapshots:[], phases:[] });
+  const [data, setData]         = useState({ snapshots:[], phases:[], expect:[] });
   const [klrData, setKlrData]     = useState({ snapshots:[], phases:[], status:[] });
   const [klrIdx, setKlrIdx]       = useState(0);
   const [klrPlaying, setKlrPlaying] = useState(false);
@@ -1397,7 +1408,7 @@ export default function DMEDashboard() {
             logLoaded={data.snapshots.length>0} />}
         {tab==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
         <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
-          {tab==='charts'   && <ChartsTab chartData={feed.chartData} />}
+          {tab==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect} />}
           {tab==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
               dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo} />}
         </CursorContext.Provider>
@@ -1408,7 +1419,7 @@ export default function DMEDashboard() {
             logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
             logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
         {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots}
+        {tab==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
             currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
@@ -2306,11 +2317,35 @@ const DME_CHARTS = [
   {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
 ];
 
+// Replay logs' expected (recorded) values, drawn dashed over the sim traces
+const EXP_COL = '#e8e8e8';
+const EXP_NAME = 'LOG (expected)';
+// The REPLAY: [EXPECT] field each DME chart overlays
+const DME_EXPECT = { fuel: 'inj_ms', rpm: 'rpm', dwell: 'dwell_ms', timingAdv: 'ign_adv' };
+
+// [{t, v}] for one expected field (or a function of the row), thinned
+function expectSeries(expect, f, T = null) {
+  if (!expect?.length) return [];
+  const get = typeof f === 'function' ? f : e => e[f];
+  const rows = [];
+  for (const e of expect) {
+    if (T != null && e.t > T) break;
+    const v = get(e);
+    if (v != null && !Number.isNaN(v)) rows.push({ t: e.t, v });
+  }
+  return thin(rows, 'v');
+}
+
+const ExpectKey = () => (
+  <span style={{color:EXP_COL, float:'right', fontWeight:'normal'}}>┄ {EXP_NAME}</span>
+);
+
 // Memoized: live mode re-renders the page on every sim tick, and the charts
 // only need redrawing when their data changes (the cursor is a CursorLine)
-const ChartsTab = memo(function ChartsTab({ chartData }) {
+const ChartsTab = memo(function ChartsTab({ chartData, expect }) {
   // Thinned per chart (keeping each series' peaks), only when the data changes
   const thinned = useMemo(() => Object.fromEntries(DME_CHARTS.map(c => [c.k, thin(chartData, [c.k, 'rpm'])])), [chartData]);
+  const expected = useMemo(() => Object.fromEntries(Object.entries(DME_EXPECT).map(([k, f]) => [k, expectSeries(expect, f)])), [expect]);
   if (!chartData.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
       No snapshot data loaded — use LOAD LOG to parse a log file
@@ -2323,7 +2358,7 @@ const ChartsTab = memo(function ChartsTab({ chartData }) {
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
       {DME_CHARTS.map(c=>(
         <div key={c.k} style={S.panel}>
-          <div style={S.panelTitle}>{c.title}</div>
+          <div style={S.panelTitle}>{c.title}{expected[c.k]?.length > 0 && <ExpectKey/>}</div>
           <ResponsiveContainer width="100%" height={150}>
             <ComposedChart data={thinned[c.k]} margin={{top:2,right:36,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
@@ -2340,6 +2375,10 @@ const ChartsTab = memo(function ChartsTab({ chartData }) {
               <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
               <Line yAxisId="left"  type="monotone" dataKey={c.k}    stroke={c.col}
                     dot={false} strokeWidth={1.5} connectNulls={c.cn??false} isAnimationActive={false} />
+              {expected[c.k]?.length > 0 &&
+                <Line yAxisId="left" type="linear" data={expected[c.k]} dataKey="v" name={EXP_NAME}
+                      stroke={EXP_COL} strokeOpacity={0.8} dot={false} strokeWidth={1}
+                      strokeDasharray="3 2" isAnimationActive={false} />}
               {c.k !== 'rpm' &&
                 <Line yAxisId="right" type="monotone" dataKey="rpm" stroke="#888855"
                       dot={false} strokeWidth={1} connectNulls={false} strokeDasharray="4 2" isAnimationActive={false} />}
@@ -2912,7 +2951,7 @@ const upTo = (arr, T) => {
 // Each chart uses Recharts ResponsiveContainer with the same
 // green-on-black theme as the DME charts tab. Series are built once per
 // log update (klrChartSeries); playback only cuts them at the cursor.
-const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT }) {
+const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, expect }) {
   const all = useMemo(() => klrChartSeries(klrData, dmeSnaps), [klrData, dmeSnaps]);
   const { firstKlrT, lastKlrT } = all;
   // If currentT predates KLR data (e.g. from a DME phase entry at t=2ms),
@@ -2938,6 +2977,20 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
   const ignOutData    = upTo(all.ignOutData, effectiveT);
   const knockPulseEvents = upTo(all.knockPulseEvents, effectiveT);
 
+  // The replay log's own KLR outputs, cut at the cursor like the sim series.
+  // Knock: the log's "knocking" is the KLR's decision; P1.6 is active low.
+  // Knock count: the car's counter is cumulative, so it starts from 0 here
+  // like the sim's. Boost: the log's MAP is absolute, the chart is gauge.
+  const knockCnt0 = expect?.find(e => e.knock_cnt != null)?.knock_cnt;
+  const exp = {
+    retard:    expectSeries(expect, 'klr_retard', effectiveT),
+    pulse:     expectSeries(expect, 'dwell_ms', effectiveT),
+    knock_out: expectSeries(expect, e => e.knocking == null ? null : 1 - e.knocking, effectiveT),
+    knock_cnt: expectSeries(expect, e => e.knock_cnt == null ? null : e.knock_cnt - knockCnt0, effectiveT),
+    boost:     expectSeries(expect, e => e.map_psi == null ? null : +(e.map_psi - ATM_KPA * 0.145038).toFixed(1), effectiveT),
+    full_load: expectSeries(expect, 'full_load', effectiveT),
+  };
+
   // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ...
   // (counted from the first logged spark; there's no cylinder-1 reference)
   const sparkByCyl = [1, 2, 3, 4].map(cyl =>
@@ -2946,7 +2999,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
 
   // Shared y-axis max across all 4 cylinder charts, so they're directly
   // comparable at a glance instead of each auto-scaling independently.
-  const sparkMax = Math.max(1, extent(sparkData.map(d => d.deg ?? 0))[1]);
+  const sparkMax = Math.max(1, extent(sparkData.map(d => d.deg ?? 0))[1], extent(exp.retard.map(d => d.v))[1]);
 
   const knockPulseData = knockPulseEvents.length
     ? [
@@ -2981,6 +3034,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       dom:   [0, Math.ceil(sparkMax)],
       note:  `ign_in fall (DME spark) to IGN_OUT fall (KLR spark), deg = us × rpm × 6e-6. Every 4th spark (#${cyl}, ${cyl + 4}, ${cyl + 8}, ...); ~150us floor is KLR processing, above it is knock retard — first ${IGN_IGNORE_MS/1000}s omitted`,
       empty: sparkByCyl[cyl-1].length === 0,
+      exp:   exp.retard,
     })),
     {
       title: 'IGN PULSE WIDTH (ms)',
@@ -2991,6 +3045,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       dom:   [0, 'auto'],
       note:  `KLR ignition coil dwell / spark duration — first ${IGN_IGNORE_MS/1000}s zeroed as noisy`,
       empty: ignPulseData.length === 0,
+      exp:   exp.pulse,
     },
     {
       title: 'CV_PWM (coil voltage PWM)',
@@ -3014,6 +3069,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       type:  'stepAfter',
       note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. Dashed ends = anchored high, no data across that gap.',
       empty: knockPulseData.length === 0,
+      exp:   exp.knock_out,
     },
     {
       title: 'KNOCK COUNT',
@@ -3024,6 +3080,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       dom:   [0, 'auto'],
       note:  'Cumulative knock event counter',
       empty: statusData.every(d => d.knock_count == null),
+      exp:   exp.knock_cnt,
     },
     {
       title: 'TPS RAW (ADC)',
@@ -3054,6 +3111,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       dom:   ['auto', 'auto'],
       note:  'ram[0x52] — gauge boost pressure (0psi ≈ atmospheric, no boost)',
       empty: boostData.length === 0,
+      exp:   exp.boost,
     },
   ];
 
@@ -3070,8 +3128,8 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px'}}>
         {charts.map(c => (
           <div key={c.title} style={S.panel}>
-            <div style={S.panelTitle}>{c.title}</div>
-            {c.empty ? (
+            <div style={S.panelTitle}>{c.title}{c.exp?.length > 0 && <ExpectKey/>}</div>
+            {c.empty && !c.exp?.length ? (
               <div style={{height:'130px', display:'flex', alignItems:'center',
                            justifyContent:'center', color:C.textDim, fontSize:'10px'}}>
                 No data
@@ -3102,6 +3160,10 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
                             strokeWidth={c.data.length < 50 ? 1.5 : 1}
                             connectNulls={false} isAnimationActive={false}/>
                     )}
+                    {c.exp?.length > 0 &&
+                      <Line type={c.type === 'stepAfter' ? 'stepAfter' : 'linear'} data={c.exp} dataKey="v"
+                            name={EXP_NAME} stroke={EXP_COL} strokeOpacity={0.8} dot={false} strokeWidth={1}
+                            strokeDasharray="3 2" isAnimationActive={false}/>}
                   </LineChart>
                 </ResponsiveContainer>
                 <div style={{color:C.textDim, fontSize:'8px', marginTop:'2px'}}>{c.note}</div>
@@ -3114,7 +3176,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
       {/* FULL LOAD step chart */}
       {ignOutData.some(d => d.full_load != null) && (
         <div style={S.panel}>
-          <div style={S.panelTitle}>FULL LOAD STATE</div>
+          <div style={S.panelTitle}>FULL LOAD STATE{exp.full_load.length > 0 && <ExpectKey/>}</div>
           <ResponsiveContainer width="100%" height={120}>
             <LineChart data={thin(ignOutData, 'full_load')} margin={{top:2,right:6,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
@@ -3125,10 +3187,14 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT })
                 <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
               <Line type="stepAfter" dataKey="full_load" stroke={C.amber} dot={false}
                     strokeWidth={1.5} connectNulls={false} name="FULL LOAD" isAnimationActive={false}/>
+              {exp.full_load.length > 0 &&
+                <Line type="stepAfter" data={exp.full_load} dataKey="v" name={EXP_NAME} stroke={EXP_COL}
+                      strokeOpacity={0.8} dot={false} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false}/>}
             </LineChart>
           </ResponsiveContainer>
           <div style={{display:'flex', gap:'12px', marginTop:'3px', fontSize:'9px'}}>
             <span style={{color:C.amber}}>▬ FULL LOAD (p1[5])</span>
+            {exp.full_load.length > 0 && <span style={{color:EXP_COL}}>┄ {EXP_NAME}</span>}
           </div>
         </div>
       )}
