@@ -7,6 +7,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    GET  <url>/events   SSE, one sim output line per event (history first)
 //    POST <url>/cmd      sim commands, one per line
 //    POST <url>/restart  fresh sim at t=0
+//    POST <url>/rom?cpu=dme|klr&name=<x.mem>[&reset=1]  load a ROM image
+//                        (body = the .mem text; only while paused)
 //    GET  <url>/asm/dme|klr  disassembly listing
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
@@ -47,6 +49,7 @@ export function useLiveSim(url, onLogLines) {
   const [dmeRegsHist, setDmeRegsHist] = useState([]);   // every DME [REGS] line, by t_ms
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
+  const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -71,7 +74,7 @@ export function useLiveSim(url, onLogLines) {
     let lastLog = 0;
     // Rare control replies (breakpoints, run state, errors) skip the queue
     // so clicks feel immediate; queued lines are handled first to keep order.
-    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART)\]/;
+    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM)\]/;
     es.onmessage = ev => {
       if (!URGENT.test(ev.data)) { queue.push(ev.data); return; }
       for (const line of queue.splice(0)) handle(line);
@@ -133,6 +136,9 @@ export function useLiveSim(url, onLogLines) {
         for (const [k, v] of Object.entries(parseKV(rest))) r[k] = k === 't_ms' ? +v : parseInt(v, 16);
         setRegs(g => ({ ...g, [cpu]: r }));
         if (cpu === 'dme') setDmeRegsHist(h => capped([...h, r], MAX_REGS));
+      } else if (kind === 'ROM') {
+        const [, cpu, path] = rest.match(/^(dme|klr) (.*)$/) ?? [];
+        if (cpu) setRoms(r => ({ ...r, [cpu]: path }));
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
@@ -179,5 +185,19 @@ export function useLiveSim(url, onLogLines) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, regs, dmeRegsHist, traceCtx, ign, warnings, send, restart };
+  // Load a .mem image into the DME or KLR EPROM; reset restarts the sim on it
+  const loadRom = useCallback(async (cpu, file, reset) => {
+    if (!url || !file) return;
+    if (!/\.mem$/i.test(file.name)) { setError(`${file.name}: ROM images must be .mem files`); return; }
+    try {
+      const q = new URLSearchParams({ cpu, name: file.name, ...(reset ? { reset: '1' } : {}) });
+      const r = await fetch(`${url}/rom?${q}`, { method: 'POST', body: await file.text() });
+      if (!r.ok) setError(`Couldn't load ${file.name}: ${(await r.text()) || `HTTP ${r.status}`}`);
+      else setError(null);
+    } catch {
+      setError(`Can't reach the simulator bridge at ${url}`);
+    }
+  }, [url]);
+
+  return { connected, sim, inputs, bps, trace, error, asm, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom };
 }
