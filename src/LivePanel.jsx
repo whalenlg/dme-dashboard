@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, memo } from "react";
+import { useState, useMemo, useEffect, useRef, memo } from "react";
 import { fmtBoost } from "./boost.js";
 import { thin, syncNearest } from "./thin.js";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
@@ -44,7 +44,7 @@ const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadi
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
 export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
-  const { connected, sim, inputs, bps, trace, traceCtx, error, asm, regs, send, restart } = live;
+  const { connected, sim, inputs, bps, trace, traceCtx, error, asm, regs, roms, send, restart, loadRom } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
@@ -83,6 +83,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         </label>
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
+      <RomRow roms={roms} paused={connected && sim.state === 'paused'} loadRom={loadRom} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -109,6 +110,35 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
                     ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send} />
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── ROM images: what each EPROM holds, and loading another .mem ──
+function RomRow({ roms, paused, loadRom }) {
+  const [reset, setReset] = useState(true);
+  const pick = { dme: useRef(null), klr: useRef(null) };
+  const name = p => p ? p.split(/[\\/]/).pop() : '--';
+  return (
+    <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',padding:'5px 10px'}}>
+      <span style={{...title,marginBottom:0}}>ROM IMAGES</span>
+      {['dme', 'klr'].map(cpu => (
+        <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
+          <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
+          <span style={{color:C.textBright}} title={roms?.[cpu] ?? ''}>{name(roms?.[cpu])}</span>
+          <input ref={pick[cpu]} type="file" accept=".mem" style={{display:'none'}}
+                 onChange={e => { const f = e.target.files[0]; e.target.value = ''; loadRom(cpu, f, reset); }} />
+          <button style={btn(false)} disabled={!paused} onClick={() => pick[cpu].current.click()}
+                  title={paused ? `Load a .mem image into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
+            LOAD .mem
+          </button>
+        </span>
+      ))}
+      <label style={{color:C.textDim,cursor:'pointer'}}
+             title="On: restart the sim at t=0 on the new image (the other EPROM keeps its image). Off: swap the image in place; the CPU keeps its PC and RAM.">
+        <input type="checkbox" checked={reset} onChange={e => setReset(e.target.checked)} /> RESTART AFTER LOAD
+      </label>
+      {!paused && <span style={{color:'#779977'}}>pause to load a ROM</span>}
     </div>
   );
 }
