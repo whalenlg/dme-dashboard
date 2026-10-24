@@ -24,7 +24,8 @@ const INPUTS = [
   { k:'tps',       label:'THROTTLE (TPS)', hint:'28 idle · 72 ≈3000 rpm · D8 ≈6400 rpm' },
   { k:'rpm',       label:'RPM',          auto:true, max:7000, step:10, dec:true, pin:840, hint:'auto = torque-balance model' },
   { k:'afm',       label:'AFM (ch0)',    auto:true, pin:0x28, hint:'auto follows throttle ~250 ms later' },
-  { k:'boost',     label:'BOOST MAP (KLR ch4)', auto:true, pin:0x85, hint:'auto = MAP model (vacuum below boost onset, then the boost table)' },
+  // Max F5: the KLR adds 10 to ch4 before storing ram[52h], so higher wraps to vacuum (the sim caps it there too)
+  { k:'boost',     label:'BOOST MAP (KLR ch4)', auto:true, max:0xF5, pin:0x85, hint:'auto = MAP model (vacuum below boost onset, then the boost table) · max F5 ≈ +16 psi' },
   { k:'fuel_qual', label:'FQS (ch7)',    positions:[0x00,0x3B,0x5A,0x75,0x81,0x91,0x9C,0xA7],
     hint:'switch position (ch7 raw 00…A7, as the FQS0..7 tests); also scales model fuel energy' },
   { k:'coolant',   label:'COOLANT (ch3)', hint:'31 ≈85°C/184°F default · 68 ≈48°C · C0 ≈−2°C · 00 shorted' },
