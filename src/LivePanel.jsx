@@ -83,23 +83,26 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         </label>
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
-      <EngineRow series={series} />
-      {live.warnings.length > 0 && (
-        <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto'}}>
-          <div style={{...title,color:C.red,marginBottom:'3px'}}>SIM WARNINGS ({live.warnings.length})</div>
-          {live.warnings.slice().reverse().map((w, i) => (
-            <div key={i} style={{color: i === 0 ? C.red : '#aa6666',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{w}</div>
-          ))}
-        </div>
-      )}
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
 
-      <div style={{display:'grid',gridTemplateColumns:'minmax(260px,300px) 1fr',gap:'8px'}}>
+      {/* Sim inputs | live engine stats | DME + KLR debuggers */}
+      <div className="live-cols">
         <InputsPanel inputs={inputs} send={send} />
+        <div style={{display:'flex',flexDirection:'column',gap:'8px',minWidth:0}}>
+          <EngineRow series={series} />
+          {live.warnings.length > 0 && (
+            <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto'}}>
+              <div style={{...title,color:C.red,marginBottom:'3px'}}>SIM WARNINGS ({live.warnings.length})</div>
+              {live.warnings.slice().reverse().map((w, i) => (
+                <div key={i} style={{color: i === 0 ? C.red : '#aa6666',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{w}</div>
+              ))}
+            </div>
+          )}
+        </div>
         {/* Side by side when there is room for full operands, else stacked */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(520px,1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(520px,100%),1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
           <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme} traceCtx={traceCtx?.dme}
                     ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send} />
           <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr} traceCtx={traceCtx?.klr}
@@ -161,22 +164,25 @@ function EngineRow({ series }) {
   const t0 = series[0]?.t ?? 0, t1 = last?.t ?? 1;
   return (
     <div style={{...panel,display:'flex',flexDirection:'column',gap:'6px'}}>
-      <div style={{display:'flex',gap:'20px',alignItems:'baseline',flexWrap:'wrap'}}>
-        {METRICS.map(m => (
-          <span key={m.k} style={{display:'inline-flex',gap:'6px',alignItems:'baseline'}}>
-            <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{m.label}</span>
-            <span style={{color: m.warn?.(last) ? C.red : m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
-          </span>
-        ))}
-        <span style={{marginLeft:'auto',display:'inline-flex',gap:'8px',alignItems:'baseline'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:'8px'}}>
+        <span style={title}>LIVE STATS</span>
+        <span style={{display:'inline-flex',gap:'8px',alignItems:'baseline'}}>
           <span style={{color:'#779977',fontSize:'9px'}}>
             {last ? `latest snapshot ${last.t} ms` : 'no snapshot yet'}
           </span>
           <button style={btn(charts)} onClick={() => setCharts(c => !c)}>CHARTS</button>
         </span>
       </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:'4px 12px'}}>
+        {METRICS.map(m => (
+          <span key={m.k} style={{display:'flex',flexDirection:'column'}}>
+            <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{m.label}</span>
+            <span style={{color: m.warn?.(last) ? C.red : m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
+          </span>
+        ))}
+      </div>
       {charts && series.length > 1 && (
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(330px,1fr))',gap:'6px'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:'6px'}}>
           {METRICS.map(m => (
             <MetricChart key={m.k} m={m} series={series} t0={t0} t1={t1} />
           ))}
