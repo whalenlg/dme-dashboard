@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, ReferenceLine
+  ResponsiveContainer, CartesianGrid, ReferenceLine, DefaultTooltipContent
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
 import LivePanel from "./LivePanel.jsx";
@@ -2323,7 +2323,7 @@ const EXP_NAME = 'LOG (expected)';
 // The REPLAY: [EXPECT] field each DME chart overlays
 const DME_EXPECT = { fuel: 'inj_ms', rpm: 'rpm', dwell: 'dwell_ms', timingAdv: 'ign_adv' };
 
-// [{t, v}] for one expected field (or a function of the row), thinned
+// [{t, v}] for one expected field (or a function of the row); thin() it to draw
 function expectSeries(expect, f, T = null) {
   if (!expect?.length) return [];
   const get = typeof f === 'function' ? f : e => e[f];
@@ -2333,8 +2333,37 @@ function expectSeries(expect, f, T = null) {
     const v = get(e);
     if (v != null && !Number.isNaN(v)) rows.push({ t: e.t, v });
   }
-  return thin(rows, 'v');
+  return rows;
 }
+
+// The latest row at or before time t (the logged value as the logger held
+// it), unless there's a gap there or the series hasn't started
+const EXP_HOLD_MS = 1000;
+function rowAt(series, t) {
+  if (!series?.length || t == null || Number.isNaN(+t)) return null;
+  let lo = 0, hi = series.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (series[mid].t <= t) lo = mid + 1; else hi = mid; }
+  const row = series[lo - 1];
+  return row && t - row.t <= EXP_HOLD_MS ? row : null;
+}
+
+// Tooltip content: the logged value at the hovered time next to the sim's.
+// The expected line's own tooltip entry is dropped: Recharts picks it by
+// index into its data, not by time, so it isn't the value at the cursor.
+// Hovering one of the expected line's points leaves out the sim lines, which
+// have no point there, so each sim line in `sim` ({rows, key, name, color}) missing
+// from the payload gets its row at that time.
+const ExpectTooltip = ({ series, sim = [], ...props }) => {
+  const rows = (props.payload ?? []).filter(p => p.name !== EXP_NAME);
+  for (const { rows: simRows, key, name = key, color } of sim) {
+    if (rows.some(p => p.dataKey === key)) continue;
+    const r = rowAt(simRows, props.label);
+    if (r?.[key] != null) rows.push({ name, value: r[key], dataKey: key, color, payload: r });
+  }
+  const e = rowAt(series, props.label);
+  return <DefaultTooltipContent {...props}
+    payload={e ? [...rows, { name: EXP_NAME, value: e.v, dataKey: 'v', color: EXP_COL, payload: e }] : rows}/>;
+};
 
 const ExpectKey = () => (
   <span style={{color:EXP_COL, float:'right', fontWeight:'normal'}}>┄ {EXP_NAME}</span>
@@ -2346,6 +2375,7 @@ const ChartsTab = memo(function ChartsTab({ chartData, expect }) {
   // Thinned per chart (keeping each series' peaks), only when the data changes
   const thinned = useMemo(() => Object.fromEntries(DME_CHARTS.map(c => [c.k, thin(chartData, [c.k, 'rpm'])])), [chartData]);
   const expected = useMemo(() => Object.fromEntries(Object.entries(DME_EXPECT).map(([k, f]) => [k, expectSeries(expect, f)])), [expect]);
+  const expectedLine = useMemo(() => Object.fromEntries(Object.entries(expected).map(([k, rows]) => [k, thin(rows, 'v')])), [expected]);
   if (!chartData.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
       No snapshot data loaded — use LOAD LOG to parse a log file
@@ -2371,12 +2401,14 @@ const ChartsTab = memo(function ChartsTab({ chartData, expect }) {
                                color:c.col,fontSize:'11px',fontFamily:'inherit'}}
                 formatter={(v,n)=>n==='rpm'?[`${v} RPM`,'RPM']:c.unit==='hex'?[`0x${v.toString(16).toUpperCase().padStart(2,'0')} (${v}d)`,n]:c.unit==='°BTDC'?[`${v}°BTDC`,n]:c.unit==='°retard'?[`${v}° retard`,n]:[v,n]}
                 labelFormatter={t=>`t=${t} ms`}
+                content={expected[c.k]?.length ? p => <ExpectTooltip {...p} series={expected[c.k]}
+                  sim={[{ rows: thinned[c.k], key: c.k, color: c.col }, ...(c.k !== 'rpm' ? [{ rows: thinned[c.k], key: 'rpm', color: '#888855' }] : [])]}/> : undefined}
               />
               <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
               <Line yAxisId="left"  type="monotone" dataKey={c.k}    stroke={c.col}
                     dot={false} strokeWidth={1.5} connectNulls={c.cn??false} isAnimationActive={false} />
               {expected[c.k]?.length > 0 &&
-                <Line yAxisId="left" type="linear" data={expected[c.k]} dataKey="v" name={EXP_NAME}
+                <Line yAxisId="left" type="linear" data={expectedLine[c.k]} dataKey="v" name={EXP_NAME}
                       stroke={EXP_COL} strokeOpacity={0.8} dot={false} strokeWidth={1}
                       strokeDasharray="3 2" isAnimationActive={false} />}
               {c.k !== 'rpm' &&
@@ -3141,9 +3173,12 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
-                    <Tooltip {...tt} formatter={(v, _n, item) => c.key === 'deg' && item?.payload?.us != null
+                    <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
+                      : c.key === 'deg' && item?.payload?.us != null
                       ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, 'retard']
-                      : [v, c.unit]}/>
+                      : [v, c.unit]}
+                      content={c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
+                        sim={[{ rows: c.data, key: c.key, color: c.col }]}/> : undefined}/>
                     {currentT != null &&
                       <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
                     {c.segments ? (
@@ -3161,7 +3196,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                             connectNulls={false} isAnimationActive={false}/>
                     )}
                     {c.exp?.length > 0 &&
-                      <Line type={c.type === 'stepAfter' ? 'stepAfter' : 'linear'} data={c.exp} dataKey="v"
+                      <Line type={c.type === 'stepAfter' ? 'stepAfter' : 'linear'} data={thin(c.exp, 'v')} dataKey="v"
                             name={EXP_NAME} stroke={EXP_COL} strokeOpacity={0.8} dot={false} strokeWidth={1}
                             strokeDasharray="3 2" isAnimationActive={false}/>}
                   </LineChart>
@@ -3182,13 +3217,14 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
               <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
               <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
-              <Tooltip {...tt}/>
+              <Tooltip {...tt} content={exp.full_load.length ? p => <ExpectTooltip {...p} series={exp.full_load}
+                sim={[{ rows: ignOutData, key: 'full_load', name: 'FULL LOAD', color: C.amber }]}/> : undefined}/>
               {currentT != null &&
                 <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
               <Line type="stepAfter" dataKey="full_load" stroke={C.amber} dot={false}
                     strokeWidth={1.5} connectNulls={false} name="FULL LOAD" isAnimationActive={false}/>
               {exp.full_load.length > 0 &&
-                <Line type="stepAfter" data={exp.full_load} dataKey="v" name={EXP_NAME} stroke={EXP_COL}
+                <Line type="stepAfter" data={thin(exp.full_load, 'v')} dataKey="v" name={EXP_NAME} stroke={EXP_COL}
                       strokeOpacity={0.8} dot={false} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false}/>}
             </LineChart>
           </ResponsiveContainer>
