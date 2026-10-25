@@ -372,7 +372,8 @@ const KLR_PORT_DEFS = {
 };
 
 // Parse compact dashboard snapshot line:
-//   [DS] <time_ms>,<256-hex-iram>,<p1hex><p2hex><p3hex>
+//   [DS] <time_ms>,<256-hex-iram>,<p1hex><p2hex><p3hex>,<rpm>[,<16-hex-adc>]
+//   adc: the testbench's ADC channel inputs 0-7 (newer logs only)
 function parseDsLine(line) {
   // Strip "[DS] " prefix
   const body = line.replace(/^(?:DME:\s*)?\[DS\]\s*/,'').trim();
@@ -402,6 +403,11 @@ function parseDsLine(line) {
   if (parts.length >= 4) {
     const rpm = parseInt(parts[3].trim());
     if (!isNaN(rpm) && rpm > 0) snap.refRpm = rpm;
+  }
+  // Fifth field: what each ADC channel is being fed, not what's in iram
+  if (parts.length >= 5 && /^[0-9a-f]{16}$/i.test(parts[4].trim())) {
+    const a = parts[4].trim();
+    snap.adcIn = Array.from({ length: 8 }, (_, i) => parseInt(a.slice(i*2, i*2+2), 16));
   }
   return snap;
 }
