@@ -3108,21 +3108,24 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
   // comparable at a glance instead of each auto-scaling independently.
   const sparkMax = Math.max(1, extent(sparkData.map(d => d.deg ?? 0))[1], extent(exp.retard.map(d => d.v))[1]);
 
-  const knockPulseData = knockPulseEvents.length
-    ? [
-        { t: firstKlrT ?? 0, knock_out: 1 },
-        ...knockPulseEvents,
-        { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 },
-      ]
-    : [];
-  const knockPulseSegments = knockPulseEvents.length
-    ? [
-        { dashed: true,  data: [{ t: firstKlrT ?? 0, knock_out: 1 }, knockPulseEvents[0]] },
-        { dashed: false, data: knockPulseEvents },
-        { dashed: true,  data: [knockPulseEvents[knockPulseEvents.length-1],
-                                 { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 }] },
-      ]
-    : [];
+  // High (idle) from the start of the log, low from each KNOCK_OUT
+  // cleared edge until the KLR is reset, high again to the cursor; with
+  // no knock (yet) it is high throughout. All of it is known, so solid.
+  const knockEnd = effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1]?.t;
+  const knockStart = { t: firstKlrT ?? 0, knock_out: 1 };
+  let knockPulseData, knockPulseSegments;
+  if (knockPulseEvents.length) {
+    const first = knockPulseEvents[0], last = knockPulseEvents[knockPulseEvents.length-1];
+    knockPulseData = [knockStart, ...knockPulseEvents, { t: knockEnd, knock_out: 1 }];
+    knockPulseSegments = [
+      { dashed: false, data: [knockStart, first] },
+      { dashed: false, data: knockPulseEvents },
+      { dashed: false, data: [last, { t: knockEnd, knock_out: 1 }] },
+    ];
+  } else {
+    knockPulseData = firstKlrT != null && knockEnd != null ? [knockStart, { t: knockEnd, knock_out: 1 }] : [];
+    knockPulseSegments = knockPulseData.length ? [{ dashed: false, data: knockPulseData }] : [];
+  }
 
   const ax = { fill: C.textDim, fontSize: 9, fontFamily: "'Courier New',monospace" };
   const tt = { contentStyle: { background:'#060e06', border:'1px solid #0d2e0d',
@@ -3206,7 +3209,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       unit:  '',
       dom:   [-0.1, 1.1],
       type:  'stepAfter',
-      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. Dashed ends = anchored high, no data across that gap.',
+      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. High (idle) whenever it is not knocking, including the whole log when there has been no knock.',
       empty: knockPulseData.length === 0,
       exp:   exp.knock_out,
     },
