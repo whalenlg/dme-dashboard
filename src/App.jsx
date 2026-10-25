@@ -3142,8 +3142,8 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       data:  measured, key: 'dme_btdc', unit: '°', dom: ['auto', 'auto'],
       lines: [{ key: 'dme_btdc', name: 'DME spark', col: '#ff4444' },
               { key: 'klr_btdc', name: 'KLR spark', col: '#ff8844' },
-              { key: 'dme_cmd', name: 'DME 31h+57h', col: CMD_COL, dash: CMD_DASH }],
-      note:  'Spark angles measured against the crank model\'s TDC (half-teeth from the ref mark). Red: DME spark, orange: KLR spark (what fires the coil), white dashed: the DME firmware\'s commanded 31h+57h.',
+              { key: 'dme_cmd', name: 'DME Computed Spark', col: CMD_COL, dash: CMD_DASH }],
+      note:  'Spark angles measured against the crank model\'s TDC (half-teeth from the ref mark). Red: DME spark, orange: KLR spark (what fires the coil), white dashed: DME Computed Spark, the firmware\'s 31h + 57h for that spark.',
     },
     {
       title: 'KLR PROCESSING LATENCY (μs)',
