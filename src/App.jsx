@@ -2867,12 +2867,17 @@ function KLRTab({ klrData, currentT }) {
   );
 }
 
+// Older logs (no [SPARK] lines): their retard is the raw delay, which is
+// noisy until the engine is up, so it starts after this much of the log
+// (at most a quarter of it, so a short log still shows something)
 const IGN_IGNORE_MS = 5000;
 // KLR knock/tip-in retard per count of 73h + 3Fh. The timing delay
 // calculation (0x1B2) multiplies the count by the measured spark period,
 // so it is an angle, not a time; fitted from the ramp_to_6000_knock
 // [SPARK] lines at 6007 rpm (0.2835°/count, rms error 0.17°).
 const KLR_DEG_PER_COUNT = 0.2835;
+// Commanded-value overlays, drawn over the measured line they sit on
+const CMD_COL = '#ffffff', CMD_DASH = '4 3';
 
 // KLR chart series over the whole log; KLRChartsTab cuts them at the cursor
 function klrChartSeries(klrData, dmeSnaps) {
@@ -2883,8 +2888,10 @@ function klrChartSeries(klrData, dmeSnaps) {
   const lastKlrT  = klrPhases[klrPhases.length-1]?.t ?? klrStatus[klrStatus.length-1]?.t;
 
   // ── Build chart datasets ──────────────────────────────────
-  // First 5s is noisy cranking/sync data: those points stay (so all 4
-  // cylinder charts share one time axis) but have no degrees.
+  // Older logs: the first IGN_IGNORE_MS (capped) is noisy cranking/sync
+  // data; those points stay (so all 4 cylinder charts share one time
+  // axis) but have no degrees.
+  const ignoreMs = firstKlrT != null ? Math.min(IGN_IGNORE_MS, firstKlrT + (lastKlrT - firstKlrT) / 4) : IGN_IGNORE_MS;
   const snaps = (dmeSnaps ?? []).filter(s => s.t != null);
 
   // Spark retard: ign_in fall to ign_out fall (spark), in crank degrees at
@@ -2896,7 +2903,7 @@ function klrChartSeries(klrData, dmeSnaps) {
       while (sj + 1 < snaps.length && snaps[sj + 1].t <= p.t) sj++;
       const rpm = sj >= 0 ? snapRpm(snaps[sj]) : null;
       const us  = +p.spark_us.toFixed(2);
-      const deg = p.t >= IGN_IGNORE_MS && rpm ? +(us * rpm * 6e-6).toFixed(2) : null;
+      const deg = p.t >= ignoreMs && rpm ? +(us * rpm * 6e-6).toFixed(2) : null;
       return { t: p.t, deg, us, rpm };
     });
 
@@ -2916,25 +2923,25 @@ function klrChartSeries(klrData, dmeSnaps) {
     return ORDER[k % 4];
   });
   // KLR processing latency: the delay of the sparks it wasn't asked to
-  // retard (73h + 3Fh = 0), as the median of the last LAT_WINDOW of those
-  // up to each spark. It is a time that steps with rpm (~150 μs above
-  // ~1500 rpm, ~250 μs below, ~440 μs cranking), so a single value would
-  // read as retard at low rpm; the retard below is net of it.
-  const LAT_WINDOW = 15;
-  const recent = [];
-  const latOf = sparks.map(s => {
-    if (s.klr73 === 0 && s.klr3F === 0) {
-      recent.push(s.delay_us);
-      if (recent.length > LAT_WINDOW) recent.shift();
-    }
-    if (!recent.length) return null;
-    const v = recent.slice().sort((x, y) => x - y);
-    return v[v.length >> 1];
+  // retard (73h + 3Fh = 0). It steps with rpm (~150 μs above ~1500 rpm,
+  // ~250 μs below, ~440 μs cranking), so each spark gets the median of
+  // the LAT_SIDE nearest such sparks on each side of it (not itself): a
+  // trailing window would lag each step and read as retard for a while.
+  const LAT_SIDE = 4;
+  const zero = [];                       // [index, delay] of unretarded sparks
+  sparks.forEach((s, i) => { if (s.klr73 === 0 && s.klr3F === 0) zero.push([i, s.delay_us]); });
+  let zp = 0;                            // first zero entry with index >= i
+  const latOf = sparks.map((s, i) => {
+    while (zp < zero.length && zero[zp][0] < i) zp++;
+    const hi = zp < zero.length && zero[zp][0] === i ? zp + 1 : zp;
+    const v = zero.slice(Math.max(0, zp - LAT_SIDE), zp)
+      .concat(zero.slice(hi, hi + LAT_SIDE)).map(z => z[1]).sort((x, y) => x - y);
+    return v.length ? (v[(v.length - 1) >> 1] + v[v.length >> 1]) / 2 : null;
   });
   const s8 = v => (v << 24) >> 24;
   const measured = sparks.map((s, i) => {
     const lat = latOf[i];
-    const ok = s.t >= IGN_IGNORE_MS && lat != null && s.rpm > 0;
+    const ok = lat != null && s.rpm > 0;
     const cmd = s.klr73 != null ? s.klr73 + (s.klr3F ?? 0) : null;
     return {
       t: s.t, cyl: cylOf[i], side: s.side, rpm: s.rpm,
@@ -2945,7 +2952,7 @@ function klrChartSeries(klrData, dmeSnaps) {
       deg: ok ? +(s.retard - lat * s.rpm * 6e-6).toFixed(2) : null,
       us:  ok ? +(s.delay_us - lat).toFixed(1) : null,
       // what the KLR commanded: (73h + 3Fh) counts, a fixed angle each
-      cmd_deg: s.t >= IGN_IGNORE_MS && cmd != null ? +(cmd * KLR_DEG_PER_COUNT).toFixed(2) : null,
+      cmd_deg: cmd != null ? +(cmd * KLR_DEG_PER_COUNT).toFixed(2) : null,
       lat_us: s.klr73 === 0 && s.klr3F === 0 ? s.delay_us : null,
       lat,
       klr73: s.klr73, klr3F: s.klr3F,
@@ -2962,7 +2969,7 @@ function klrChartSeries(klrData, dmeSnaps) {
       return p.deasserted && prev === 'on';
     })
     .filter(p => p.pulse_ms != null)
-    .map(p => ({ t: p.t, pulse: p.t < IGN_IGNORE_MS ? 0 : +p.pulse_ms.toFixed(3) }));
+    .map(p => ({ t: p.t, pulse: +p.pulse_ms.toFixed(3) }));
 
   // CV_PWM and knock from STATUS lines
   const statusData = klrStatus.map(s => ({
@@ -3029,7 +3036,7 @@ function klrChartSeries(klrData, dmeSnaps) {
     })),
   ].sort((a,b) => a.t - b.t);
 
-  return { firstKlrT, lastKlrT, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData };
+  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData };
 }
 
 // Entries with t <= T (series are time-sorted); all of them when T is null
@@ -3101,21 +3108,24 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
   // comparable at a glance instead of each auto-scaling independently.
   const sparkMax = Math.max(1, extent(sparkData.map(d => d.deg ?? 0))[1], extent(exp.retard.map(d => d.v))[1]);
 
-  const knockPulseData = knockPulseEvents.length
-    ? [
-        { t: firstKlrT ?? 0, knock_out: 1 },
-        ...knockPulseEvents,
-        { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 },
-      ]
-    : [];
-  const knockPulseSegments = knockPulseEvents.length
-    ? [
-        { dashed: true,  data: [{ t: firstKlrT ?? 0, knock_out: 1 }, knockPulseEvents[0]] },
-        { dashed: false, data: knockPulseEvents },
-        { dashed: true,  data: [knockPulseEvents[knockPulseEvents.length-1],
-                                 { t: effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1].t, knock_out: 1 }] },
-      ]
-    : [];
+  // High (idle) from the start of the log, low from each KNOCK_OUT
+  // cleared edge until the KLR is reset, high again to the cursor; with
+  // no knock (yet) it is high throughout. All of it is known, so solid.
+  const knockEnd = effectiveT ?? lastKlrT ?? knockPulseEvents[knockPulseEvents.length-1]?.t;
+  const knockStart = { t: firstKlrT ?? 0, knock_out: 1 };
+  let knockPulseData, knockPulseSegments;
+  if (knockPulseEvents.length) {
+    const first = knockPulseEvents[0], last = knockPulseEvents[knockPulseEvents.length-1];
+    knockPulseData = [knockStart, ...knockPulseEvents, { t: knockEnd, knock_out: 1 }];
+    knockPulseSegments = [
+      { dashed: false, data: [knockStart, first] },
+      { dashed: false, data: knockPulseEvents },
+      { dashed: false, data: [last, { t: knockEnd, knock_out: 1 }] },
+    ];
+  } else {
+    knockPulseData = firstKlrT != null && knockEnd != null ? [knockStart, { t: knockEnd, knock_out: 1 }] : [];
+    knockPulseSegments = knockPulseData.length ? [{ dashed: false, data: knockPulseData }] : [];
+  }
 
   const ax = { fill: C.textDim, fontSize: 9, fontFamily: "'Courier New',monospace" };
   const tt = { contentStyle: { background:'#060e06', border:'1px solid #0d2e0d',
@@ -3126,14 +3136,19 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
 
   const measured = upTo(all.measured, effectiveT);
   const lat = measured.length ? measured[measured.length - 1].lat : null;
-  const sparkCharts = measured.length ? [
+  const sparkCharts = (measured.length ? [
     {
       title: 'SPARK ANGLE — MEASURED (°BTDC)',
       data:  measured, key: 'dme_btdc', unit: '°', dom: ['auto', 'auto'],
-      lines: [{ key: 'dme_cmd', name: 'DME 31h+57h', col: '#888888', dash: '3 2' },
-              { key: 'dme_btdc', name: 'DME spark', col: '#ff4444' },
-              { key: 'klr_btdc', name: 'KLR spark', col: '#ff8844' }],
-      note:  'Spark angles measured against the crank model\'s TDC (half-teeth from the ref mark). Red: DME spark, orange: KLR spark (what fires the coil), grey dashed: the DME firmware\'s commanded 31h+57h.',
+      lines: [{ key: 'dme_btdc', name: 'DME spark', col: '#ff4444' },
+              { key: 'klr_btdc', name: 'KLR spark', col: '#ff8844' },
+              { key: 'dme_cmd', name: 'DME Computed Spark', col: CMD_COL, dash: CMD_DASH }],
+      note:  'Spark angles measured against the crank model\'s TDC (half-teeth from the ref mark). Red: DME spark, orange: KLR spark (what fires the coil), white dashed: DME Computed Spark, the firmware\'s 31h + 57h for that spark.',
+    },
+    {
+      title: 'KLR PROCESSING LATENCY (μs)',
+      data:  measured, key: 'lat_us', col: '#44aaff', unit: 'μs', dom: [0, 'auto'],
+      note:  'DME spark to KLR spark for sparks with no commanded retard (73h + 3Fh = 0): the KLR\'s own delay, which steps with rpm (~150 μs above ~1500 rpm, ~250 μs below, ~440 μs cranking). Removed from the retard charts.',
     },
     ...[1, 2, 3, 4].map(cyl => ({
       title: `KLR RETARD — CYL ${cyl} (° crank, latency removed)`,
@@ -3143,35 +3158,23 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       unit:  '°',
       dom:   [0, 'auto'],
       lines: [{ key: 'deg', name: 'measured', col: CYL_COLORS[cyl-1] },
-              { key: 'cmd_deg', name: 'commanded', col: '#e0e0e0', dash: '3 2' }],
-      note:  `Measured: DME spark minus KLR spark, less the KLR's processing latency (median delay of the last sparks with no commanded retard${lat != null ? `, ${lat.toFixed(0)} μs at the cursor` : ''}). White dashed: commanded (73h + 3Fh) × ${KLR_DEG_PER_COUNT}°. Cylinder from the measured TDC side and firing order 1-3-4-2; 1/4 and 3/2 can't be told apart (no cylinder-1 signal) but stay consistent — first ${IGN_IGNORE_MS/1000}s omitted`,
-      empty: !measured.some(d => d.cyl === cyl),
+              { key: 'cmd_deg', name: 'Firmware Computed Retard', col: CMD_COL, dash: CMD_DASH }],
+      note:  `Measured: DME spark minus KLR spark, less the KLR's processing latency (median delay of the nearest sparks with no commanded retard${lat != null ? `, ${lat.toFixed(0)} μs at the cursor` : ''}). White dashed: Firmware Computed Retard, knock slot 73h (rotated through 70h-73h once per spark) + tip-in 3Fh, as the KLR's timing delay calculation read them for this spark, × ${KLR_DEG_PER_COUNT}°/count (scaled by the spark period, so a fixed angle at any rpm; max 4Bh ≈ 21° per slot). Cylinder from the measured TDC side and firing order 1-3-4-2; 1/4 and 3/2 can't be told apart (no cylinder-1 signal) but stay consistent`,
       exp:   exp.retard,
     })),
-    {
-      title: 'KLR COMMANDED RETARD — (73h + 3Fh) PER CYL (°)',
-      data:  measured.map(d => ({ t: d.t, [`c${d.cyl}`]: d.cmd_deg, tip: d.klr3F != null && d.t >= IGN_IGNORE_MS ? +(d.klr3F * KLR_DEG_PER_COUNT).toFixed(2) : null })),
-      key:   'c1', unit: '°', dom: [0, 'auto'], type: 'stepAfter',
-      lines: [1, 2, 3, 4].map(cyl => ({ key: `c${cyl}`, name: `cyl ${cyl}`, col: CYL_COLORS[cyl-1] }))
-               .concat([{ key: 'tip', name: 'tip-in 3Fh', col: '#aaaaaa', dash: '3 2' }]),
-      note:  `The knock slot (73h, rotated through 70h-73h once per spark) plus the throttle tip-in retard 3Fh, as the KLR's timing delay calculation read them for each spark, at ${KLR_DEG_PER_COUNT}°/count (the firmware scales the count by the spark period, so it is a fixed angle at any rpm). Max per slot is 4Bh (≈21°). First ${IGN_IGNORE_MS/1000}s omitted.`,
-    },
-    {
-      title: 'KLR PROCESSING LATENCY (μs)',
-      data:  measured, key: 'lat_us', col: '#44aaff', unit: 'μs', dom: [0, 'auto'],
-      note:  'DME spark to KLR spark for sparks with no commanded retard (73h + 3Fh = 0): the KLR\'s own delay, which steps with rpm (~150 μs above ~1500 rpm, ~250 μs below, ~440 μs cranking). Removed from the retard charts.',
-    },
-  ] : [1, 2, 3, 4].map(cyl => ({
+  ].map(c => ({ ...c,
+                // No data when none of its lines has a value (yet)
+                empty: !c.data.some(d => (c.lines ?? [c]).some(l => d[l.key] != null)) })) : [1, 2, 3, 4].map(cyl => ({
       title: `SPARK RETARD — CYL ${cyl} (° crank)`,
       data:  sparkByCyl[cyl-1],
       key:   'deg',
       col:   CYL_COLORS[cyl-1],
       unit:  '°',
       dom:   [0, Math.ceil(sparkMax)],
-      note:  `Older log without KLR: [SPARK] lines: ign_in fall (DME spark) to IGN_OUT fall (KLR spark), deg = us × rpm × 6e-6, including the KLR's own processing latency. Every 4th spark (#${cyl}, ${cyl + 4}, ...), not tied to a cylinder — first ${IGN_IGNORE_MS/1000}s omitted`,
+      note:  `Older log without KLR: [SPARK] lines: ign_in fall (DME spark) to IGN_OUT fall (KLR spark), deg = us × rpm × 6e-6, including the KLR's own processing latency. Every 4th spark (#${cyl}, ${cyl + 4}, ...), not tied to a cylinder — first ${(all.ignoreMs/1000).toFixed(1)}s omitted`,
       empty: sparkByCyl[cyl-1].length === 0,
       exp:   exp.retard,
-    }));
+    })));
 
   const charts = [
     ...sparkCharts,
@@ -3182,7 +3185,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       col:   '#44cccc',
       unit:  'ms',
       dom:   [0, 'auto'],
-      note:  `KLR ignition coil dwell / spark duration — first ${IGN_IGNORE_MS/1000}s zeroed as noisy`,
+      note:  'KLR ignition coil dwell / spark duration (IGN_OUT asserted to deasserted)',
       empty: ignPulseData.length === 0,
       exp:   exp.pulse,
     },
@@ -3206,7 +3209,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       unit:  '',
       dom:   [-0.1, 1.1],
       type:  'stepAfter',
-      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. Dashed ends = anchored high, no data across that gap.',
+      note:  'KLR knock_out (P1.6), same as the FST: low from each KNOCK_OUT cleared [PHASE] edge until the next ignition cycle resets the KLR. Not the injected knock_sensor drops. High (idle) whenever it is not knocking, including the whole log when there has been no knock.',
       empty: knockPulseData.length === 0,
       exp:   exp.knock_out,
     },
@@ -3254,6 +3257,13 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     },
   ];
 
+  // Every chart on the page spans the same time range (first to last
+  // sample of any of them), so they line up however sparse each one is
+  let x0 = Infinity, x1 = -Infinity;
+  for (const rows of [...charts.map(c => c.data), ignOutData])
+    if (rows?.length) { x0 = Math.min(x0, rows[0].t); x1 = Math.max(x1, rows[rows.length - 1].t); }
+  const xdom = x0 <= x1 ? [x0, x1] : ['dataMin', 'dataMax'];
+
   return (
     <div>
       {/* Info banner when limited data */}
@@ -3267,7 +3277,14 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px'}}>
         {charts.map(c => (
           <div key={c.title} style={S.panel}>
-            <div style={S.panelTitle}>{c.title}{c.exp?.length > 0 && <ExpectKey/>}</div>
+            <div style={S.panelTitle}>{c.title}{c.exp?.length > 0 && <ExpectKey/>}
+              {c.lines && c.lines.map(l => (
+                <span key={l.key} style={{marginLeft:'10px', color:C.textDim, fontSize:'8px', whiteSpace:'nowrap'}}>
+                  <span style={{display:'inline-block', width:'14px', verticalAlign:'middle', marginRight:'3px',
+                                borderTop:`2px ${l.dash ? 'dashed' : 'solid'} ${l.col}`}}/>{l.name}
+                </span>
+              ))}
+            </div>
             {c.empty && !c.exp?.length ? (
               <div style={{height:'130px', display:'flex', alignItems:'center',
                            justifyContent:'center', color:C.textDim, fontSize:'10px'}}>
@@ -3278,12 +3295,12 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                 <ResponsiveContainer width="100%" height={130}>
                   <LineChart data={c.segments ? c.data : thin(c.data, c.lines ? c.lines.map(l => l.key) : c.key)} margin={{top:2,right:6,bottom:0,left:0}}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-                    <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+                    <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
-                      : c.key === 'deg' && n !== 'commanded' && item?.payload?.us != null
-                      ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, 'retard']
-                      : [v, c.unit]}
+                      : c.key === 'deg' && n !== 'Firmware Computed Retard' && item?.payload?.us != null
+                      ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, c.lines ? n : 'retard']
+                      : c.lines ? [`${v}${c.unit}`, n] : [v, c.unit]}
                       content={c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
                         sim={[{ rows: c.data, key: c.key, color: c.col }]}/> : undefined}/>
                     {currentT != null &&
@@ -3299,7 +3316,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                     ) : c.lines ? (
                       c.lines.map(l => (
                         <Line key={l.key} type={c.type || 'monotone'} dataKey={l.key} name={l.name} stroke={l.col}
-                              strokeDasharray={l.dash} dot={false} strokeWidth={1}
+                              strokeDasharray={l.dash} dot={false} strokeWidth={l.dash ? 1.5 : 1}
                               connectNulls isAnimationActive={false}/>
                       ))
                     ) : (
@@ -3328,7 +3345,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
           <ResponsiveContainer width="100%" height={120}>
             <LineChart data={thin(ignOutData, 'full_load')} margin={{top:2,right:6,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-              <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+              <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
               <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
               <Tooltip {...tt} content={exp.full_load.length ? p => <ExpectTooltip {...p} series={exp.full_load}
                 sim={[{ rows: ignOutData, key: 'full_load', name: 'FULL LOAD', color: C.amber }]}/> : undefined}/>
