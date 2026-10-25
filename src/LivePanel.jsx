@@ -53,7 +53,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
 
   // Ask for the instruction trace whenever the sim stops
   useEffect(() => {
-    if (sim.state === 'paused') send('trace dme 64\ntrace klr 64');
+    if (sim.state === 'paused') send('trace dme 512\ntrace klr 512');   // all the sim keeps
   }, [sim.state, sim.tNs, send]);
 
   const tMs = (sim.tNs / 1e6).toFixed(3);
@@ -127,9 +127,9 @@ function RomRow({ roms, asmSrc, paused, loadRom }) {
         <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
           <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
           <span style={{color:C.textBright}} title={roms?.[cpu] ?? ''}>{name(roms?.[cpu])}</span>
-          {cpu === 'dme' && asmSrc?.dme && (asmSrc.dme.match === 'none'
+          {asmSrc?.[cpu] && (asmSrc[cpu].match === 'none'
             ? <span style={{color:'#ccaa44'}} title="This image doesn't match any disassembly workbook, so the debugger listing is the default one and may not line up with the code">ASM: no workbook</span>
-            : <span style={{color:C.textDim}} title={`Debugger listing from disassemble/${asmSrc.dme.workbook} (image matched by ${asmSrc.dme.match})`}>ASM: {asmSrc.dme.workbook}</span>)}
+            : <span style={{color:C.textDim}} title={`Debugger listing from ${cpu}/disassemble/${asmSrc[cpu].workbook} (image matched by ${asmSrc[cpu].match})`}>ASM: {asmSrc[cpu].workbook}</span>)}
           <input ref={pick[cpu]} type="file" accept=".mem" style={{display:'none'}}
                  onChange={e => { const f = e.target.files[0]; e.target.value = ''; loadRom(cpu, f, reset); }} />
           <button style={{...btn(paused), cursor: paused ? 'pointer' : 'not-allowed'}} disabled={!paused} onClick={() => pick[cpu].current.click()}
@@ -497,8 +497,92 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
         </div>
       )}
       {!running && trace.length > 0 && (
-        <div style={{color:'#779977',fontSize:'9px',marginTop:'6px',whiteSpace:'normal',wordBreak:'break-all'}}>
-          last {Math.min(32, trace.length)}: {trace.slice(-32).map(a => hx(a, cpu === 'dme' ? 4 : 3)).join(' ')}
+        <TraceList cpu={cpu} trace={trace} traceCtx={traceCtx} listing={listing} colW={colW}
+                   onJump={a => { setCenter(a); setJump(hx(a, cpu === 'dme' ? 4 : 3)); }} />
+      )}
+    </div>
+  );
+}
+
+// The last instructions executed, oldest first, disassembled. Values are the
+// operands as that particular execution saw them. A rule marks where control
+// arrived by a jump, call, return or interrupt rather than falling through.
+// Back-to-back repeats of one instruction or a short loop (a busy-wait such
+// as `jnb IE1, $`) show once with a ×N count and the latest repetition's values.
+const TRACE_SHOWN = 32;     // rows, after repeats are collapsed
+const TRACE_LOOP_MAX = 8;   // longest loop body that is collapsed
+function compactTrace(steps) {
+  const out = [];
+  const same = (k, m, len) => { for (let j = 0; j < len; j++) if (steps[k + j].a !== steps[m + j].a) return false; return true; };
+  for (let k = 0; k < steps.length;) {
+    let best = { len: 1, reps: 1 };
+    for (let len = 1; len <= TRACE_LOOP_MAX && k + 2 * len <= steps.length; len++) {
+      let reps = 1;
+      while (k + (reps + 1) * len <= steps.length && same(k, k + reps * len, len)) reps++;
+      // Most instructions covered wins; on a tie the shorter loop
+      if (reps > 1 && len * reps > best.len * best.reps) best = { len, reps };
+    }
+    const lastRep = k + (best.reps - 1) * best.len;
+    for (let j = 0; j < best.len; j++)
+      out.push({ ...steps[lastRep + j], jumped: steps[k + j].jumped, reps: best.reps, loopLen: best.len, loopPos: j, start: k });
+    k += best.len * best.reps;
+  }
+  return out;
+}
+function TraceList({ cpu, trace, traceCtx, listing, colW, onJump }) {
+  const [open, setOpen] = useState(true);
+  const steps = useMemo(() => trace.map((a, i) => {
+    const row = listing.length ? listing[rowFor(listing, a)] : null;
+    const r = row?.a === a ? row : null;
+    const st = r ? traceState(cpu, traceCtx?.[i], r) : null;
+    const val = st ? (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, st.ram, st.regs) : '';
+    // Where the previous instruction would have fallen through to: the next listing row
+    const next = i > 0 && listing.length ? listing[rowFor(listing, trace[i - 1]) + 1]?.a : null;
+    return { i, a, r, val, jumped: i > 0 && next !== a };
+  }), [cpu, trace, traceCtx, listing]);
+  // Collapse over the whole trace, then keep the newest rows
+  const shown = useMemo(() => compactTrace(steps).slice(-TRACE_SHOWN), [steps]);
+  const covered = shown.length ? steps.length - shown[0].start : 0;   // instructions those rows stand for
+  const w = cpu === 'dme' ? 4 : 3;
+  return (
+    <div style={{marginTop:'6px',borderTop:`1px solid ${C.border}`,paddingTop:'4px'}}>
+      <div style={{...title,display:'flex',gap:'8px',alignItems:'center',marginBottom:'2px',cursor:'pointer'}}
+           onClick={() => setOpen(o => !o)} title={open ? 'Hide' : 'Show'}>
+        <span>{open ? '▾' : '▸'} last {covered} executed</span>
+        <span style={{textTransform:'none',letterSpacing:0,color:'#557755'}}>
+          oldest first · newest at the bottom{shown.length < covered ? ` · repeats collapsed (×N) into ${shown.length} rows` : ''}
+        </span>
+      </div>
+      {open && (
+        <div style={{fontSize:'10.5px',lineHeight:'15px',overflowX:'auto',overflowY:'hidden',whiteSpace:'nowrap'}}>
+          {shown.map(({ i, a, r, val, jumped, reps, loopLen, loopPos }, k) => {
+            const last = k === shown.length - 1;
+            const inLoop = reps > 1 && loopLen > 1;
+            const repTitle = reps > 1 ? (loopLen > 1
+              ? `This ${loopLen}-instruction loop ran ${reps} times in a row; values are from the last pass`
+              : `Ran ${reps} times in a row; values are from the last time`) : '';
+            return (
+              <div key={i} onClick={() => onJump(a)} title={`${r?.desc ? `${r.desc}\n\n` : ''}${repTitle ? `${repTitle}\n\n` : ''}Show in listing`}
+                   style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',
+                           borderTop: jumped ? `1px dashed ${C.border}` : '1px solid transparent',
+                           borderLeft: `2px solid ${inLoop ? C.amber : 'transparent'}`,
+                           background: last ? '#0c1d0c' : 'transparent'}}>
+                <span style={{width:'10px',color:C.textDim}} title={jumped ? 'arrived by a jump, call, return or interrupt' : ''}>{jumped ? '↳' : ''}</span>
+                <span style={{width:'4ch',flex:'none',color:C.amber}} title={repTitle}>{reps > 1 && loopPos === 0 ? `×${reps}` : ''}</span>
+                <span style={{color: last ? C.textBright : '#77aa77',width:'34px'}}>{hx(a, w)}</span>
+                {r ? (<>
+                  <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
+                  <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
+                  <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
+                  <span style={{color:C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
+                        title={val && `${val}  (as this execution saw them, before it ran)`}>{val}</span>
+                  <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
+                </>) : (
+                  <span style={{color:C.textDim}}>not an instruction start in the listing</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -10,8 +10,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    POST <url>/rom?cpu=dme|klr&name=<x.mem>[&reset=1]  load a ROM image
 //                        (body = the .mem text; only while paused)
 //    GET  <url>/asm/dme|klr  disassembly listing; fetched again on
-//                        SIM: [ASM] dme <workbook> match=content|name|none,
-//                        which the bridge sends when the DME image changes
+//                        SIM: [ASM] dme|klr <workbook> match=content|name|none,
+//                        which the bridge sends when that CPU's image changes
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
 //  DME:/KLR: lines are handed to onLogLines in batches, for the
@@ -52,7 +52,7 @@ export function useLiveSim(url, onLogLines) {
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
-  const [asmSrc, setAsmSrc] = useState({ dme: null });   // {workbook, match} the DME listing came from
+  const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match} each listing came from
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -146,10 +146,10 @@ export function useLiveSim(url, onLogLines) {
         // The bridge switched the listing to the new image's workbook
         const [cpu, workbook] = rest.split(' ');
         const match = parseKV(rest).match ?? '';
-        if (cpu !== 'dme') return;
-        setAsmSrc(s => ({ ...s, dme: { workbook, match } }));
-        fetch(`${url}/asm/dme`).then(r => r.ok ? r.json() : null).catch(() => null)
-          .then(rows => { if (rows) setAsm(a => ({ ...a, dme: rows })); });
+        if (cpu !== 'dme' && cpu !== 'klr') return;
+        setAsmSrc(s => ({ ...s, [cpu]: { workbook, match } }));
+        fetch(`${url}/asm/${cpu}`).then(r => r.ok ? r.json() : null).catch(() => null)
+          .then(rows => { if (rows) setAsm(a => ({ ...a, [cpu]: rows })); });
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
