@@ -292,7 +292,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       {/* ── Ignition ─────────────────────────────────────────── */}
       <div style={panel}>
         <div style={title}>IGNITION
-          {chip("timingAdv", "advance 31h (°BTDC)", "#ff4444")}
+          {chip("timingAdv", "advance 31h+57h (°BTDC)", "#ff4444")}
           {chip("dwell", "dwell 2Fh (ms)", "#ff8844")}
           {chip("ignPulse", `KLR IGN_OUT pulse (ms)${ignPts.total > ignPts.pts.length ? ` · 1 in ${Math.ceil(ignPts.total / ignPts.pts.length)}` : ''}`, "#ffcc44")}
         </div>
