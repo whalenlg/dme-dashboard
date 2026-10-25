@@ -591,14 +591,19 @@ function parseLog(text) {
 //    fl       : p1[5] full-load flag
 // ─────────────────────────────────────────────────────────────────
 // Incremental, like dmeLogParser; max = { snapshots, phases, status }
+//
+//  KLR: [SPARK] t=<ms> side=A|B dme_btdc=<deg> klr_btdc=<deg> retard=<deg>
+//       delay_us=<us> rpm=<n> dme31=<hh> dme57=<hh> klr73=<hh> klr3F=<hh>
+//    one per KLR spark, measured against the crank model's TDC
+//    (dme_klr_dashboard_tb.v) -> sparks
 function klrLogParser(max = {}) {
-  const snapshots = [], phases = [], status = [];
+  const snapshots = [], phases = [], status = [], sparks = [];
   let lastPhase = null;   // last phase added, which timing-only lines merge into
   let dropped = 0;        // phases trimmed off the front since the last result()
   let out = null;         // last result's arrays, reused while nothing changes
   const addPhase = p => { insertByT(phases, p); lastPhase = p; };
   const push = lines => {
-    const before = snapshots.length + status.length + phases.length;
+    const before = snapshots.length + status.length + phases.length + sparks.length;
     let merged = false;
     for (const line of lines) {
       const t = line.trim();
@@ -673,6 +678,19 @@ function klrLogParser(max = {}) {
           s.ramVals[parseInt(m[1], 16)] = parseInt(m[2], 16);
         status.push(s);
 
+      // ── KLR: [SPARK] measured spark angles ──────────────────
+      } else if (t.startsWith('KLR: [SPARK]')) {
+        const kv = {};
+        for (const m of t.matchAll(/(\w+)=(\S+)/g)) kv[m[1]] = m[2];
+        const tm = parseInt(kv.t);
+        if (isNaN(tm)) continue;
+        const hex = k => kv[k] != null ? parseInt(kv[k], 16) : null;
+        sparks.push({
+          t: tm, side: kv.side, rpm: +kv.rpm,
+          dme_btdc: +kv.dme_btdc, klr_btdc: +kv.klr_btdc, retard: +kv.retard, delay_us: +kv.delay_us,
+          dme31: hex('dme31'), dme57: hex('dme57'), klr73: hex('klr73'), klr3F: hex('klr3F'),
+        });
+
       // ── KLR: [PHASE] timing event ───────────────────────────
       } else if (t.startsWith('KLR: [PHASE]')) {
         const body = t.slice('KLR: [PHASE]'.length).trim();
@@ -714,9 +732,10 @@ function klrLogParser(max = {}) {
         if (p) { p.cat = 'dme'; addPhase(p); }
       }
     }
-    const added = snapshots.length + status.length + phases.length !== before;
+    const added = snapshots.length + status.length + phases.length + sparks.length !== before;
     trimFront(snapshots, max.snapshots);
     trimFront(status, max.status);
+    trimFront(sparks, max.phases);
     const n = trimFront(phases, max.phases);
     if (added || merged) out = null;
     dropped += n;
@@ -724,7 +743,7 @@ function klrLogParser(max = {}) {
   return {
     push,
     result() {
-      out ??= { snapshots: snapshots.slice(), phases: phases.slice(), status: status.slice() };
+      out ??= { snapshots: snapshots.slice(), phases: phases.slice(), status: status.slice(), sparks: sparks.slice() };
       const r = { ...out, dropped };
       dropped = 0;
       return r;
@@ -735,8 +754,8 @@ function klrLogParser(max = {}) {
 function parseKLRLog(text) {
   const p = klrLogParser();
   p.push(text.split('\n'));
-  const { snapshots, phases, status } = p.result();
-  return { snapshots, phases, status };
+  const { snapshots, phases, status, sparks } = p.result();
+  return { snapshots, phases, status, sparks };
 }
 // ─────────────────────────────────────────────────────────────────
 const h2  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(2,'0') : '--';
@@ -944,7 +963,7 @@ export default function DMEDashboard() {
   const [logText, setLogText]   = useState('');
   const [logFileName, setLogFileName] = useState('');
   const [data, setData]         = useState({ snapshots:[], phases:[], expect:[] });
-  const [klrData, setKlrData]     = useState({ snapshots:[], phases:[], status:[] });
+  const [klrData, setKlrData]     = useState({ snapshots:[], phases:[], status:[], sparks:[] });
   const [klrIdx, setKlrIdx]       = useState(0);
   const [klrPlaying, setKlrPlaying] = useState(false);
   const [klrPlaySpeed, setKlrPlaySpeed] = useState(100);
@@ -982,7 +1001,7 @@ export default function DMEDashboard() {
     // browser can interrupt, instead of one long frame per update
     startTransition(() => {
       setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases ? d : dme);
-      setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status ? k : klr);
+      setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status && k.sparks === klr.sparks ? k : klr);
       // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
       if (followRef.current) {
         setIdx(Math.max(0, dme.snapshots.length - 1));
@@ -1167,15 +1186,6 @@ export default function DMEDashboard() {
   const needCharts = tab === 'charts' || tab === 'timeline';
   const chartData = useMemo(() => {
     if (!needCharts) return NO_ROWS;
-    // Compute timing advance baseline from first stable snapshots (RPM > 1000)
-    // Used to show FQS timing retard as deviation from no-retard baseline
-    const stableAdvs = data.snapshots
-      .filter(s => (s.refRpm ?? s.explicitRpm ?? 0) > 1000 && s.iram?.[0x31] != null && s.iram[0x31] <= 180)
-      .slice(0, 30)
-      .map(s => s.iram[0x31]);
-    const advBaseline = stableAdvs.length
-      ? stableAdvs.reduce((a,b)=>a+b,0) / stableAdvs.length
-      : null;
     // Merge DS + STATUS snapshots at same timestamp.
     // DS has full iram[0x00-0x7F]; STATUS has shadowed ADC values.
     // Merged: start with DS iram, overlay STATUS iram on top.
@@ -1273,12 +1283,14 @@ export default function DMEDashboard() {
         // before that, ir[0x31] holds stale/uninitialized RAM and produces a spurious
         // spike at the start of the log. Also sanity-clamp to a physically plausible
         // half-teeth range (0-180 half-teeth ≈ 0-245°BTDC) to reject any other garbage.
+        // The spark is scheduled from 31h + 57h (accel/decel adjustment, -1/0/+1)
         timingAdv: (rpm != null && rpm >= 40 && ir[0x31] != null && ir[0x31] <= 180)
-                     ? +(ir[0x31] * 360 / 264).toFixed(1) : null,  // half-teeth → degrees BTDC
+                     ? +((ir[0x31] + (((ir[0x57] ?? 0) << 24) >> 24)) * 360 / 264).toFixed(1) : null,  // half-teeth → degrees BTDC
         fqsAdv:      ir[0x17] ?? null,  // FQS ADC raw value (0x00=pos0 … 0xA7=pos7)
-        timingRetard: (rpm != null && rpm >= 40 && ir[0x31] != null && ir[0x31] <= 180 && advBaseline != null)
-                        ? +((advBaseline - ir[0x31]) * 360 / 264).toFixed(2)
-                        : null,  // degrees retarded vs baseline (positive = retard)
+        // Target (32h) minus applied (31h + 57h): how far the stepped advance trails its target
+        timingRetard: (rpm != null && rpm >= 40 && ir[0x31] != null && ir[0x31] <= 180 && ir[0x32] != null)
+                        ? +((ir[0x32] - ir[0x31] - (((ir[0x57] ?? 0) << 24) >> 24)) * 360 / 264).toFixed(2)
+                        : null,
         loadIdx:   ir[0x49] ?? null,  // load index — fuel map row selector
       };
     });
@@ -2311,8 +2323,8 @@ const DME_CHARTS = [
   {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
   {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
   {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
-  {title:'IGNITION ADVANCE (31)',   k:'timingAdv',    col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
-  {title:'FQS TIMING RETARD (°)',   k:'timingRetard', col:'#ff8800', unit:'°retard',  dom:['auto','auto'], cn:true},
+  {title:'IGNITION ADVANCE (31h+57h)', k:'timingAdv',  col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
+  {title:'ADVANCE TARGET 32h − APPLIED (°)', k:'timingRetard', col:'#ff8800', unit:'°retard', dom:['auto','auto'], cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
   {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
 ];
@@ -2563,7 +2575,7 @@ function DiagTab({ iram, snap }) {
     {
       p2: '0x1B', name: 'IGNITION ADVANCE', src: 'iram[0x31]  IGN_ADV',
       raw: ignAdv, tx: ignAdvTx,
-      decode: `${ignAdv}° BTDC base  →  tx=(${ignAdv}+10)×2=${ignAdvTx}  |  KLR may retard further`,
+      decode: `${ignAdv} half-teeth = ${(ignAdv * 360 / 264).toFixed(1)}° BTDC  →  tx=(${ignAdv}+10)×2=${ignAdvTx}  |  KLR may retard further`,
       col: '#ff8844',
       detail: `Ignition duration: iram[0x30]=0x${h2(ir[0x30]??0)} (${ir[0x30]??0} half-teeth)`,
     },
@@ -2856,6 +2868,11 @@ function KLRTab({ klrData, currentT }) {
 }
 
 const IGN_IGNORE_MS = 5000;
+// KLR knock/tip-in retard per count of 73h + 3Fh. The timing delay
+// calculation (0x1B2) multiplies the count by the measured spark period,
+// so it is an angle, not a time; fitted from the ramp_to_6000_knock
+// [SPARK] lines at 6007 rpm (0.2835°/count, rms error 0.17°).
+const KLR_DEG_PER_COUNT = 0.2835;
 
 // KLR chart series over the whole log; KLRChartsTab cuts them at the cursor
 function klrChartSeries(klrData, dmeSnaps) {
@@ -2883,6 +2900,57 @@ function klrChartSeries(klrData, dmeSnaps) {
       return { t: p.t, deg, us, rpm };
     });
 
+  // ── Measured sparks (KLR: [SPARK]; logs from before it have none) ──
+  // Cylinders: there is no cylinder-1 signal, but each spark is measured
+  // against a known TDC: side A = the TDC after the ref mark (cyl 1 or 4),
+  // B = the other one (3 or 2). With firing order 1-3-4-2 the A sparks
+  // alternate 1/4 and the B sparks 3/2; the first A spark is called 1, so
+  // 1<->4 and 3<->2 may be swapped but stay consistent through a run. A
+  // missed spark shows as a side mismatch and re-syncs the count.
+  const sparks = klrData?.sparks ?? [];
+  const ORDER = [1, 3, 4, 2], SIDE = ['A', 'B', 'A', 'B'];
+  let k = -1;
+  const cylOf = sparks.map(s => {
+    k = k < 0 ? (s.side === 'A' ? 0 : 1) : k + 1;
+    if (SIDE[k % 4] !== s.side) k++;
+    return ORDER[k % 4];
+  });
+  // KLR processing latency: the delay of the sparks it wasn't asked to
+  // retard (73h + 3Fh = 0), as the median of the last LAT_WINDOW of those
+  // up to each spark. It is a time that steps with rpm (~150 μs above
+  // ~1500 rpm, ~250 μs below, ~440 μs cranking), so a single value would
+  // read as retard at low rpm; the retard below is net of it.
+  const LAT_WINDOW = 15;
+  const recent = [];
+  const latOf = sparks.map(s => {
+    if (s.klr73 === 0 && s.klr3F === 0) {
+      recent.push(s.delay_us);
+      if (recent.length > LAT_WINDOW) recent.shift();
+    }
+    if (!recent.length) return null;
+    const v = recent.slice().sort((x, y) => x - y);
+    return v[v.length >> 1];
+  });
+  const s8 = v => (v << 24) >> 24;
+  const measured = sparks.map((s, i) => {
+    const lat = latOf[i];
+    const ok = s.t >= IGN_IGNORE_MS && lat != null && s.rpm > 0;
+    const cmd = s.klr73 != null ? s.klr73 + (s.klr3F ?? 0) : null;
+    return {
+      t: s.t, cyl: cylOf[i], side: s.side, rpm: s.rpm,
+      dme_btdc: s.dme_btdc, klr_btdc: s.klr_btdc,
+      // what the DME firmware commanded for this spark: 31h + 57h half-teeth
+      // (31h is FFh before the firmware first sets it; > 180 isn't an angle)
+      dme_cmd: s.dme31 != null && s.dme31 <= 180 ? +((s.dme31 + s8(s.dme57 ?? 0)) * 360 / 264).toFixed(2) : null,
+      deg: ok ? +(s.retard - lat * s.rpm * 6e-6).toFixed(2) : null,
+      us:  ok ? +(s.delay_us - lat).toFixed(1) : null,
+      // what the KLR commanded: (73h + 3Fh) counts, a fixed angle each
+      cmd_deg: s.t >= IGN_IGNORE_MS && cmd != null ? +(cmd * KLR_DEG_PER_COUNT).toFixed(2) : null,
+      lat_us: s.klr73 === 0 && s.klr3F === 0 ? s.delay_us : null,
+      lat,
+      klr73: s.klr73, klr3F: s.klr3F,
+    };
+  });
   // A real pulse is a deassert right after an assert. Older logs also have
   // deasserts with no assert before them: IGN_OUT floated high while the
   // DME trigger held the KLR in reset, which isn't a dwell, so skip those.
@@ -2961,7 +3029,7 @@ function klrChartSeries(klrData, dmeSnaps) {
     })),
   ].sort((a,b) => a.t - b.t);
 
-  return { firstKlrT, lastKlrT, sparkData, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData };
+  return { firstKlrT, lastKlrT, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData };
 }
 
 // Entries with t <= T (series are time-sorted); all of them when T is null
@@ -3056,18 +3124,57 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
 
   const CYL_COLORS = ['#ff8844', '#ffcc44', '#88ccff', '#ff66aa'];
 
-  const charts = [
+  const measured = upTo(all.measured, effectiveT);
+  const lat = measured.length ? measured[measured.length - 1].lat : null;
+  const sparkCharts = measured.length ? [
+    {
+      title: 'SPARK ANGLE — MEASURED (°BTDC)',
+      data:  measured, key: 'dme_btdc', unit: '°', dom: ['auto', 'auto'],
+      lines: [{ key: 'dme_cmd', name: 'DME 31h+57h', col: '#888888', dash: '3 2' },
+              { key: 'dme_btdc', name: 'DME spark', col: '#ff4444' },
+              { key: 'klr_btdc', name: 'KLR spark', col: '#ff8844' }],
+      note:  'Spark angles measured against the crank model\'s TDC (half-teeth from the ref mark). Red: DME spark, orange: KLR spark (what fires the coil), grey dashed: the DME firmware\'s commanded 31h+57h.',
+    },
     ...[1, 2, 3, 4].map(cyl => ({
+      title: `KLR RETARD — CYL ${cyl} (° crank, latency removed)`,
+      data:  measured.filter(d => d.cyl === cyl),
+      key:   'deg',
+      col:   CYL_COLORS[cyl-1],
+      unit:  '°',
+      dom:   [0, 'auto'],
+      lines: [{ key: 'deg', name: 'measured', col: CYL_COLORS[cyl-1] },
+              { key: 'cmd_deg', name: 'commanded', col: '#e0e0e0', dash: '3 2' }],
+      note:  `Measured: DME spark minus KLR spark, less the KLR's processing latency (median delay of the last sparks with no commanded retard${lat != null ? `, ${lat.toFixed(0)} μs at the cursor` : ''}). White dashed: commanded (73h + 3Fh) × ${KLR_DEG_PER_COUNT}°. Cylinder from the measured TDC side and firing order 1-3-4-2; 1/4 and 3/2 can't be told apart (no cylinder-1 signal) but stay consistent — first ${IGN_IGNORE_MS/1000}s omitted`,
+      empty: !measured.some(d => d.cyl === cyl),
+      exp:   exp.retard,
+    })),
+    {
+      title: 'KLR COMMANDED RETARD — (73h + 3Fh) PER CYL (°)',
+      data:  measured.map(d => ({ t: d.t, [`c${d.cyl}`]: d.cmd_deg, tip: d.klr3F != null && d.t >= IGN_IGNORE_MS ? +(d.klr3F * KLR_DEG_PER_COUNT).toFixed(2) : null })),
+      key:   'c1', unit: '°', dom: [0, 'auto'], type: 'stepAfter',
+      lines: [1, 2, 3, 4].map(cyl => ({ key: `c${cyl}`, name: `cyl ${cyl}`, col: CYL_COLORS[cyl-1] }))
+               .concat([{ key: 'tip', name: 'tip-in 3Fh', col: '#aaaaaa', dash: '3 2' }]),
+      note:  `The knock slot (73h, rotated through 70h-73h once per spark) plus the throttle tip-in retard 3Fh, as the KLR's timing delay calculation read them for each spark, at ${KLR_DEG_PER_COUNT}°/count (the firmware scales the count by the spark period, so it is a fixed angle at any rpm). Max per slot is 4Bh (≈21°). First ${IGN_IGNORE_MS/1000}s omitted.`,
+    },
+    {
+      title: 'KLR PROCESSING LATENCY (μs)',
+      data:  measured, key: 'lat_us', col: '#44aaff', unit: 'μs', dom: [0, 'auto'],
+      note:  'DME spark to KLR spark for sparks with no commanded retard (73h + 3Fh = 0): the KLR\'s own delay, which steps with rpm (~150 μs above ~1500 rpm, ~250 μs below, ~440 μs cranking). Removed from the retard charts.',
+    },
+  ] : [1, 2, 3, 4].map(cyl => ({
       title: `SPARK RETARD — CYL ${cyl} (° crank)`,
       data:  sparkByCyl[cyl-1],
       key:   'deg',
       col:   CYL_COLORS[cyl-1],
       unit:  '°',
       dom:   [0, Math.ceil(sparkMax)],
-      note:  `ign_in fall (DME spark) to IGN_OUT fall (KLR spark), deg = us × rpm × 6e-6. Every 4th spark (#${cyl}, ${cyl + 4}, ${cyl + 8}, ...); ~150us floor is KLR processing, above it is knock retard — first ${IGN_IGNORE_MS/1000}s omitted`,
+      note:  `Older log without KLR: [SPARK] lines: ign_in fall (DME spark) to IGN_OUT fall (KLR spark), deg = us × rpm × 6e-6, including the KLR's own processing latency. Every 4th spark (#${cyl}, ${cyl + 4}, ...), not tied to a cylinder — first ${IGN_IGNORE_MS/1000}s omitted`,
       empty: sparkByCyl[cyl-1].length === 0,
       exp:   exp.retard,
-    })),
+    }));
+
+  const charts = [
+    ...sparkCharts,
     {
       title: 'IGN PULSE WIDTH (ms)',
       data:  ignPulseData,
@@ -3169,12 +3276,12 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
             ) : (
               <>
                 <ResponsiveContainer width="100%" height={130}>
-                  <LineChart data={c.segments ? c.data : thin(c.data, c.key)} margin={{top:2,right:6,bottom:0,left:0}}>
+                  <LineChart data={c.segments ? c.data : thin(c.data, c.lines ? c.lines.map(l => l.key) : c.key)} margin={{top:2,right:6,bottom:0,left:0}}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
-                      : c.key === 'deg' && item?.payload?.us != null
+                      : c.key === 'deg' && n !== 'commanded' && item?.payload?.us != null
                       ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, 'retard']
                       : [v, c.unit]}
                       content={c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
@@ -3188,6 +3295,12 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                               dot={seg.data.length < 100}
                               strokeWidth={c.data.length < 50 ? 1.5 : 1}
                               connectNulls={false} isAnimationActive={false}/>
+                      ))
+                    ) : c.lines ? (
+                      c.lines.map(l => (
+                        <Line key={l.key} type={c.type || 'monotone'} dataKey={l.key} name={l.name} stroke={l.col}
+                              strokeDasharray={l.dash} dot={false} strokeWidth={1}
+                              connectNulls isAnimationActive={false}/>
                       ))
                     ) : (
                       <Line type={c.type || 'monotone'} dataKey={c.key} stroke={c.col}
