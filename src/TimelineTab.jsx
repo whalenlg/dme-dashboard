@@ -60,12 +60,14 @@ const LABELS = {
   klr52:'KLR ram[52h]', klr33:'KLR ram[33h]', fullLoad:'full_load',
 };
 // Series shown as raw bytes in the tooltip
-const HEX_SERIES = /^(adc_|isv$|klr5|klr3|(dme|klr)_[0-9A-F]{2}$)/;
+const HEX_SERIES = /^(adc_|in_|isv$|klr5|klr3|(dme|klr)_[0-9A-F]{2}$)/;
 
 function seriesLabel(k, picks = []) {
   if (LABELS[k]) return LABELS[k];
   const adc = ADCS.find(a => k === `adc_${hx(a.addr)}`);
   if (adc) return `${adc.name} ${hx(adc.addr)}h`;
+  const inp = ADCS.find(a => k === `in_${hx(a.addr)}`);
+  if (inp) return `${inp.name} input (ch${inp.addr - 0x10})`;
   const p = picks.find(q => pickKey(q) === k);
   return p ? pickLabel(p) : k;
 }
@@ -124,6 +126,8 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       if ((ir[0x21] ?? 0) & 1) synced = true;
       r.fwRpm = fwRpm(ir, synced);
       for (const a of ADCS) r[`adc_${hx(a.addr)}`] = ir[a.addr] ?? null;
+      // ADC channel inputs (channel = iram address - 10h), newer logs only
+      if (s.adcIn) for (const a of ADCS) r[`in_${hx(a.addr)}`] = s.adcIn[a.addr - 0x10];
       for (const p of picks) if (p.src === 'dme') {
         const v = ir[p.addr];
         r[pickKey(p)] = v == null ? null : p.bit != null ? (v >> p.bit) & 1 : v;
@@ -149,6 +153,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
   // Rows in the zoom range (plus one either side so lines reach the edges),
   // thinned per chart to the series it draws
   const pickSig = picks.map(pickKey).join(',');
+  const hasAdcIn = useMemo(() => dmeSnapshots.some(s => s.adcIn), [dmeSnapshots]);
   const shown = useMemo(() => {
     let a = 0, b = rows.length;
     while (a < rows.length && rows[a].t < t0) a++;
@@ -159,6 +164,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       ign:   thin(vis, ['timingAdv', 'dwell']),
       fuel:  thin(vis, ['fuel', 'isv']),
       adc:   thin(vis, ADCS.map(x => `adc_${hx(x.addr)}`)),
+      adcIn: thin(vis, ADCS.map(x => `in_${hx(x.addr)}`)),
       klr:   thin(vis, ['klr52', 'klr33', 'fullLoad']),
       picks: thin(vis, pickSig ? pickSig.split(',') : []),
     };
@@ -319,11 +325,28 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
 
       {/* ── ADCs ─────────────────────────────────────────────── */}
       <div style={panel}>
-        <div style={title}>ADC RAW (DME iram)
+        <div style={title}>ADC RAW (ADC inputs)
+          {hasAdcIn && ADCS.map(a => chip(`in_${hx(a.addr)}`, `${a.name} ch${a.addr - 0x10}`, a.col))}
+        </div>
+        {hasAdcIn
+          ? chart(shown.adcIn, 170, ADCS.map(a => line(`in_${hx(a.addr)}`, a.col)),
+              <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} />)
+          : <div style={{color:C.textDim, fontSize:'10px', padding:'12px 4px'}}>
+              This log has no ADC input field in its DME [DS] lines (it is from an older testbench),
+              so only the values the firmware stored in RAM are shown below.
+            </div>}
+      </div>
+      <div style={panel}>
+        <div style={title}>ADC VALUES IN DME RAM (10h–17h)
           {ADCS.map(a => chip(`adc_${hx(a.addr)}`, `${a.name} ${hx(a.addr)}h`, a.col))}
         </div>
         {chart(shown.adc, 170, ADCS.map(a => line(`adc_${hx(a.addr)}`, a.col)),
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} />)}
+        <div style={{color:C.textDim, fontSize:'8px', marginTop:'2px'}}>
+          The firmware's copies, not the ADC itself. Air temp 12h and coolant 13h are linearised in
+          place (0x2DD–0x2ED), so a snapshot taken between the ADC read and that step shows the raw
+          input: that is the jumping between two levels.
+        </div>
       </div>
 
       {/* ── KLR ──────────────────────────────────────────────── */}
