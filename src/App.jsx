@@ -3142,6 +3142,11 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
               { key: 'dme_cmd', name: 'DME 31h+57h', col: CMD_COL, dash: CMD_DASH }],
       note:  'Spark angles measured against the crank model\'s TDC (half-teeth from the ref mark). Red: DME spark, orange: KLR spark (what fires the coil), white dashed: the DME firmware\'s commanded 31h+57h.',
     },
+    {
+      title: 'KLR PROCESSING LATENCY (μs)',
+      data:  measured, key: 'lat_us', col: '#44aaff', unit: 'μs', dom: [0, 'auto'],
+      note:  'DME spark to KLR spark for sparks with no commanded retard (73h + 3Fh = 0): the KLR\'s own delay, which steps with rpm (~150 μs above ~1500 rpm, ~250 μs below, ~440 μs cranking). Removed from the retard charts.',
+    },
     ...[1, 2, 3, 4].map(cyl => ({
       title: `KLR RETARD — CYL ${cyl} (° crank, latency removed)`,
       data:  measured.filter(d => d.cyl === cyl),
@@ -3150,23 +3155,10 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       unit:  '°',
       dom:   [0, 'auto'],
       lines: [{ key: 'deg', name: 'measured', col: CYL_COLORS[cyl-1] },
-              { key: 'cmd_deg', name: 'commanded', col: CMD_COL, dash: CMD_DASH }],
-      note:  `Measured: DME spark minus KLR spark, less the KLR's processing latency (median delay of the nearest sparks with no commanded retard${lat != null ? `, ${lat.toFixed(0)} μs at the cursor` : ''}). White dashed: commanded (73h + 3Fh) × ${KLR_DEG_PER_COUNT}°. Cylinder from the measured TDC side and firing order 1-3-4-2; 1/4 and 3/2 can't be told apart (no cylinder-1 signal) but stay consistent`,
+              { key: 'cmd_deg', name: 'Firmware Computed Retard', col: CMD_COL, dash: CMD_DASH }],
+      note:  `Measured: DME spark minus KLR spark, less the KLR's processing latency (median delay of the nearest sparks with no commanded retard${lat != null ? `, ${lat.toFixed(0)} μs at the cursor` : ''}). White dashed: Firmware Computed Retard, knock slot 73h (rotated through 70h-73h once per spark) + tip-in 3Fh, as the KLR's timing delay calculation read them for this spark, × ${KLR_DEG_PER_COUNT}°/count (scaled by the spark period, so a fixed angle at any rpm; max 4Bh ≈ 21° per slot). Cylinder from the measured TDC side and firing order 1-3-4-2; 1/4 and 3/2 can't be told apart (no cylinder-1 signal) but stay consistent`,
       exp:   exp.retard,
     })),
-    {
-      title: 'KLR COMMANDED RETARD — (73h + 3Fh) PER CYL (°)',
-      data:  measured.map(d => ({ t: d.t, [`c${d.cyl}`]: d.cmd_deg, tip: d.klr3F != null ? +(d.klr3F * KLR_DEG_PER_COUNT).toFixed(2) : null })),
-      key:   'c1', unit: '°', dom: [0, 'auto'], type: 'stepAfter',
-      lines: [1, 2, 3, 4].map(cyl => ({ key: `c${cyl}`, name: `cyl ${cyl}`, col: CYL_COLORS[cyl-1] }))
-               .concat([{ key: 'tip', name: 'tip-in 3Fh', col: '#aaaaaa', dash: '3 2' }]),
-      note:  `The knock slot (73h, rotated through 70h-73h once per spark) plus the throttle tip-in retard 3Fh, as the KLR's timing delay calculation read them for each spark, at ${KLR_DEG_PER_COUNT}°/count (the firmware scales the count by the spark period, so it is a fixed angle at any rpm). Max per slot is 4Bh (≈21°).`,
-    },
-    {
-      title: 'KLR PROCESSING LATENCY (μs)',
-      data:  measured, key: 'lat_us', col: '#44aaff', unit: 'μs', dom: [0, 'auto'],
-      note:  'DME spark to KLR spark for sparks with no commanded retard (73h + 3Fh = 0): the KLR\'s own delay, which steps with rpm (~150 μs above ~1500 rpm, ~250 μs below, ~440 μs cranking). Removed from the retard charts.',
-    },
   ].map(c => ({ ...c,
                 // No data when none of its lines has a value (yet)
                 empty: !c.data.some(d => (c.lines ?? [c]).some(l => d[l.key] != null)) })) : [1, 2, 3, 4].map(cyl => ({
@@ -3282,7 +3274,14 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px'}}>
         {charts.map(c => (
           <div key={c.title} style={S.panel}>
-            <div style={S.panelTitle}>{c.title}{c.exp?.length > 0 && <ExpectKey/>}</div>
+            <div style={S.panelTitle}>{c.title}{c.exp?.length > 0 && <ExpectKey/>}
+              {c.lines && c.lines.map(l => (
+                <span key={l.key} style={{marginLeft:'10px', color:C.textDim, fontSize:'8px', whiteSpace:'nowrap'}}>
+                  <span style={{display:'inline-block', width:'14px', verticalAlign:'middle', marginRight:'3px',
+                                borderTop:`2px ${l.dash ? 'dashed' : 'solid'} ${l.col}`}}/>{l.name}
+                </span>
+              ))}
+            </div>
             {c.empty && !c.exp?.length ? (
               <div style={{height:'130px', display:'flex', alignItems:'center',
                            justifyContent:'center', color:C.textDim, fontSize:'10px'}}>
@@ -3296,9 +3295,9 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                     <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
-                      : c.key === 'deg' && n !== 'commanded' && item?.payload?.us != null
-                      ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, 'retard']
-                      : [v, c.unit]}
+                      : c.key === 'deg' && n !== 'Firmware Computed Retard' && item?.payload?.us != null
+                      ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, c.lines ? n : 'retard']
+                      : c.lines ? [`${v}${c.unit}`, n] : [v, c.unit]}
                       content={c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
                         sim={[{ rows: c.data, key: c.key, color: c.col }]}/> : undefined}/>
                     {currentT != null &&
