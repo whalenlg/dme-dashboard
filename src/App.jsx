@@ -3133,8 +3133,6 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
 
   const measured = upTo(all.measured, effectiveT);
   const lat = measured.length ? measured[measured.length - 1].lat : null;
-  // every [SPARK] chart spans the same time range, whichever sparks it has
-  const sparkX = measured.length ? [measured[0].t, measured[measured.length - 1].t] : undefined;
   const sparkCharts = (measured.length ? [
     {
       title: 'SPARK ANGLE — MEASURED (°BTDC)',
@@ -3169,7 +3167,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       data:  measured, key: 'lat_us', col: '#44aaff', unit: 'μs', dom: [0, 'auto'],
       note:  'DME spark to KLR spark for sparks with no commanded retard (73h + 3Fh = 0): the KLR\'s own delay, which steps with rpm (~150 μs above ~1500 rpm, ~250 μs below, ~440 μs cranking). Removed from the retard charts.',
     },
-  ].map(c => ({ ...c, xdom: sparkX,
+  ].map(c => ({ ...c,
                 // No data when none of its lines has a value (yet)
                 empty: !c.data.some(d => (c.lines ?? [c]).some(l => d[l.key] != null)) })) : [1, 2, 3, 4].map(cyl => ({
       title: `SPARK RETARD — CYL ${cyl} (° crank)`,
@@ -3264,6 +3262,13 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     },
   ];
 
+  // Every chart on the page spans the same time range (first to last
+  // sample of any of them), so they line up however sparse each one is
+  let x0 = Infinity, x1 = -Infinity;
+  for (const rows of [...charts.map(c => c.data), ignOutData])
+    if (rows?.length) { x0 = Math.min(x0, rows[0].t); x1 = Math.max(x1, rows[rows.length - 1].t); }
+  const xdom = x0 <= x1 ? [x0, x1] : ['dataMin', 'dataMax'];
+
   return (
     <div>
       {/* Info banner when limited data */}
@@ -3288,7 +3293,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                 <ResponsiveContainer width="100%" height={130}>
                   <LineChart data={c.segments ? c.data : thin(c.data, c.lines ? c.lines.map(l => l.key) : c.key)} margin={{top:2,right:6,bottom:0,left:0}}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-                    <XAxis dataKey="t" type="number" domain={c.xdom ?? ['dataMin','dataMax']} allowDataOverflow={!!c.xdom} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+                    <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
                       : c.key === 'deg' && n !== 'commanded' && item?.payload?.us != null
@@ -3338,7 +3343,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
           <ResponsiveContainer width="100%" height={120}>
             <LineChart data={thin(ignOutData, 'full_load')} margin={{top:2,right:6,bottom:0,left:0}}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-              <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']} tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+              <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
               <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
               <Tooltip {...tt} content={exp.full_load.length ? p => <ExpectTooltip {...p} series={exp.full_load}
                 sim={[{ rows: ignOutData, key: 'full_load', name: 'FULL LOAD', color: C.amber }]}/> : undefined}/>
