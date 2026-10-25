@@ -9,7 +9,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    POST <url>/restart  fresh sim at t=0
 //    POST <url>/rom?cpu=dme|klr&name=<x.mem>[&reset=1]  load a ROM image
 //                        (body = the .mem text; only while paused)
-//    GET  <url>/asm/dme|klr  disassembly listing
+//    GET  <url>/asm/dme|klr  disassembly listing; fetched again on
+//                        SIM: [ASM] dme <workbook> match=content|name|none,
+//                        which the bridge sends when the DME image changes
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
 //  DME:/KLR: lines are handed to onLogLines in batches, for the
@@ -50,6 +52,7 @@ export function useLiveSim(url, onLogLines) {
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
+  const [asmSrc, setAsmSrc] = useState({ dme: null });   // {workbook, match} the DME listing came from
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -74,7 +77,7 @@ export function useLiveSim(url, onLogLines) {
     let lastLog = 0;
     // Rare control replies (breakpoints, run state, errors) skip the queue
     // so clicks feel immediate; queued lines are handled first to keep order.
-    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM)\]/;
+    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM)\]/;
     es.onmessage = ev => {
       if (!URGENT.test(ev.data)) { queue.push(ev.data); return; }
       for (const line of queue.splice(0)) handle(line);
@@ -139,6 +142,14 @@ export function useLiveSim(url, onLogLines) {
       } else if (kind === 'ROM') {
         const [, cpu, path] = rest.match(/^(dme|klr) (.*)$/) ?? [];
         if (cpu) setRoms(r => ({ ...r, [cpu]: path }));
+      } else if (kind === 'ASM') {
+        // The bridge switched the listing to the new image's workbook
+        const [cpu, workbook] = rest.split(' ');
+        const match = parseKV(rest).match ?? '';
+        if (cpu !== 'dme') return;
+        setAsmSrc(s => ({ ...s, dme: { workbook, match } }));
+        fetch(`${url}/asm/dme`).then(r => r.ok ? r.json() : null).catch(() => null)
+          .then(rows => { if (rows) setAsm(a => ({ ...a, dme: rows })); });
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
@@ -199,5 +210,5 @@ export function useLiveSim(url, onLogLines) {
     }
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom };
+  return { connected, sim, inputs, bps, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom };
 }

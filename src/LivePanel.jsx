@@ -45,7 +45,7 @@ const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadi
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
 export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
-  const { connected, sim, inputs, bps, trace, traceCtx, error, asm, regs, roms, send, restart, loadRom } = live;
+  const { connected, sim, inputs, bps, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
@@ -84,7 +84,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         </label>
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
-      <RomRow roms={roms} paused={connected && sim.state === 'paused'} loadRom={loadRom} />
+      <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -116,7 +116,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
 }
 
 // ── ROM images: what each EPROM holds, and loading another .mem ──
-function RomRow({ roms, paused, loadRom }) {
+function RomRow({ roms, asmSrc, paused, loadRom }) {
   const [reset, setReset] = useState(true);
   const pick = { dme: useRef(null), klr: useRef(null) };
   const name = p => p ? p.split(/[\\/]/).pop() : '--';
@@ -127,6 +127,9 @@ function RomRow({ roms, paused, loadRom }) {
         <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
           <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
           <span style={{color:C.textBright}} title={roms?.[cpu] ?? ''}>{name(roms?.[cpu])}</span>
+          {cpu === 'dme' && asmSrc?.dme && (asmSrc.dme.match === 'none'
+            ? <span style={{color:'#ccaa44'}} title="This image doesn't match any disassembly workbook, so the debugger listing is the default one and may not line up with the code">ASM: no workbook</span>
+            : <span style={{color:C.textDim}} title={`Debugger listing from disassemble/${asmSrc.dme.workbook} (image matched by ${asmSrc.dme.match})`}>ASM: {asmSrc.dme.workbook}</span>)}
           <input ref={pick[cpu]} type="file" accept=".mem" style={{display:'none'}}
                  onChange={e => { const f = e.target.files[0]; e.target.value = ''; loadRom(cpu, f, reset); }} />
           <button style={btn(false)} disabled={!paused} onClick={() => pick[cpu].current.click()}
