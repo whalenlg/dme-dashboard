@@ -132,7 +132,7 @@ function RomRow({ roms, asmSrc, paused, loadRom }) {
             : <span style={{color:C.textDim}} title={`Debugger listing from disassemble/${asmSrc.dme.workbook} (image matched by ${asmSrc.dme.match})`}>ASM: {asmSrc.dme.workbook}</span>)}
           <input ref={pick[cpu]} type="file" accept=".mem" style={{display:'none'}}
                  onChange={e => { const f = e.target.files[0]; e.target.value = ''; loadRom(cpu, f, reset); }} />
-          <button style={btn(false)} disabled={!paused} onClick={() => pick[cpu].current.click()}
+          <button style={{...btn(paused), cursor: paused ? 'pointer' : 'not-allowed'}} disabled={!paused} onClick={() => pick[cpu].current.click()}
                   title={paused ? `Load a .mem image into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
             LOAD .mem
           </button>
