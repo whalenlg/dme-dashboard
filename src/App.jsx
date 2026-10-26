@@ -598,10 +598,11 @@ function parseLog(text) {
 // ─────────────────────────────────────────────────────────────────
 // Incremental, like dmeLogParser; max = { snapshots, phases, status }
 //
-//  KLR: [SPARK] t=<ms> side=A|B dme_btdc=<deg> klr_btdc=<deg> retard=<deg>
-//       delay_us=<us> rpm=<n> dme31=<hh> dme57=<hh> klr73=<hh> klr3F=<hh>
+//  KLR: [SPARK] <ms>,<A|B>,<dme_btdc>,<klr_btdc>,<delay_us>,<dme31><dme57><klr73><klr3F>
 //    one per KLR spark, measured against the crank model's TDC
-//    (dme_klr_dashboard_tb.v) -> sparks
+//    (dme_klr_dashboard_tb.v) -> sparks; logs from before it was made
+//    positional have t=<ms> side=.. dme_btdc=.. klr_btdc=.. retard=..
+//    delay_us=.. rpm=.. dme31=.. dme57=.. klr73=.. klr3F=.. instead
 function klrLogParser(max = {}) {
   const snapshots = [], phases = [], status = [], sparks = [];
   let lastPhase = null;   // last phase added, which timing-only lines merge into
@@ -686,16 +687,29 @@ function klrLogParser(max = {}) {
 
       // ── KLR: [SPARK] measured spark angles ──────────────────
       } else if (t.startsWith('KLR: [SPARK]')) {
-        const kv = {};
-        for (const m of t.matchAll(/(\w+)=(\S+)/g)) kv[m[1]] = m[2];
-        const tm = parseInt(kv.t);
-        if (isNaN(tm)) continue;
-        const hex = k => kv[k] != null ? parseInt(kv[k], 16) : null;
-        sparks.push({
-          t: tm, side: kv.side, rpm: +kv.rpm,
-          dme_btdc: +kv.dme_btdc, klr_btdc: +kv.klr_btdc, retard: +kv.retard, delay_us: +kv.delay_us,
-          dme31: hex('dme31'), dme57: hex('dme57'), klr73: hex('klr73'), klr3F: hex('klr3F'),
-        });
+        const body = t.slice('KLR: [SPARK]'.length).trim();
+        if (body.includes('=')) {                 // older key=value lines
+          const kv = {};
+          for (const m of body.matchAll(/(\w+)=(\S+)/g)) kv[m[1]] = m[2];
+          const tm = parseInt(kv.t);
+          if (isNaN(tm)) continue;
+          const hex = k => kv[k] != null ? parseInt(kv[k], 16) : null;
+          sparks.push({
+            t: tm, side: kv.side,
+            dme_btdc: +kv.dme_btdc, klr_btdc: +kv.klr_btdc, retard: +kv.retard, delay_us: +kv.delay_us,
+            dme31: hex('dme31'), dme57: hex('dme57'), klr73: hex('klr73'), klr3F: hex('klr3F'),
+          });
+        } else {
+          const f = body.split(',');
+          const tm = parseInt(f[0]);
+          if (isNaN(tm) || f.length < 6) continue;
+          const hex = i => { const v = parseInt(f[5].slice(i * 2, i * 2 + 2), 16); return isNaN(v) ? null : v; };
+          const dme = +f[2], klr = +f[3];
+          sparks.push({
+            t: tm, side: f[1], dme_btdc: dme, klr_btdc: klr, retard: +(dme - klr).toFixed(2), delay_us: +f[4],
+            dme31: hex(0), dme57: hex(1), klr73: hex(2), klr3F: hex(3),
+          });
+        }
 
       // ── KLR: [PHASE] timing event ───────────────────────────
       } else if (t.startsWith('KLR: [PHASE]')) {
@@ -2945,17 +2959,22 @@ function klrChartSeries(klrData, dmeSnaps) {
     return v.length ? (v[(v.length - 1) >> 1] + v[v.length >> 1]) / 2 : null;
   });
   const s8 = v => (v << 24) >> 24;
+  let rj = -1;
   const measured = sparks.map((s, i) => {
     const lat = latOf[i];
-    const ok = lat != null && s.rpm > 0;
+    const ok = lat != null && s.delay_us > 0;
+    // RPM from the latest DME snapshot (the [SPARK] line doesn't carry it)
+    while (rj + 1 < snaps.length && snaps[rj + 1].t <= s.t) rj++;
+    const rpm = rj >= 0 ? snapRpm(snaps[rj]) : null;
     const cmd = s.klr73 != null ? s.klr73 + (s.klr3F ?? 0) : null;
     return {
-      t: s.t, cyl: cylOf[i], side: s.side, rpm: s.rpm,
+      t: s.t, cyl: cylOf[i], side: s.side, rpm,
       dme_btdc: s.dme_btdc, klr_btdc: s.klr_btdc,
       // what the DME firmware commanded for this spark: 31h + 57h half-teeth
       // (31h is FFh before the firmware first sets it; > 180 isn't an angle)
       dme_cmd: s.dme31 != null && s.dme31 <= 180 ? +((s.dme31 + s8(s.dme57 ?? 0)) * 360 / 264).toFixed(2) : null,
-      deg: ok ? +(s.retard - lat * s.rpm * 6e-6).toFixed(2) : null,
+      // latency removed in proportion: the retard angle scales with the delay
+      deg: ok ? +(s.retard * (1 - lat / s.delay_us)).toFixed(2) : null,
       us:  ok ? +(s.delay_us - lat).toFixed(1) : null,
       // what the KLR commanded: (73h + 3Fh) counts, a fixed angle each
       cmd_deg: cmd != null ? +(cmd * KLR_DEG_PER_COUNT).toFixed(2) : null,
