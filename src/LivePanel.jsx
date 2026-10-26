@@ -429,8 +429,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
   // whenever it moves; otherwise leave the user's scroll position alone.
   const codeRef = useRef(null);
   useLayoutEffect(() => {
-    const el = codeRef.current;
-    if (el) el.scrollTop = (c - first) * ROW_H - (el.clientHeight - ROW_H) / 2;
+    const row = codeRef.current?.children[c - first];
+    if (row) codeRef.current.scrollTop = row.offsetTop - (codeRef.current.clientHeight - ROW_H) / 2;
   }, [c, first, listing]);
 
   const doJump = () => {
@@ -489,7 +489,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
       {!listing.length ? (
         <div style={{color:C.textDim,fontSize:'10px',padding:'20px',height:`${CODE_ROWS * ROW_H}px`,boxSizing:'border-box'}}>No disassembly from the bridge.</div>
       ) : (
-        <div ref={codeRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,height:`${CODE_ROWS * ROW_H}px`,flex:'none',
+        <div ref={codeRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,height:`${CODE_ROWS * ROW_H}px`,flex:'none',position:'relative',
                                    overflow:'auto',whiteSpace:'nowrap',border:`1px solid ${C.border}`}}>
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
