@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, memo } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, memo } from "react";
 import { fmtBoost } from "./boost.js";
 import { thin, syncNearest } from "./thin.js";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
@@ -292,7 +292,13 @@ function InputsPanel({ inputs, send }) {
 }
 
 // ── Disassembly ─────────────────────────────────────────────────
-const WINDOW = 18;   // rows shown above and below the centre line
+// The stack, listing and trace panes keep a fixed height and scroll inside,
+// so the debugger doesn't jump around as their contents change.
+const ROW_H     = 15;    // px per listing / trace row
+const CODE_ROWS = 32;    // listing rows visible at once
+const WINDOW    = 64;    // rows rendered above and below the centre line (scrollable)
+const STACK_H   = 140;   // px
+const TRACE_ROWS = 16;   // trace rows visible at once
 
 // Nearest row at or before an address (pc can sit mid-instruction while running)
 function rowFor(listing, a) {
@@ -305,10 +311,12 @@ function rowFor(listing, a) {
 // The last jump / branch / interrupt that led to the current PC
 function CameFrom({ cpu, trace, listing, onJump }) {
   const cf = useMemo(() => cameFrom(cpu, trace, listing), [cpu, trace, listing]);
-  if (!cf) return null;
+  const line = {fontSize:'10px',lineHeight:'14px',height:'14px',marginBottom:'4px',textAlign:'left',color:C.textDim,
+                whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'};
+  if (!cf) return <div style={line} />;   // keeps its line so the panes below don't move
   const w = cpu === 'dme' ? 4 : 3;
   return (
-    <div style={{fontSize:'10px',marginBottom:'4px',textAlign:'left',color:C.textDim}}>
+    <div style={line}>
       {cf.kind === 'interrupt' ? 'INTERRUPT AFTER ' : 'CAME FROM '}
       <span style={{color:C.blue,cursor:'pointer'}} title="Show in listing" onClick={() => onJump(cf.from)}>
         {hx(cf.from, w)}{cf.ins ? `  ${cf.ins.instr} ${cf.ins.ops}` : ''}
@@ -322,7 +330,10 @@ function CameFrom({ cpu, trace, listing, onJump }) {
 // Stack memory dump with decoded return addresses (top of stack first)
 function StackView({ cpu, ram, regs, listing, running, onJump }) {
   const st = useMemo(() => decodeStack(cpu, ram, regs, listing), [cpu, ram, regs, listing]);
-  if (!st) return null;
+  const box = {fontSize:'10px',marginBottom:'6px',border:`1px solid ${C.border}`,background:C.panelBg2,
+               padding:'3px 6px',textAlign:'left',lineHeight:'14px',height:`${STACK_H}px`,boxSizing:'border-box',
+               overflowY:'auto',flex:'none'};
+  if (!st) return <div style={{...box,color:'#557755'}}>STACK  no memory snapshot yet</div>;
   const { lo, hi } = STACK[cpu];
   const w = cpu === 'dme' ? 4 : 3;
   const addrs = [];
@@ -330,8 +341,7 @@ function StackView({ cpu, ram, regs, listing, running, onJump }) {
   const top = cpu === 'dme' ? st.sp : lo + 2 * ((st.sp - 1) & 7) + 1;
   const depth = cpu === 'dme' ? `${Math.max(0, st.sp - lo + 1)} bytes` : '(3-bit, wraps after 8 levels)';
   return (
-    <div style={{fontSize:'10px',marginBottom:'6px',border:`1px solid ${C.border}`,background:C.panelBg2,
-                 padding:'3px 6px',opacity: running ? 0.6 : 1,textAlign:'left',lineHeight:'14px'}}>
+    <div style={{...box,opacity: running ? 0.6 : 1}}>
       <div style={{color:C.textDim,marginBottom:'2px'}}>
         STACK {hx(lo)}–{hx(hi)}h  SP={cpu === 'dme' ? `${hx(st.sp)}h` : st.sp}  {depth}
         {cpu === 'dme' && (st.sp < lo - 1 || st.sp > hi) && <span style={{color:C.red}}>  SP OUTSIDE STACK AREA</span>}
@@ -412,7 +422,16 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
     return m;
   }, [trace, traceCtx]);
   const c = rowFor(listing, center ?? pc);
-  const rows = listing.slice(Math.max(0, c - WINDOW), c + WINDOW);
+  const first = Math.max(0, c - WINDOW);
+  const rows = listing.slice(first, c + WINDOW);
+
+  // Scroll the centre row (PC or a GO target) to the middle of the pane
+  // whenever it moves; otherwise leave the user's scroll position alone.
+  const codeRef = useRef(null);
+  useLayoutEffect(() => {
+    const row = codeRef.current?.children[c - first];
+    if (row) codeRef.current.scrollTop = row.offsetTop - (codeRef.current.clientHeight - ROW_H) / 2;
+  }, [c, first, listing]);
 
   const doJump = () => {
     const q = jump.trim();
@@ -463,14 +482,15 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
           )}
         </div>
       )}
-      {!running && <CameFrom cpu={cpu} trace={trace} listing={listing}
-                             onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />}
+      <CameFrom cpu={cpu} trace={running ? [] : trace} listing={listing}
+                onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />
       <StackView cpu={cpu} ram={ram} regs={regs} listing={listing} running={running}
                  onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />
       {!listing.length ? (
-        <div style={{color:C.textDim,fontSize:'10px',padding:'20px'}}>No disassembly from the bridge.</div>
+        <div style={{color:C.textDim,fontSize:'10px',padding:'20px',height:`${CODE_ROWS * ROW_H}px`,boxSizing:'border-box'}}>No disassembly from the bridge.</div>
       ) : (
-        <div style={{fontSize:'10.5px',lineHeight:'15px',overflowX:'auto',overflowY:'hidden',whiteSpace:'nowrap'}}>
+        <div ref={codeRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,height:`${CODE_ROWS * ROW_H}px`,flex:'none',position:'relative',
+                                   overflow:'auto',whiteSpace:'nowrap',border:`1px solid ${C.border}`}}>
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
             const isOff = offSet.has(r.a);
@@ -480,7 +500,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
             return (
               <div key={r.a} title={`${r.desc ? `${r.desc}\n\n` : ''}Click to toggle a breakpoint`}
                    onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
-                   style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',
+                   style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',height:`${ROW_H}px`,
+                           width:'max-content',minWidth:'100%',boxSizing:'border-box',
                            background: isPc ? '#1a4a1a' : wasRecent ? '#0c1d0c' : 'transparent',
                            borderLeft: `2px solid ${isPc ? C.textBright : 'transparent'}`}}>
                 <span style={{width:'10px',color: hasBp ? C.red : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
@@ -496,10 +517,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
           })}
         </div>
       )}
-      {!running && trace.length > 0 && (
-        <TraceList cpu={cpu} trace={trace} traceCtx={traceCtx} listing={listing} colW={colW}
-                   onJump={a => { setCenter(a); setJump(hx(a, cpu === 'dme' ? 4 : 3)); }} />
-      )}
+      <TraceList cpu={cpu} trace={running ? [] : trace} traceCtx={traceCtx} listing={listing} colW={colW} running={running}
+                 onJump={a => { setCenter(a); setJump(hx(a, cpu === 'dme' ? 4 : 3)); }} />
     </div>
   );
 }
@@ -509,7 +528,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
 // arrived by a jump, call, return or interrupt rather than falling through.
 // Back-to-back repeats of one instruction or a short loop (a busy-wait such
 // as `jnb IE1, $`) show once with a ×N count and the latest repetition's values.
-const TRACE_SHOWN = 32;     // rows, after repeats are collapsed
+const TRACE_SHOWN = 128;    // rows kept (the pane scrolls), after repeats are collapsed
 const TRACE_LOOP_MAX = 8;   // longest loop body that is collapsed
 function compactTrace(steps) {
   const out = [];
@@ -529,7 +548,7 @@ function compactTrace(steps) {
   }
   return out;
 }
-function TraceList({ cpu, trace, traceCtx, listing, colW, onJump }) {
+function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
   const [open, setOpen] = useState(true);
   const steps = useMemo(() => trace.map((a, i) => {
     const row = listing.length ? listing[rowFor(listing, a)] : null;
@@ -544,17 +563,27 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, onJump }) {
   const shown = useMemo(() => compactTrace(steps).slice(-TRACE_SHOWN), [steps]);
   const covered = shown.length ? steps.length - shown[0].start : 0;   // instructions those rows stand for
   const w = cpu === 'dme' ? 4 : 3;
+  // Newest at the bottom: open scrolled to the end each time the trace refreshes
+  const listRef = useRef(null);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [shown, open]);
   return (
     <div style={{marginTop:'6px',borderTop:`1px solid ${C.border}`,paddingTop:'4px'}}>
       <div style={{...title,display:'flex',gap:'8px',alignItems:'center',marginBottom:'2px',cursor:'pointer'}}
            onClick={() => setOpen(o => !o)} title={open ? 'Hide' : 'Show'}>
-        <span>{open ? '▾' : '▸'} last {covered} executed</span>
+        <span>{open ? '▾' : '▸'} {covered ? `last ${covered} executed` : 'recent instructions'}</span>
         <span style={{textTransform:'none',letterSpacing:0,color:'#557755'}}>
           oldest first · newest at the bottom{shown.length < covered ? ` · repeats collapsed (×N) into ${shown.length} rows` : ''}
         </span>
       </div>
       {open && (
-        <div style={{fontSize:'10.5px',lineHeight:'15px',overflowX:'auto',overflowY:'hidden',whiteSpace:'nowrap'}}>
+        <div ref={listRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,height:`${TRACE_ROWS * ROW_H}px`,
+                                   overflow:'auto',whiteSpace:'nowrap',border:`1px solid ${C.border}`}}>
+          {!shown.length && (
+            <div style={{color:'#557755',padding:'4px'}}>{running ? 'shown when the sim stops' : 'no trace yet'}</div>
+          )}
           {shown.map(({ i, a, r, val, jumped, reps, loopLen, loopPos }, k) => {
             const last = k === shown.length - 1;
             const inLoop = reps > 1 && loopLen > 1;
@@ -564,6 +593,7 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, onJump }) {
             return (
               <div key={i} onClick={() => onJump(a)} title={`${r?.desc ? `${r.desc}\n\n` : ''}${repTitle ? `${repTitle}\n\n` : ''}Show in listing`}
                    style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',
+                           width:'max-content',minWidth:'100%',boxSizing:'border-box',
                            borderTop: jumped ? `1px dashed ${C.border}` : '1px solid transparent',
                            borderLeft: `2px solid ${inLoop ? C.amber : 'transparent'}`,
                            background: last ? '#0c1d0c' : 'transparent'}}>
