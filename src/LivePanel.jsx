@@ -33,6 +33,8 @@ const INPUTS = [
   { k:'battery',   label:'BATTERY (ch1)', hint:'V ≈ raw×0.0526+2.13', volts:true },
   { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00], names:['under 1000 m','over 1000 m'],
     hint:'ch4 raw F8 / 00, as TEST_IDLE_HIGH_ALT' },
+  { k:'ac',        label:'AC (T1)',      positions:[0,1], names:['off','on'],
+    hint:'DME T1 (P3.5): AC compressor; the closed-loop model adds its load and the ISV should catch it' },
 ];
 
 const btn = (on, col = C.textBright) => ({
