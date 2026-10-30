@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
 import LivePanel from "./LivePanel.jsx";
-import { ATM_KPA, mapKpa, gaugePsi, fmtBoost, boostParts } from "./boost.js";
+import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 import { thin, extent } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
@@ -1441,7 +1441,7 @@ export default function DMEDashboard() {
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
         {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t}
-                                       boost={<BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />} />}
+                                       boost={{ klrIdx, dmeSnapshots: data.snapshots }} />}
         {tab==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
             logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
             logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
@@ -2720,8 +2720,6 @@ function KLRTab({ klrData, currentT, boost }) {
 
   // ── Latest status snapshot ──────────────────────────────────
   const latestStatus = klrData.status?.filter(s => s.t <= (currentT ?? Infinity)).slice(-1)[0];
-  const latestSnap   = klrData.snapshots?.filter(s => s.t <= (currentT ?? Infinity)).slice(-1)[0];
-  const ram = latestSnap?.ram ?? {};
 
   // ── IGN events up to currentT ──────────────────────────────
   const ignEvents = klrData.phases?.filter(p => p.cat === 'klr' && p.t <= (currentT ?? Infinity)) ?? [];
@@ -2735,17 +2733,6 @@ function KLRTab({ klrData, currentT, boost }) {
   const avgDelay   = delays.length ? (delays.reduce((a,b)=>a+b,0)/delays.length).toFixed(2) : '--';
   const avgPulse   = pulses.length ? (pulses.reduce((a,b)=>a+b,0)/pulses.length).toFixed(3) : '--';
 
-  // Merge ram vals from status ramVals into ram display
-  const ramDisplay = { ...ram };
-  if (latestStatus?.ramVals) Object.assign(ramDisplay, latestStatus.ramVals);
-
-  // Boost / MAP pressure — ram[0x52]. ADC-read routine adds 10 units
-  // before storing here (software-units scale); boost.js converts it with
-  // the KLR memory map's x = 1.22 * kPa - 4. Shown as a boost gauge:
-  // inHg below 1 bar, psi above.
-  const boostRaw = ramDisplay[0x52];
-  const boostPsiGauge = boostRaw != null ? gaugePsi(boostRaw) : null;
-
   const sig = [
     { l:'AVG PULSE',  v: `${avgPulse}ms`, col: '#44cccc' },
     { l:'AVG DELAY',  v: `${avgDelay}μs`, col: '#44cccc' },
@@ -2758,9 +2745,14 @@ function KLRTab({ klrData, currentT, boost }) {
     { l:'TIMER',      v: latestStatus?.timer_val != null ? `0x${h2(latestStatus.timer_val)}` : '--',
       col: C.textBright },
     { l:'IGN FIRES',  v: totalFires, col: '#ff8844' },
-    { l:'BOOST',      v: fmtBoost(boostPsiGauge),
-      col: boostPsiGauge != null && boostPsiGauge > 0 ? C.amber : '#88ccff', addr: 0x52 },
   ];
+  const tiles = sig.map(s => (
+    <div key={s.l} style={S.metric}
+         title={s.addr != null ? `0x${s.addr.toString(16).toUpperCase().padStart(2,'0')} ${KLR_KNOWN[s.addr]?.n ?? ''} — ${KLR_KNOWN[s.addr]?.d ?? ''}` : undefined}>
+      <div style={S.metricLbl}>{s.l}</div>
+      <div style={{...S.metricVal, color:s.col, fontSize:'20px', margin:'4px 0'}}>{s.v}</div>
+    </div>
+  ));
 
   const regs = latestStatus ? [
     ['PC', latestStatus.pc != null ? `0x${latestStatus.pc.toString(16).toUpperCase()}` : '--'],
@@ -2775,19 +2767,10 @@ function KLRTab({ klrData, currentT, boost }) {
 
   return (
     <div>
-      {/* ── Signal metrics ─────────────────────────────────── */}
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>
-        {sig.map(s => (
-          <div key={s.l} style={S.metric}
-               title={s.addr != null ? `0x${s.addr.toString(16).toUpperCase().padStart(2,'0')} ${KLR_KNOWN[s.addr]?.n ?? ''} — ${KLR_KNOWN[s.addr]?.d ?? ''}` : undefined}>
-            <div style={S.metricLbl}>{s.l}</div>
-            <div style={{...S.metricVal, color:s.col, fontSize:'20px', margin:'4px 0'}}>{s.v}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Boost control (was its own tab): its 4 cards make the 3rd row ── */}
-      {boost}
+      {/* ── Signal tiles, then boost control (was its own tab): one grid,
+             four across, with THROTTLE % finishing the second row ──── */}
+      {boost ? <BoostControlTab klrData={klrData} {...boost} lead={tiles} />
+             : <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>{tiles}</div>}
 
       <div style={{marginBottom:'8px'}}>
         {/* ── Last IGN event ─────────────────────────────── */}
@@ -3951,8 +3934,21 @@ function KLRDiagTab({ klrData, klrIdx }) {
   );
 }
 
+// Boost/overview card: label, big value + unit, small sub-line
+function Card({ label, value, unit, sub, col }) {
+  return (
+    <div style={S.metric}>
+      <div style={S.metricLbl}>{label}</div>
+      <div style={{...S.metricVal, color: col || C.textBright, fontSize:'20px', margin:'4px 0'}}>
+        {value}{unit && <span style={{fontSize:'12px', color:C.textDim, marginLeft:'4px'}}>{unit}</span>}
+      </div>
+      {sub && <div style={S.metricUnit}>{sub}</div>}
+    </div>
+  );
+}
+
 // ── BoostControlTab ─────────────────────────────────────────────
-function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
+function BoostControlTab({ klrData, klrIdx, dmeSnapshots, lead }) {
   const phases   = klrData?.phases ?? [];
   const currentT = phases[klrIdx]?.t ?? Infinity;
 
@@ -4048,19 +4044,15 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
 
   const fmt1 = v => v != null ? v.toFixed(1) : '--';
 
-  const Card = ({ label, value, unit, sub, col }) => (
-    <div style={S.metric}>
-      <div style={S.metricLbl}>{label}</div>
-      <div style={{...S.metricVal, color: col || C.textBright, fontSize:'20px', margin:'4px 0'}}>
-        {value}{unit && <span style={{fontSize:'12px', color:C.textDim, marginLeft:'4px'}}>{unit}</span>}
-      </div>
-      {sub && <div style={S.metricUnit}>{sub}</div>}
-    </div>
-  );
+
+  const throttleCard = <Card label="THROTTLE %" value={fmt1(throttlePct)} unit="%"
+                             sub={ram43 != null ? `ram[0x43]=0x${h2(ram43)}` : 'no data'}
+                             col="#ffcc44" />;
 
   return (
     <div>
       <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'10px'}}>
+        {lead && <>{lead}{throttleCard}</>}
         <Card label="BOOST INPUT" value={boostParts(boostInputPsi)[0]} unit={boostParts(boostInputPsi)[1]}
               sub={boostInputRaw != null ? `ram[0x52]=0x${h2(boostInputRaw)} (${fmt1(boostInputKpa)}kPa)` : 'no data'}
               col={boostInputPsi != null && boostInputPsi > 0 ? C.amber : '#88ccff'} />
@@ -4071,49 +4063,14 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots }) {
                    : throttlePct != null && !throttleInTableRange ? `${fmt1(throttlePct)}% throttle outside table's 57-87% range`
                    : 'no RPM/throttle'}
               col="#66ffaa" />
+        <Card label="DEVIATION" value={boostDeltaPsi != null ? `${boostDeltaPsi >= 0 ? '+' : ''}${fmt1(boostDeltaPsi)}` : '--'}
+              unit={boostDeltaPsi != null ? 'psi' : undefined}
+              sub="input − target"
+              col={boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red} />
         <Card label="CV DUTY CYCLE" value={fmt1(cvDutyPct)} unit="%"
               sub={cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}
               col="#cc66ff" />
-        <Card label="THROTTLE %" value={fmt1(throttlePct)} unit="%"
-              sub={ram43 != null ? `ram[0x43]=0x${h2(ram43)}` : 'no data'}
-              col="#ffcc44" />
-      </div>
-
-      <div style={S.panel}>
-        <div style={S.panelTitle}>BOOST INPUT vs TARGET</div>
-        <div style={{display:'flex', alignItems:'center', gap:'28px', padding:'10px 8px', flexWrap:'wrap'}}>
-          <div>
-            <div style={{fontSize:'10px', color:C.textDim, letterSpacing:'0.1em'}}>INPUT (ram[0x52])</div>
-            <div style={{fontSize:'20px', fontWeight:'bold', color:'#88ccff'}}>
-              {boostInputRaw != null ? `0x${h2(boostInputRaw)}` : '--'}
-              <span style={{fontSize:'11px', color:C.textDim, marginLeft:'6px'}}>
-                {boostInputRaw != null ? `${boostInputRaw}d` : ''}
-              </span>
-            </div>
-          </div>
-          <div>
-            <div style={{fontSize:'10px', color:C.textDim, letterSpacing:'0.1em'}}>TARGET (MAP table)</div>
-            <div style={{fontSize:'20px', fontWeight:'bold', color:'#66ffaa'}}>
-              {boostTargetRaw != null ? `0x${h2(Math.round(boostTargetRaw))}` : '--'}
-              <span style={{fontSize:'11px', color:C.textDim, marginLeft:'6px'}}>
-                {boostTargetRaw != null ? `${Math.round(boostTargetRaw)}d` : ''}
-              </span>
-            </div>
-          </div>
-          <div>
-            <div style={{fontSize:'10px', color:C.textDim, letterSpacing:'0.1em'}}>DEVIATION</div>
-            <div style={{fontSize:'22px', fontWeight:'bold',
-                         color: boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red}}>
-              {boostDeltaPsi != null ? `${boostDeltaPsi >= 0 ? '+' : ''}${fmt1(boostDeltaPsi)}psi` : '--'}
-            </div>
-          </div>
-          <div style={{fontSize:'10px', color:C.textDim, maxWidth:'420px'}}>
-            Input minus target. Large/persistent deviation typically means either a test-injected
-            boost fault (see KLR Diag) or a genuine closed-loop wastegate control error the CV duty
-            cycle hasn't yet corrected for. Hex values above are both in the same "software units"
-            scale as the KLR memory map docs (post +10-offset) — directly comparable byte-for-byte.
-          </div>
-        </div>
+        {!lead && throttleCard}
       </div>
     </div>
   );
