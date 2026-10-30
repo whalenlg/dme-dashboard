@@ -2723,8 +2723,6 @@ function KLRTab({ klrData, currentT, boost }) {
 
   // ── IGN events up to currentT ──────────────────────────────
   const ignEvents = klrData.phases?.filter(p => p.cat === 'klr' && p.t <= (currentT ?? Infinity)) ?? [];
-  const lastAssert   = [...ignEvents].reverse().find(p => p.asserted);
-  const lastDeassert = [...ignEvents].reverse().find(p => p.deasserted);
 
   // ── Counts ─────────────────────────────────────────────────
   const totalFires = ignEvents.filter(p => p.asserted).length;
@@ -2746,121 +2744,23 @@ function KLRTab({ klrData, currentT, boost }) {
       col: C.textBright },
     { l:'IGN FIRES',  v: totalFires, col: '#ff8844' },
   ];
-  const tiles = sig.map(s => (
+  const tile = Object.fromEntries(sig.map(s => [s.l, (
     <div key={s.l} style={S.metric}
          title={s.addr != null ? `0x${s.addr.toString(16).toUpperCase().padStart(2,'0')} ${KLR_KNOWN[s.addr]?.n ?? ''} — ${KLR_KNOWN[s.addr]?.d ?? ''}` : undefined}>
       <div style={S.metricLbl}>{s.l}</div>
       <div style={{...S.metricVal, color:s.col, fontSize:'20px', margin:'4px 0'}}>{s.v}</div>
     </div>
-  ));
+  )]));
+  // Signal tiles and boost control's cards (was its own tab) in one grid,
+  // four across
+  const arrange = c => [
+    tile['AVG PULSE'], tile['AVG DELAY'], tile['KNOCK COUNT'], tile['FULL LOAD'],
+    tile['CV PWM'],    c.cvDuty,          tile['IGN FIRES'],   c.throttle,
+    c.boostInput,      c.boostTarget,     c.deviation,         tile['TIMER'],
+  ];
 
-  const regs = latestStatus ? [
-    ['PC', latestStatus.pc != null ? `0x${latestStatus.pc.toString(16).toUpperCase()}` : '--'],
-    ['R0', latestStatus.R0 != null ? h2(latestStatus.R0) : '--'],
-    ['R2', latestStatus.R2 != null ? h2(latestStatus.R2) : '--'],
-    ['R4', latestStatus.R4 != null ? h2(latestStatus.R4) : '--'],
-    ['R5', latestStatus.R5 != null ? h2(latestStatus.R5) : '--'],
-    ['IRQ', latestStatus.irq != null ? String(latestStatus.irq) : '--'],
-    ['MB',  latestStatus.mb  != null ? String(latestStatus.mb)  : '--'],
-    ['SP',  latestStatus.SP  != null ? String(latestStatus.SP)  : '--'],
-  ] : [];
-
-  return (
-    <div>
-      {/* ── Signal tiles, then boost control (was its own tab): one grid,
-             four across, with THROTTLE % finishing the second row ──── */}
-      {boost ? <BoostControlTab klrData={klrData} {...boost} lead={tiles} />
-             : <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>{tiles}</div>}
-
-      <div style={{marginBottom:'8px'}}>
-        {/* ── Last IGN event ─────────────────────────────── */}
-        <div style={S.panel}>
-          <div style={S.panelTitle}>LAST IGNITION EVENT</div>
-          {lastAssert ? (
-            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'4px'}}>
-              {[
-                ['Event time', `${lastAssert.t} ms`],
-                ['Delay from ign_in', lastAssert.delay_us != null ? `${lastAssert.delay_us.toFixed(2)} μs` : '--'],
-                ['Pulse width', lastDeassert?.pulse_ms != null ? `${lastDeassert.pulse_ms.toFixed(3)} ms` : '--'],
-                ['Total IGN fires', `${totalFires}  (avg ${avgDelay}μs delay)`],
-              ].map(([l,v]) => (
-                <div key={l} style={{padding:'3px 6px', borderBottom:`1px solid ${C.border}`, fontSize:'10px'}}>
-                  <span style={{color:C.textDim}}>{l}: </span>
-                  <span style={{color:C.textBright}}>{v}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{color:C.textDim, fontSize:'10px', padding:'8px'}}>
-              No IGN events yet at t={currentT ?? '---'}ms
-            </div>
-          )}
-
-          {/* ── 8048 Registers ───────────────────────────── */}
-          {regs.length > 0 && (
-            <>
-              <div style={{...S.panelTitle, marginTop:'8px'}}>8048 REGISTERS</div>
-              <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'2px'}}>
-                {regs.map(([l,v]) => (
-                  <div key={l} style={{display:'flex', justifyContent:'space-between',
-                                       padding:'2px 5px', borderBottom:`1px solid ${C.border}`, fontSize:'10px'}}>
-                    <span style={{color:C.textDim}}>{l}</span>
-                    <span style={{color:C.textBright}}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* ── IGN event log ──────────────────────────────────── */}
-      <div style={S.panel}>
-        <div style={S.panelTitle}>KLR IGNITION EVENT LOG — {ignEvents.length} events</div>
-
-        {/* Timeline bar */}
-        {ignEvents.length > 0 && (() => {
-          const maxT = klrData.phases[klrData.phases.length-1]?.t || 1;
-          const pct = currentT != null ? (currentT/maxT)*100 : null;
-          // One tick per pulse is thousands of divs on a long run, re-rendered
-          // on every update; ticks that close together merge anyway
-          const fires = ignEvents.filter(p=>p.asserted);
-          const step = Math.ceil(fires.length / 800);
-          return (
-            <div style={{position:'relative',height:'24px',background:'#040904',
-                         border:`1px solid ${C.border}`,borderRadius:'2px',
-                         overflow:'hidden',marginBottom:'8px'}}>
-              {fires.filter((_,i)=>i%step===0).map((p,i) => (
-                <div key={i} title={`${p.t}ms — ${p.msg}`}
-                     style={{position:'absolute',left:`${(p.t/maxT)*100}%`,
-                             top:0,width:'2px',height:'100%',background:'#ff8844',opacity:.9}}/>
-              ))}
-              {pct!=null&&<div style={{position:'absolute',left:`${pct}%`,top:0,
-                                       width:'1px',height:'100%',background:C.textBright}}/>}
-            </div>
-          );
-        })()}
-
-        <div style={{maxHeight:'280px', overflow:'auto'}}>
-          {[...ignEvents].reverse().slice(0, 80).map((p,i) => (
-            <div key={i} style={{display:'flex', alignItems:'baseline', gap:'8px',
-                                  padding:'2px 6px', marginBottom:'1px', fontSize:'10px',
-                                  borderLeft:`3px solid ${p.asserted?'#ff8844':'#44aaff'}`,
-                                  background:C.panelBg}}>
-              <span style={{color:p.asserted?'#ff8844':'#44aaff', minWidth:'65px'}}>{p.t} ms</span>
-              <span style={{color:C.text, flex:1}}>{p.msg}</span>
-              {p.delay_us != null && (
-                <span style={{color:'#44cccc', fontSize:'9px'}}>{p.delay_us.toFixed(2)}μs</span>
-              )}
-              {p.pulse_ms != null && (
-                <span style={{color:'#cc66ff', fontSize:'9px'}}>{p.pulse_ms.toFixed(3)}ms</span>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
+  return boost ? <BoostControlTab klrData={klrData} {...boost} arrange={arrange} />
+               : <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>{Object.values(tile)}</div>;
 }
 
 // Older logs (no [SPARK] lines): their retard is the raw delay, which is
@@ -3948,7 +3848,7 @@ function Card({ label, value, unit, sub, col }) {
 }
 
 // ── BoostControlTab ─────────────────────────────────────────────
-function BoostControlTab({ klrData, klrIdx, dmeSnapshots, lead }) {
+function BoostControlTab({ klrData, klrIdx, dmeSnapshots, arrange }) {
   const phases   = klrData?.phases ?? [];
   const currentT = phases[klrIdx]?.t ?? Infinity;
 
@@ -4045,33 +3945,33 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots, lead }) {
   const fmt1 = v => v != null ? v.toFixed(1) : '--';
 
 
-  const throttleCard = <Card label="THROTTLE %" value={fmt1(throttlePct)} unit="%"
-                             sub={ram43 != null ? `ram[0x43]=0x${h2(ram43)}` : 'no data'}
-                             col="#ffcc44" />;
+  const cards = {
+    throttle: <Card key="throttle" label="THROTTLE %" value={fmt1(throttlePct)} unit="%"
+                    sub={ram43 != null ? `ram[0x43]=0x${h2(ram43)}` : 'no data'}
+                    col="#ffcc44" />,
+    boostInput: <Card key="boostInput" label="BOOST INPUT" value={boostParts(boostInputPsi)[0]} unit={boostParts(boostInputPsi)[1]}
+                      sub={boostInputRaw != null ? `ram[0x52]=0x${h2(boostInputRaw)} (${fmt1(boostInputKpa)}kPa)` : 'no data'}
+                      col={boostInputPsi != null && boostInputPsi > 0 ? C.amber : '#88ccff'} />,
+    boostTarget: <Card key="boostTarget" label="BOOST TARGET" value={boostParts(boostTargetPsi)[0]} unit={boostParts(boostTargetPsi)[1]}
+                       sub={boostTargetRaw != null
+                            ? `hex=0x${h2(Math.round(boostTargetRaw))}${usingLoggedTarget ? ' [sim]' : ` [approx @ ${rpm}rpm, ${fmt1(throttlePct)}%]`}`
+                            : rpm != null && rpm < 400 ? `cranking (${rpm}rpm) — not meaningful below 400rpm`
+                            : throttlePct != null && !throttleInTableRange ? `${fmt1(throttlePct)}% throttle outside table's 57-87% range`
+                            : 'no RPM/throttle'}
+                       col="#66ffaa" />,
+    deviation: <Card key="deviation" label="DEVIATION" value={boostDeltaPsi != null ? `${boostDeltaPsi >= 0 ? '+' : ''}${fmt1(boostDeltaPsi)}` : '--'}
+                     unit={boostDeltaPsi != null ? 'psi' : undefined}
+                     sub="input − target"
+                     col={boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red} />,
+    cvDuty: <Card key="cvDuty" label="CV DUTY CYCLE" value={fmt1(cvDutyPct)} unit="%"
+                  sub={cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}
+                  col="#cc66ff" />,
+  };
 
   return (
-    <div>
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'10px'}}>
-        {lead && <>{lead}{throttleCard}</>}
-        <Card label="BOOST INPUT" value={boostParts(boostInputPsi)[0]} unit={boostParts(boostInputPsi)[1]}
-              sub={boostInputRaw != null ? `ram[0x52]=0x${h2(boostInputRaw)} (${fmt1(boostInputKpa)}kPa)` : 'no data'}
-              col={boostInputPsi != null && boostInputPsi > 0 ? C.amber : '#88ccff'} />
-        <Card label="BOOST TARGET" value={boostParts(boostTargetPsi)[0]} unit={boostParts(boostTargetPsi)[1]}
-              sub={boostTargetRaw != null
-                   ? `hex=0x${h2(Math.round(boostTargetRaw))}${usingLoggedTarget ? ' [sim]' : ` [approx @ ${rpm}rpm, ${fmt1(throttlePct)}%]`}`
-                   : rpm != null && rpm < 400 ? `cranking (${rpm}rpm) — not meaningful below 400rpm`
-                   : throttlePct != null && !throttleInTableRange ? `${fmt1(throttlePct)}% throttle outside table's 57-87% range`
-                   : 'no RPM/throttle'}
-              col="#66ffaa" />
-        <Card label="DEVIATION" value={boostDeltaPsi != null ? `${boostDeltaPsi >= 0 ? '+' : ''}${fmt1(boostDeltaPsi)}` : '--'}
-              unit={boostDeltaPsi != null ? 'psi' : undefined}
-              sub="input − target"
-              col={boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red} />
-        <Card label="CV DUTY CYCLE" value={fmt1(cvDutyPct)} unit="%"
-              sub={cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}
-              col="#cc66ff" />
-        {!lead && throttleCard}
-      </div>
+    <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'10px'}}>
+      {arrange ? arrange(cards)
+               : [cards.boostInput, cards.boostTarget, cards.deviation, cards.cvDuty, cards.throttle]}
     </div>
   );
 }
