@@ -1355,7 +1355,7 @@ export default function DMEDashboard() {
   // ...except the first rows after switching to a chart tab
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
-  const TABS = ['overview','timeline','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'];
+  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost','timeline'];
 
   return (
     <div style={S.root}>
@@ -1386,14 +1386,13 @@ export default function DMEDashboard() {
         </div>
       </div>
 
-      {/* ── TABS — two rows ─────────────────────────────────── */}
+      {/* ── TABS — three rows ────────────────────────────────── */}
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','timeline','ports','iram','charts','phase','diag'].map(t=>(
+          {['overview','ports','iram','charts','phase','diag'].map(t=>(
             <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
               {t==='overview'?'DME OVERVIEW':
-               t==='timeline'?'TIMELINE'   :
                t==='ports'   ?'DME PORTS'  :
                t==='iram'    ?'DME IRAM'   :
                t==='charts'  ?'DME CHARTS' :
@@ -1417,6 +1416,10 @@ export default function DMEDashboard() {
                t.toUpperCase()}
             </button>
           ))}
+        </div>
+        {/* Row 3 — DME + KLR together */}
+        <div style={S.tabRowKlr}>
+          <button style={S.tab(tab==='timeline')} onClick={()=>setTab('timeline')}>TIMELINE</button>
         </div>
       </div>
 
