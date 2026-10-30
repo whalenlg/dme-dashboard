@@ -779,6 +779,16 @@ function parseKLRLog(text) {
 }
 // ─────────────────────────────────────────────────────────────────
 const h2  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(2,'0') : '--';
+// DME throttle switch (ch6 -> iram[0x16]) as the firmware buckets it: table
+// 0x1124 sorts it into the 23h.0/.1 code. < 0x89 code 3 (fault: lambda off,
+// ISV fixed), 0x89-0xB7 code 2 (idle, sim 0x99), 0xB8-0xE6 code 1 (WOT, sim
+// 0xCC), >= 0xE7 code 0 (off-idle, sim 0xF2). Exact matches miss the
+// in-between values the full-load RC passes through (e.g. 0xCD).
+const tpsState = v => v == null ? null
+  : v < 0x89 ? {lbl:'FAULT',    code:3}
+  : v < 0xB8 ? {lbl:'IDLE',     code:2}
+  : v < 0xE7 ? {lbl:'WOT',      code:1}
+  :            {lbl:'OFF-IDLE', code:0};
 const h4  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(4,'0') : '----';
 const b8  = v => v !== undefined ? v.toString(2).padStart(8,'0') : '--------';
 const fuelMs = snap => {
@@ -1697,11 +1707,13 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
     { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null, addr:0x4C      },
   ];
 
+  const tpsRaw = snap._prevTps ?? iram[0x16];
+  const tpsSt  = tpsState(tpsRaw);
   const metricsRow2 = [
     { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm', addr:0x10     },
-    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),
-                           unit:(snap._prevTps??iram[0x16])===0x85?'CLOSED/IDLE':(snap._prevTps??iram[0x16])===0xCC?'WOT':(snap._prevTps??iram[0x16])===0xF2?'PARTIAL':'--',
-                           col:(snap._prevTps??iram[0x16])===0x85?'#44cccc':(snap._prevTps??iram[0x16])===0xCC?C.red:(snap._prevTps??iram[0x16])===0xF2?C.amber:C.textDim,
+    { lbl:'TPS',           val:tpsSt ? tpsSt.lbl : '--',
+                           unit:`0x${h2(tpsRaw)}  code ${tpsSt?.code ?? '-'}`,
+                           col:[C.amber, C.red, '#44cccc', C.red][tpsSt?.code] ?? C.textDim,
                            mmk:'tps', addr:0x16 },
     { lbl:'COOLANT',       val:coolC!==null?`${coolC}°C`:'--',       unit:`0x${h2(iram[0x13])}`, col:C.blue, mmk:'coolant', addr:0x13 },
     { lbl:'AIR TEMP',      val:airC !==null?`${airC}°C` :'--',       unit:`0x${h2(iram[0x12])}`, col:C.blue, mmk:'airtemp', addr:0x12 },
@@ -1775,7 +1787,7 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
 
   const regs = [
     ['PRPM raw (37)',      h2(iram[0x37]),  `${rpm} RPM`],
-    ['TPS (16)',          h2(iram[0x16]),  (iram[0x16]??0)>=0xD1?'IDLE/CLOSED':(iram[0x16]??0)>=0x77?'WOT':'PART LOAD'],
+    ['TPS (16)',          h2(iram[0x16]),  tpsState(iram[0x16])?.lbl ?? '--'],
     ['FQS/Alt (17)',      h2(iram[0x17]),  (iram[0x17]??0)>=0x80?'PREMIUM FUEL':'REGULAR FUEL'],
     ['Batt V (11)',       h2(iram[0x11]),  iram[0x11] != null ? `${(iram[0x11]*0.05263+2.132).toFixed(1)}V` : '--'],
     ['DataPlug (3F)',     h2(iram[0x3F]),  `${iram[0x3F]??'--'}d`],
@@ -2620,7 +2632,7 @@ function DiagTab({ iram, snap }) {
       raw: afmRaw, tx: afmRaw,
       decode: `0x${h2(afmRaw)} = ${afmRaw}d  |  prev: iram[0x53]=0x${h2(ir[0x53]??0)}  delta: ${afmRaw-(ir[0x53]??afmRaw)>=0?'+':''}${afmRaw-(ir[0x53]??afmRaw)}`,
       col: '#44cccc',
-      detail: `TPS: iram[0x16]=0x${h2(ir[0x16]??0)}  ${(ir[0x16]??0)>=0xD1?'CLOSED':(ir[0x16]??0)>=0x77?'WOT':'PART THROTTLE'}`,
+      detail: `TPS: iram[0x16]=0x${h2(ir[0x16]??0)}  ${tpsState(ir[0x16])?.lbl ?? '--'}`,
     },
     {
       p2: '0x1F', name: 'COOLANT TEMP', src: 'iram[0x13]  COOLANT',
