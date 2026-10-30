@@ -1354,7 +1354,7 @@ export default function DMEDashboard() {
   // ...except the first rows after switching to a chart tab
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
-  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost','timeline'];
+  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','timeline'];
 
   return (
     <div style={S.root}>
@@ -1403,7 +1403,7 @@ export default function DMEDashboard() {
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'].map(t=>(
+          {['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].map(t=>(
             <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}>
               {t==='klr'       ?'KLR OVERVIEW':
                t==='klr_ports' ?'KLR PORTS'   :
@@ -1411,7 +1411,6 @@ export default function DMEDashboard() {
                t==='klr_charts'?'KLR CHARTS'  :
                t==='klr_phase' ?'KLR PHASE'   :
                t==='klr_diag'  ?'KLR DIAG'    :
-               t==='klr_boost' ?'BOOST CONTROL':
                t.toUpperCase()}
             </button>
           ))}
@@ -1441,7 +1440,8 @@ export default function DMEDashboard() {
         </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
-        {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t}
+                                       boost={<BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />} />}
         {tab==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
             logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
             logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
@@ -1450,11 +1450,10 @@ export default function DMEDashboard() {
             currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_boost'  && <BoostControlTab klrData={klrData} klrIdx={klrIdx} dmeSnapshots={data.snapshots} />}
       </div>
 
       {/* ── TIME SCRUBBER + PLAYBACK ────────────────────────── */}
-      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'].includes(tab) && (
+      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
         <div style={S.scrubber}>
           {/* Play / Pause */}
           <button onClick={()=>setPlaying(p=>!p)}
@@ -1508,7 +1507,7 @@ export default function DMEDashboard() {
       )}
 
       {/* ── KLR PLAYBACK SCRUBBER — KLR tabs only ──────────── */}
-      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'].includes(tab) && (
+      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
         <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
           <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
           <button onClick={()=>setKlrPlaying(p=>!p)}
@@ -2709,7 +2708,7 @@ function DiagTab({ iram, snap }) {
 }
 
 // ── KLRTab ────────────────────────────────────────────────────────
-function KLRTab({ klrData, currentT }) {
+function KLRTab({ klrData, currentT, boost }) {
   if (!klrData || (klrData.snapshots.length === 0 && klrData.phases.length === 0 && (!klrData.status || klrData.status.length === 0))) {
     return (
       <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'11px'}}>
@@ -2786,6 +2785,14 @@ function KLRTab({ klrData, currentT }) {
           </div>
         ))}
       </div>
+
+      {/* ── Boost control (was its own tab) ────────────────── */}
+      {boost && (
+        <div style={{marginBottom:'8px'}}>
+          <div style={{...S.panelTitle, marginBottom:'6px'}}>BOOST CONTROL</div>
+          {boost}
+        </div>
+      )}
 
       <div style={{marginBottom:'8px'}}>
         {/* ── Last IGN event ─────────────────────────────── */}
@@ -3277,7 +3284,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       unit:  '°',
       dom:   [0, 'auto'],
       tip:   (v, row) => [`${v}°  (raw 0x${row?.tps_raw != null ? h2(row.tps_raw) : '--'})`, 'TPS'],
-      note:  'Scaled throttle angle; the tooltip also gives the raw ADC reading (0x77≈idle, higher=more open; see BOOST CONTROL tab for %)',
+      note:  'Scaled throttle angle; the tooltip also gives the raw ADC reading (0x77≈idle, higher=more open; see BOOST CONTROL on KLR OVERVIEW for %)',
       empty: tpsData.every(d => d.tps_deg == null && d.tps_raw == null),
     },
     {
@@ -3774,7 +3781,7 @@ function KLRIRAMTab({ klrData, klrIdx }) {
               { ch:1,  label:'Battery',      addr:0x2E,  desc:'battery voltage (ch1)' },
               { ch:5,  label:'Comparator',   addr:null,  desc:'LM2902 comparator output (ch5)' },
               { ch:null, label:'Knock Integrator', addr:0x46, desc:'Integrated knock value (46h)' },
-              { ch:4,  label:'Boost',        addr:0x52, desc:'MAP pressure — post +10-offset ADC read (52h), see BOOST CONTROL tab' },
+              { ch:4,  label:'Boost',        addr:0x52, desc:'MAP pressure — post +10-offset ADC read (52h), see BOOST CONTROL on KLR OVERVIEW' },
             ].map(({ch, label, addr, desc}) => {
               const val = addr !== null ? ramMerged[addr] : undefined;
               const hasV = val !== undefined && val !== null;
