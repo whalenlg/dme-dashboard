@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, memo } from "react";
 import { fmtBoost } from "./boost.js";
-import { thin, syncNearest } from "./thin.js";
+import { thin, syncNearest, inRange } from "./thin.js";
+import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
@@ -168,15 +169,16 @@ const METRICS = [
 
 // Memoized: the live view re-renders on every sim tick, but a chart only
 // needs redrawing when its series changes (recharts is the costly part).
-const MetricChart = memo(function MetricChart({ m, series, t0, t1 }) {
-  const data = useMemo(() => thin(series, m.overlay ? [m.k, m.overlay] : m.k, 800), [series, m]);
+const MetricChart = memo(function MetricChart({ m, series, t0, t1, range, zoom }) {
+  const data = useMemo(() => thin(inRange(series, range), m.overlay ? [m.k, m.overlay] : m.k, 800), [series, m, range]);
   return (
     <div style={{background:C.panelBg2,border:`1px solid ${C.border}`,padding:'3px 4px 0'}}>
       <div style={{color:m.col,fontSize:'9px',letterSpacing:'0.12em'}}>{m.label}{m.unit ? ` (${m.unit})` : ''}</div>
-      <ResponsiveContainer width="100%" height={86}>
-        <LineChart data={data} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine" syncMethod={syncNearest}>
+      <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={86}>
+        <LineChart data={data} margin={{top:4,right:8,bottom:0,left:0}} syncId="liveEngine" syncMethod={syncNearest}
+                   {...zoomHandlers(zoom)}>
           <CartesianGrid stroke="#123312" strokeDasharray="2 4" />
-          <XAxis dataKey="t" type="number" domain={[t0, t1]} tick={{fill:'#557755',fontSize:8}}
+          <XAxis dataKey="t" type="number" domain={range ?? [t0, t1]} allowDataOverflow tick={{fill:'#557755',fontSize:8}}
                  tickFormatter={v => `${(v / 1000).toFixed(1)}s`} />
           <YAxis width={40} domain={['auto','auto']} tick={{fill:'#557755',fontSize:8}}
                  tickFormatter={v => m.hex ? hx(v) : v} />
@@ -188,16 +190,21 @@ const MetricChart = memo(function MetricChart({ m, series, t0, t1 }) {
             <Line dataKey={m.overlay} stroke={C.red} strokeWidth={2} dot={false} isAnimationActive={false}
                   type={m.step ? 'stepAfter' : 'linear'} legendType="none" tooltipType="none" />
           )}
+          <DragArea zoom={zoom} fill={C.textBright} />
         </LineChart>
-      </ResponsiveContainer>
+      </ResponsiveContainer></ZoomBox>
     </div>
   );
 });
 
 function EngineRow({ series }) {
   const [charts, setCharts] = useState(true);
+  // Zoomed, the charts hold that window while the run goes on
+  const [range, setRange] = useState(null);
   const last = series[series.length - 1];
   const t0 = series[0]?.t ?? 0, t1 = last?.t ?? 1;
+  const full = useMemo(() => [t0, t1], [t0, t1]);
+  const zoom = useZoom(range, setRange, full);
   return (
     <div style={{...panel,display:'flex',flexDirection:'column',gap:'6px'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:'8px'}}>
@@ -218,9 +225,12 @@ function EngineRow({ series }) {
         ))}
       </div>
       {charts && series.length > 1 && (
+        <ZoomBar zoom={zoom} range={range} full={full} btn={btn(false)} color={C.textBright} dim='#779977' />
+      )}
+      {charts && series.length > 1 && (
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:'6px'}}>
           {METRICS.map(m => (
-            <MetricChart key={m.k} m={m} series={series} t0={t0} t1={t1} />
+            <MetricChart key={m.k} m={m} series={series} t0={t0} t1={t1} range={range} zoom={zoom} />
           ))}
         </div>
       )}

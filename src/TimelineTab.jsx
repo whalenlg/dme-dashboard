@@ -1,16 +1,18 @@
-import { useState, useMemo, useCallback, memo } from "react";
+import { useState, useMemo, memo } from "react";
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, ReferenceArea,
+  ResponsiveContainer, CartesianGrid,
   useXAxisScale, usePlotArea
 } from "recharts";
-import { thin, syncNearest } from "./thin.js";
+import { thin, syncNearest, inRange } from "./thin.js";
 import { CursorLine } from "./cursor.jsx";
+import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  TIMELINE TAB
-//  DME and KLR on one shared time axis. Drag across any chart to zoom
-//  all of them; click to move the playback scrubber to that time.
+//  DME and KLR on one shared time axis. Zoom any chart (see zoom.jsx) to
+//  zoom all of them, and the DME and KLR CHARTS tabs with them; click to
+//  move the playback scrubber to that time.
 //
 //  Reads the combined dme_klr_dashboard_tb.v log:
 //    DME: [DS] <ms>,<256hex iram>,<p1p2p3>,<ref_rpm>
@@ -101,9 +103,8 @@ function savePicks(p) {
 }
 
 // Memoized: live mode re-renders the page on every sim tick
-const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrData, onSeek }) {
-  const [range, setRange]   = useState(null);   // [t0, t1] or null = whole log
-  const [drag, setDrag]     = useState(null);   // {a, b} while selecting
+// range/setRange: the zoom shared with the other chart tabs ([t0, t1] or null = whole log)
+const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrData, onSeek, range, setRange }) {
   const [showDmeMk, setShowDmeMk] = useState(true);
   const [showKlrMk, setShowKlrMk] = useState(true);
   const [hidden, setHidden] = useState({});     // series key → true when hidden
@@ -149,16 +150,15 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
 
   const tMin = rows[0]?.t ?? 0, tMax = rows[rows.length - 1]?.t ?? 0;
   const [t0, t1] = range ?? [tMin, tMax];
+  const full = useMemo(() => [tMin, tMax], [tMin, tMax]);
+  const zoom = useZoom(range, setRange, full, onSeek);
 
   // Rows in the zoom range (plus one either side so lines reach the edges),
   // thinned per chart to the series it draws
   const pickSig = picks.map(pickKey).join(',');
   const hasAdcIn = useMemo(() => dmeSnapshots.some(s => s.adcIn), [dmeSnapshots]);
   const shown = useMemo(() => {
-    let a = 0, b = rows.length;
-    while (a < rows.length && rows[a].t < t0) a++;
-    while (b > a && rows[b - 1].t > t1) b--;
-    const vis = rows.slice(Math.max(0, a - 1), Math.min(rows.length, b + 1));
+    const vis = inRange(rows, [t0, t1]);
     return {
       rpm:   thin(vis, ['rpm', 'fwRpm']),
       ign:   thin(vis, ['timingAdv', 'dwell']),
@@ -188,20 +188,6 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
     const step = Math.max(1, Math.ceil(all.length / MAX_IGN_POINTS));
     return { total: all.length, pts: all.filter((_, i) => i % step === 0).map(p => ({ t: p.t, ignPulse: +p.pulse_ms.toFixed(3) })) };
   }, [klrData.phases, t0, t1]);
-
-  // ── Drag to zoom, click to seek ──────────────────────────────
-  const onDown = useCallback(e => { if (e?.activeLabel != null) setDrag({ a: +e.activeLabel, b: +e.activeLabel }); }, []);
-  const onMove = useCallback(e => { if (e?.activeLabel != null) setDrag(d => d && { ...d, b: +e.activeLabel }); }, []);
-  const onUp   = useCallback(() => {
-    setDrag(d => {
-      if (d) {
-        const lo = Math.min(d.a, d.b), hi = Math.max(d.a, d.b);
-        if (hi - lo > 0) setRange([lo, hi]);
-        else onSeek?.(lo);
-      }
-      return null;
-    });
-  }, [onSeek]);
 
   const addPick = () => {
     const addr = parseInt(pickAddr, 16);
@@ -243,10 +229,9 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
   // Every chart gets a right axis of the same width so the plot areas,
   // and therefore the time axes, line up vertically.
   const chart = (data, height, children, yAxes, rightAxis) => (
-    <ResponsiveContainer width="100%" height={height}>
+    <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={data} syncId="timeline" syncMethod={syncNearest}
-        margin={{top:4,right:8,bottom:0,left:0}}
-        onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}>
+        margin={{top:4,right:8,bottom:0,left:0}} {...zoomHandlers(zoom)}>
         <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
         <XAxis dataKey="t" type="number" domain={[t0, t1]} allowDataOverflow tick={ax}
                tickFormatter={v => `${v}ms`} stroke={C.textDim} />
@@ -255,11 +240,10 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
         <Tooltip content={<TipBox markers={markers} />} isAnimationActive={false} />
         <MarkerLines markers={shownMarkers} />
         <CursorLine stroke={C.textBright} strokeWidth={1.5} />
-        {drag && <ReferenceArea yAxisId="l" x1={Math.min(drag.a, drag.b)} x2={Math.max(drag.a, drag.b)}
-                                fill={C.textBright} fillOpacity={0.12} ifOverflow="hidden" />}
+        <DragArea zoom={zoom} fill={C.textBright} />
         {children}
       </ComposedChart>
-    </ResponsiveContainer>
+    </ResponsiveContainer></ZoomBox>
   );
   const line = (k, col, axis = 'l', extra = {}) => !hidden[k] && (
     <Line key={k} yAxisId={axis} dataKey={k} name={seriesLabel(k, picks)} stroke={col} dot={false} strokeWidth={1.4}
@@ -270,10 +254,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
     <div style={{userSelect:'none'}}>
       {/* ── Controls ─────────────────────────────────────────── */}
       <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap'}}>
-        <span style={{color:C.textBright,fontSize:'11px'}}>
-          {range ? `ZOOM ${t0}–${t1} ms` : `ALL ${tMin}–${tMax} ms`}
-        </span>
-        {range && <button style={btn} onClick={() => setRange(null)}>RESET ZOOM</button>}
+        <ZoomBar zoom={zoom} range={range} full={full} btn={btn} color={C.textBright} dim={C.textDim} hint={false} />
         <label style={{color:'#ffaa00',fontSize:'10px',cursor:'pointer'}}>
           <input type="checkbox" checked={showDmeMk} onChange={e => setShowDmeMk(e.target.checked)} /> DME PHASE
         </label>
@@ -282,7 +263,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
         </label>
         {markers.length > MAX_MARKERS &&
           <span style={{color:'#ffaa00',fontSize:'9px'}}>showing first {MAX_MARKERS} of {markers.length} markers — zoom in for the rest</span>}
-        <span style={{color:C.textDim,fontSize:'9px',marginLeft:'auto'}}>drag to zoom · click to move scrubber</span>
+        <span style={{color:C.textDim,fontSize:'9px',marginLeft:'auto'}}>drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · click to move scrubber</span>
       </div>
 
       {/* ── RPM ──────────────────────────────────────────────── */}

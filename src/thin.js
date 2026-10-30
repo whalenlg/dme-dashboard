@@ -52,3 +52,18 @@ export function syncNearest(ticks, { activeLabel }) {
   while (lo < hi) { const mid = (lo + hi) >> 1; if (ticks[mid].value < t) lo = mid + 1; else hi = mid; }
   return lo > 0 && t - ticks[lo - 1].value < ticks[lo].value - t ? lo - 1 : lo;
 }
+
+// The rows of a time-sorted series inside [t0, t1] (null = all of it), plus
+// one either side so lines run to the edges of a zoomed chart
+export function inRange(rows, range) {
+  if (!range || !rows?.length) return rows;
+  const first = t => {
+    let lo = 0, hi = rows.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows[mid].t < t) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const a = first(range[0]);
+  let b = first(range[1]);
+  while (b < rows.length && rows[b].t === range[1]) b++;
+  return rows.slice(Math.max(0, a - 1), Math.min(rows.length, b + 1));
+}
