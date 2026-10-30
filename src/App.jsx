@@ -248,18 +248,6 @@ const BOOST_TABLE = [
   [145,152,180,206,206,206,206,206,206,208,206,206,206,206,206,194], // 87.1%
 ];
 
-// Throttle% from KLR's own tps_raw (STATUS-line field).
-// Direction confirmed against an actual log (cl_ramp_to_6000_BOOST_LOW):
-// tps_raw reads 0x77 (119) right at sim start (engine at rest, throttle
-// closed) and rises as throttle opens — a DIRECT relationship, not
-// inverted. Anchored 0%=idle at 0x77(119), 100%=fully open at 256 (the
-// full 8-bit ADC ceiling), clamped beyond either end.
-function tpsRawToThrottlePct(tpsRaw) {
-  if (tpsRaw == null) return null;
-  const pct = ((tpsRaw - 119) / (256 - 119)) * 100;
-  return Math.max(0, Math.min(100, pct));
-}
-
 // Throttle% for the boost MAP table, from ram[0x43] — the KLR firmware's
 // own throttle-cycling valve map input register (same source klr_tb.v's
 // -DBOOST model now reads directly, replacing the earlier tps_raw-based
@@ -779,6 +767,16 @@ function parseKLRLog(text) {
 }
 // ─────────────────────────────────────────────────────────────────
 const h2  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(2,'0') : '--';
+// DME throttle switch (ch6 -> iram[0x16]) as the firmware buckets it: table
+// 0x1124 sorts it into the 23h.0/.1 code. < 0x89 code 3 (fault: lambda off,
+// ISV fixed), 0x89-0xB7 code 2 (idle, sim 0x99), 0xB8-0xE6 code 1 (WOT, sim
+// 0xCC), >= 0xE7 code 0 (off-idle, sim 0xF2). Exact matches miss the
+// in-between values the full-load RC passes through (e.g. 0xCD).
+const tpsState = v => v == null ? null
+  : v < 0x89 ? {lbl:'FAULT',    code:3}
+  : v < 0xB8 ? {lbl:'IDLE',     code:2}
+  : v < 0xE7 ? {lbl:'WOT',      code:1}
+  :            {lbl:'OFF-IDLE', code:0};
 const h4  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(4,'0') : '----';
 const b8  = v => v !== undefined ? v.toString(2).padStart(8,'0') : '--------';
 const fuelMs = snap => {
@@ -1242,7 +1240,7 @@ export default function DMEDashboard() {
       }
     }
     const merged = [...byT.values()].sort((a,b) => a.t - b.t);
-    let lastCoolant = null, lastAir = null, lastAfm = null, lastTps = null, lastLmbdLn = null, lastLmbdNln = null,
+    let lastCoolant = null, lastAfm = null, lastTps = null, lastLmbdLn = null, lastLmbdNln = null,
         lastLmbdHi = null, lastLmbdLo = null;
     return merged.map(s => {
       const ir = s.iram ?? {};
@@ -1259,9 +1257,7 @@ export default function DMEDashboard() {
       // sawtooth/triangle-wave noise. Only fall back to the NTC-curve
       // estimate before any explicit reading has appeared yet in the log.
       const rawCoolant = s._prevCoolantC ?? ntcToC(ir[0x13]);
-      const rawAir     = s._prevAirC     ?? ntcToC(ir[0x12]);
       if (rawCoolant !== null && rawCoolant !== undefined) lastCoolant = rawCoolant;
-      if (rawAir     !== null && rawAir     !== undefined) lastAir     = rawAir;
       // AFM from STATUS shadow register (afm_raw_shadow) — always correct.
       // _prevAfm is set only from STATUS snapshots in parseLog.
       // AFM: prefer the STATUS shadow register (_prevAfm) when present, but
@@ -1605,7 +1601,6 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
-  const prpm    = iram[0x37];
   const rpm     = snapRpm(snap);
   // Carry forward last valid temperature — raw ADC (0x20) briefly appears
   // in iram[0x12/13] mid-scan before linearisation; ignore those readings.
@@ -1697,11 +1692,13 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
     { lbl:'Accel Enrich (4C)',val:h2(iram[0x4C]),                       unit:'hex',         col:'#ff9944', mmk:null, addr:0x4C      },
   ];
 
+  const tpsRaw = snap._prevTps ?? iram[0x16];
+  const tpsSt  = tpsState(tpsRaw);
   const metricsRow2 = [
     { lbl:'AFM RAW (10h)',    val:h2(snap._prevAfm ?? iram[0x10]),                       unit:'hex',         col:'#44cccc', mmk:'afm', addr:0x10     },
-    { lbl:'TPS',           val:h2(snap._prevTps ?? iram[0x16]),
-                           unit:(snap._prevTps??iram[0x16])===0x85?'CLOSED/IDLE':(snap._prevTps??iram[0x16])===0xCC?'WOT':(snap._prevTps??iram[0x16])===0xF2?'PARTIAL':'--',
-                           col:(snap._prevTps??iram[0x16])===0x85?'#44cccc':(snap._prevTps??iram[0x16])===0xCC?C.red:(snap._prevTps??iram[0x16])===0xF2?C.amber:C.textDim,
+    { lbl:'TPS',           val:tpsSt ? tpsSt.lbl : '--',
+                           unit:`0x${h2(tpsRaw)}  code ${tpsSt?.code ?? '-'}`,
+                           col:[C.amber, C.red, '#44cccc', C.red][tpsSt?.code] ?? C.textDim,
                            mmk:'tps', addr:0x16 },
     { lbl:'COOLANT',       val:coolC!==null?`${coolC}°C`:'--',       unit:`0x${h2(iram[0x13])}`, col:C.blue, mmk:'coolant', addr:0x13 },
     { lbl:'AIR TEMP',      val:airC !==null?`${airC}°C` :'--',       unit:`0x${h2(iram[0x12])}`, col:C.blue, mmk:'airtemp', addr:0x12 },
@@ -1775,7 +1772,7 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
 
   const regs = [
     ['PRPM raw (37)',      h2(iram[0x37]),  `${rpm} RPM`],
-    ['TPS (16)',          h2(iram[0x16]),  (iram[0x16]??0)>=0xD1?'IDLE/CLOSED':(iram[0x16]??0)>=0x77?'WOT':'PART LOAD'],
+    ['TPS (16)',          h2(iram[0x16]),  tpsState(iram[0x16])?.lbl ?? '--'],
     ['FQS/Alt (17)',      h2(iram[0x17]),  (iram[0x17]??0)>=0x80?'PREMIUM FUEL':'REGULAR FUEL'],
     ['Batt V (11)',       h2(iram[0x11]),  iram[0x11] != null ? `${(iram[0x11]*0.05263+2.132).toFixed(1)}V` : '--'],
     ['DataPlug (3F)',     h2(iram[0x3F]),  `${iram[0x3F]??'--'}d`],
@@ -1942,7 +1939,6 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
 // ─────────────────────────────────────────────────────────────────
 function PortsTab({ snap, logHasPorts, logLoaded }) {
   const portVals = { P1: snap?.p1, P2: snap?.p2, P3: snap?.p3 };
-  const hasLive  = snap?.p1 !== undefined;
   const portDescs = {
     P1: 'ANALOG I/O — injector, ignition, O2 sensor',
     P2: 'ADDRESS BUS / ADC CHANNEL SELECT',
@@ -2035,13 +2031,14 @@ function PortsTab({ snap, logHasPorts, logLoaded }) {
 const BIT_LABELS = {
   // iram[20h] = bits 00h..07h
   0x00:'',0x01:'',0x02:'',0x03:'',
-  0x05:'UseMap1140',   // 21h.5
   0x05:'ISVPWMOverflow', // 20h.5
   0x06:'',0x07:'',
   // iram[21h] = bits 08h..0Fh
   0x08:'EngineSync',   // 21h.0
   0x09:'Phase2Lambda', // 21h.1
-  0x0A:'',0x0B:'',0x0C:'',0x0D:'',0x0E:'',0x0F:'',
+  0x0A:'',0x0B:'',0x0C:'',
+  0x0D:'UseMap1140',   // 21h.5
+  0x0E:'',0x0F:'',
   // iram[22h] = bits 10h..17h
   0x10:'',0x11:'',0x12:'',0x13:'',0x14:'',0x15:'',0x16:'',0x17:'',
   // iram[23h] = bits 18h..1Fh
@@ -2173,7 +2170,7 @@ function IRAMTab({ iram, tooltip, setTooltip }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {entries.flatMap((entry, ei) => {
+                  {entries.flatMap(entry => {
                     const val    = iram[entry.a];
                     const hasVal = val !== undefined;
                     const col    = GROUPS[entry.g]?.color || C.textDim;
@@ -2574,9 +2571,6 @@ function DiagTab({ iram, snap }) {
   const lmbState  = (lmbOffset >> 6) & 0x03;
   const LMBD_STATES = ['Stoich / closed-loop centre', 'Lean correction active', 'Rich correction active', 'Max correction'];
 
-  // RPM decode
-  const rpm = prpm >= 3 ? Math.round(17640 / prpm) : 0;
-
   // Coolant decode (linearised → °C approx)
   const coolC = ntcLinToC(coolant);
 
@@ -2620,7 +2614,7 @@ function DiagTab({ iram, snap }) {
       raw: afmRaw, tx: afmRaw,
       decode: `0x${h2(afmRaw)} = ${afmRaw}d  |  prev: iram[0x53]=0x${h2(ir[0x53]??0)}  delta: ${afmRaw-(ir[0x53]??afmRaw)>=0?'+':''}${afmRaw-(ir[0x53]??afmRaw)}`,
       col: '#44cccc',
-      detail: `TPS: iram[0x16]=0x${h2(ir[0x16]??0)}  ${(ir[0x16]??0)>=0xD1?'CLOSED':(ir[0x16]??0)>=0x77?'WOT':'PART THROTTLE'}`,
+      detail: `TPS: iram[0x16]=0x${h2(ir[0x16]??0)}  ${tpsState(ir[0x16])?.lbl ?? '--'}`,
     },
     {
       p2: '0x1F', name: 'COOLANT TEMP', src: 'iram[0x13]  COOLANT',
@@ -3498,7 +3492,6 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
   const p1val = snap?.p1 ?? null;
   const p2val = snap?.p2 ?? null;
 
-  const hasLive    = p1val !== null || p2val !== null;
   const hasPartial = snap?.p1partial || snap?.p2partial;
   const portVals   = { P1: p1val, P2: p2val };
 
@@ -3650,7 +3643,6 @@ function KLRIRAMTab({ klrData, klrIdx }) {
 
   const hasHex    = Object.keys(ram).length > 0;
   const hasStatus = Object.keys(ramFromStatus).length > 0;
-  const hasData   = Object.keys(ramMerged).length > 0;
 
   const SUBTABS = [
     { key:'grid',      label:'RAM GRID' },
