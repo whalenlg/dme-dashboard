@@ -3279,6 +3279,19 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       note:  'Scaled throttle angle; the tooltip also gives the raw ADC reading (0x77≈idle, higher=more open; see BOOST CONTROL tab for %)',
       empty: tpsData.every(d => d.tps_deg == null && d.tps_raw == null),
     },
+    {
+      title: 'FULL LOAD STATE',
+      data:  ignOutData,
+      key:   'full_load',
+      col:   C.amber,
+      unit:  '',
+      dom:   [-0.1, 1.1],
+      ticks: [0, 1],
+      type:  'stepAfter',
+      note:  'KLR full-load output (P1.5), which reaches the DME throttle switch input (ch6)',
+      empty: !ignOutData.some(d => d.full_load != null),
+      exp:   exp.full_load,
+    },
   ];
 
   // Every chart on the page spans the same time range (first to last
@@ -3320,7 +3333,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                   <LineChart data={c.segments ? c.data : thin(c.data, c.lines ? c.lines.map(l => l.key) : c.key)} margin={{top:2,right:6,bottom:0,left:0}}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
                     <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
-                    <YAxis tick={ax} domain={c.dom} stroke={C.textDim}/>
+                    <YAxis tick={ax} domain={c.dom} ticks={c.ticks} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
                       : c.key === 'deg' && n !== 'Firmware Computed Retard' && item?.payload?.us != null
                       ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, c.lines ? n : 'retard']
@@ -3363,32 +3376,6 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
         ))}
       </div>
 
-      {/* FULL LOAD step chart */}
-      {ignOutData.some(d => d.full_load != null) && (
-        <div style={S.panel}>
-          <div style={S.panelTitle}>FULL LOAD STATE{exp.full_load.length > 0 && <ExpectKey/>}</div>
-          <ResponsiveContainer width="100%" height={120}>
-            <LineChart data={thin(ignOutData, 'full_load')} margin={{top:2,right:6,bottom:0,left:0}}>
-              <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-              <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
-              <YAxis tick={ax} domain={[-0.1,1.1]} stroke={C.textDim} ticks={[0,1]}/>
-              <Tooltip {...tt} content={exp.full_load.length ? p => <ExpectTooltip {...p} series={exp.full_load}
-                sim={[{ rows: ignOutData, key: 'full_load', name: 'FULL LOAD', color: C.amber }]}/> : undefined}/>
-              {currentT != null &&
-                <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
-              <Line type="stepAfter" dataKey="full_load" stroke={C.amber} dot={false}
-                    strokeWidth={1.5} connectNulls={false} name="FULL LOAD" isAnimationActive={false}/>
-              {exp.full_load.length > 0 &&
-                <Line type="stepAfter" data={thin(exp.full_load, 'v')} dataKey="v" name={EXP_NAME} stroke={EXP_COL}
-                      strokeOpacity={0.8} dot={false} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false}/>}
-            </LineChart>
-          </ResponsiveContainer>
-          <div style={{display:'flex', gap:'12px', marginTop:'3px', fontSize:'9px'}}>
-            <span style={{color:C.amber}}>▬ FULL LOAD (p1[5])</span>
-            {exp.full_load.length > 0 && <span style={{color:EXP_COL}}>┄ {EXP_NAME}</span>}
-          </div>
-        </div>
-      )}
     </div>
   );
 });
