@@ -2781,7 +2781,7 @@ function KLRTab({ klrData, currentT, boost }) {
           <div key={s.l} style={S.metric}
                title={s.addr != null ? `0x${s.addr.toString(16).toUpperCase().padStart(2,'0')} ${KLR_KNOWN[s.addr]?.n ?? ''} — ${KLR_KNOWN[s.addr]?.d ?? ''}` : undefined}>
             <div style={S.metricLbl}>{s.l}</div>
-            <div style={{...S.metricVal, color:s.col, fontSize:'12px', margin:'2px 0'}}>{s.v}</div>
+            <div style={{...S.metricVal, color:s.col, fontSize:'20px', margin:'4px 0'}}>{s.v}</div>
           </div>
         ))}
       </div>
