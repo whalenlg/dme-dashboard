@@ -2776,7 +2776,7 @@ function KLRTab({ klrData, currentT, boost }) {
   return (
     <div>
       {/* ── Signal metrics ─────────────────────────────────── */}
-      <div style={{display:'grid', gridTemplateColumns:'repeat(8,1fr)', gap:'5px', marginBottom:'8px'}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>
         {sig.map(s => (
           <div key={s.l} style={S.metric}
                title={s.addr != null ? `0x${s.addr.toString(16).toUpperCase().padStart(2,'0')} ${KLR_KNOWN[s.addr]?.n ?? ''} — ${KLR_KNOWN[s.addr]?.d ?? ''}` : undefined}>
@@ -2786,13 +2786,8 @@ function KLRTab({ klrData, currentT, boost }) {
         ))}
       </div>
 
-      {/* ── Boost control (was its own tab) ────────────────── */}
-      {boost && (
-        <div style={{marginBottom:'8px'}}>
-          <div style={{...S.panelTitle, marginBottom:'6px'}}>BOOST CONTROL</div>
-          {boost}
-        </div>
-      )}
+      {/* ── Boost control (was its own tab): its 4 cards make the 3rd row ── */}
+      {boost}
 
       <div style={{marginBottom:'8px'}}>
         {/* ── Last IGN event ─────────────────────────────── */}
