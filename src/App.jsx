@@ -1263,13 +1263,11 @@ export default function DMEDashboard() {
       // AFM: prefer the STATUS shadow register (_prevAfm) when present, but
       // fall back to the DS snapshot's iram[0x10] so the series still populates
       // on logs that have no STATUS lines (e.g. combined DME+KLR dash logs).
-      const afmPrev  = lastAfm;
       const afmSrc   = (s._prevAfm != null) ? s._prevAfm
                      : (ir[0x10]   != null) ? ir[0x10]
                      : null;
       if (afmSrc !== null) lastAfm = afmSrc;
       const afmNow   = lastAfm;
-      const afmDelta = (afmNow !== null && afmPrev !== null) ? afmNow - afmPrev : 0;
 
 
       return {
@@ -1293,7 +1291,6 @@ export default function DMEDashboard() {
                    ? +(ir[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
                    : null,
         afm:       afmNow,
-        afm_delta: afmDelta,
         tps:       (() => { const v = ir[0x16] != null && ir[0x16] >= 0x50 ? ir[0x16] : (s._prevTps ?? null); if (v !== null) lastTps = v; return lastTps; })(),
         // Ignition advance is only meaningful once the crank has synced (rpm valid) —
         // before that, ir[0x31] holds stale/uninitialized RAM and produces a spurious
@@ -2334,7 +2331,6 @@ const DME_CHARTS = [
   {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
   {title:'ENGINE SPEED (RPM)',     k:'rpm',     col:C.textBright,unit:'RPM',   dom:[0,'auto']},
   {title:'AFM RAW (10h)',          k:'afm',     col:'#44cccc', unit:'hex',     dom:[0,255],    cn:true},
-  {title:'AFM DELTA (snapshot)',   k:'afm_delta',col:'#ff9944', unit:'Δhex',   dom:['auto','auto'], cn:false},
   {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
   {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
   {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
