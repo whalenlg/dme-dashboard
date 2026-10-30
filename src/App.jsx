@@ -1336,7 +1336,6 @@ export default function DMEDashboard() {
       batt:    mm(s => s.iram?.[0x11]!=null ? s.iram[0x11]*0.05263+2.132 : null, v=>`${+v.toFixed(1)}V`),
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
-      wdog:    mm(s => s.iram?.[0x2A]??null,        v => h2(v)),
       load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
     };
   }, [data.snapshots, onOverview]);
@@ -1355,7 +1354,7 @@ export default function DMEDashboard() {
   // ...except the first rows after switching to a chart tab
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
-  const TABS = ['overview','timeline','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost'];
+  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','klr_boost','timeline'];
 
   return (
     <div style={S.root}>
@@ -1386,14 +1385,13 @@ export default function DMEDashboard() {
         </div>
       </div>
 
-      {/* ── TABS — two rows ─────────────────────────────────── */}
+      {/* ── TABS — three rows ────────────────────────────────── */}
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','timeline','ports','iram','charts','phase','diag'].map(t=>(
+          {['overview','ports','iram','charts','phase','diag'].map(t=>(
             <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
               {t==='overview'?'DME OVERVIEW':
-               t==='timeline'?'TIMELINE'   :
                t==='ports'   ?'DME PORTS'  :
                t==='iram'    ?'DME IRAM'   :
                t==='charts'  ?'DME CHARTS' :
@@ -1417,6 +1415,10 @@ export default function DMEDashboard() {
                t.toUpperCase()}
             </button>
           ))}
+        </div>
+        {/* Row 3 — DME + KLR together */}
+        <div style={S.tabRowKlr}>
+          <button style={S.tab(tab==='timeline')} onClick={()=>setTab('timeline')}>TIMELINE</button>
         </div>
       </div>
 
@@ -1705,7 +1707,6 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
   const metricsRow3 = [
     { lbl:'LOAD (49h)',    val:h2(iram[0x49]),                       unit:`map row ${iram[0x49]??'--'}`, col:'#88ccff', mmk:'load', addr:0x49 },
     { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv', addr:0x7F     },
-    { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog', addr:0x2A },
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
