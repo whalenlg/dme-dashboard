@@ -1336,7 +1336,6 @@ export default function DMEDashboard() {
       batt:    mm(s => s.iram?.[0x11]!=null ? s.iram[0x11]*0.05263+2.132 : null, v=>`${+v.toFixed(1)}V`),
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
-      wdog:    mm(s => s.iram?.[0x2A]??null,        v => h2(v)),
       load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
     };
   }, [data.snapshots, onOverview]);
@@ -1708,7 +1707,6 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
   const metricsRow3 = [
     { lbl:'LOAD (49h)',    val:h2(iram[0x49]),                       unit:`map row ${iram[0x49]??'--'}`, col:'#88ccff', mmk:'load', addr:0x49 },
     { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv', addr:0x7F     },
-    { lbl:'WATCHDOG',      val:h2(iram[0x2A]),                       unit:'hex',         col:(iram[0x2A]??255)<5?C.red:C.textBright, mmk:'wdog', addr:0x2A },
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
