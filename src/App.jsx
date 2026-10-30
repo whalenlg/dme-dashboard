@@ -2328,18 +2328,18 @@ function IRAMTooltip({ tip }) {
 // ─────────────────────────────────────────────────────────────────
 // ChartsTab charts (each also overlays rpm on the right axis)
 const DME_CHARTS = [
-  {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
   {title:'ENGINE SPEED (RPM)',     k:'rpm',     col:C.textBright,unit:'RPM',   dom:[0,'auto']},
+  {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
   {title:'AFM RAW (10h)',          k:'afm',     col:'#44cccc', unit:'hex',     dom:[0,255],    cn:true},
   {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
-  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
   {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
   {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
-  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'IGNITION ADVANCE (31h+57h)', k:'timingAdv',  col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
+  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'ADVANCE TARGET 32h − APPLIED (°)', k:'timingRetard', col:'#ff8800', unit:'°retard', dom:['auto','auto'], cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
-  {title:'LOAD INDEX (49h)',        k:'loadIdx',      col:'#88ccff', unit:'hex',      dom:[0,255],         cn:true},
 ];
 
 // Replay logs' expected (recorded) values, drawn dashed over the sim traces
