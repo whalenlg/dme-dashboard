@@ -3051,7 +3051,12 @@ function klrChartSeries(klrData, dmeSnaps) {
     })),
   ].sort((a,b) => a.t - b.t);
 
-  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData };
+  // Engine speed from the DME snapshots (the KLR doesn't log it)
+  const rpmData = (dmeSnaps ?? [])
+    .map(s => ({ t: s.t, rpm: snapRpm(s) }))
+    .filter(d => d.rpm != null);
+
+  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData, rpmData };
 }
 
 // Entries with t <= T (series are time-sorted); all of them when T is null
@@ -3095,6 +3100,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
   const ignPulseData  = upTo(all.ignPulseData, effectiveT);
   const statusData    = upTo(all.statusData, effectiveT);
   const boostData     = upTo(all.boostData, effectiveT);
+  const rpmData       = upTo(all.rpmData, effectiveT);
   const tpsData       = upTo(all.tpsData, effectiveT);
   const ignOutData    = upTo(all.ignOutData, effectiveT);
   const knockPulseEvents = upTo(all.knockPulseEvents, effectiveT);
@@ -3111,6 +3117,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     knock_cnt: expectSeries(expect, e => e.knock_cnt == null ? null : e.knock_cnt - knockCnt0, effectiveT),
     boost:     expectSeries(expect, e => e.map_psi == null ? null : +(e.map_psi - ATM_KPA * 0.145038).toFixed(1), effectiveT),
     full_load: expectSeries(expect, 'full_load', effectiveT),
+    rpm:       expectSeries(expect, 'rpm', effectiveT),
   };
 
   // Firing order 1st→cyl1, 2nd→cyl2, 3rd→cyl3, 4th→cyl4, 5th→cyl1, ...
@@ -3192,6 +3199,28 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     })));
 
   const charts = [
+    {
+      title: 'ENGINE SPEED (RPM)',
+      data:  rpmData,
+      key:   'rpm',
+      col:   C.textBright,
+      unit:  'RPM',
+      dom:   [0, 'auto'],
+      note:  'Engine speed from the DME snapshots',
+      empty: rpmData.length === 0,
+      exp:   exp.rpm,
+    },
+    {
+      title: 'BOOST (psi)',
+      data:  boostData,
+      key:   'boost_psi',
+      col:   '#88ccff',
+      unit:  'psi',
+      dom:   ['auto', 'auto'],
+      note:  'ram[0x52] — gauge boost pressure (0psi ≈ atmospheric, no boost)',
+      empty: boostData.length === 0,
+      exp:   exp.boost,
+    },
     ...sparkCharts,
     {
       title: 'IGN PULSE WIDTH (ms)',
@@ -3240,35 +3269,15 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       exp:   exp.knock_cnt,
     },
     {
-      title: 'TPS RAW (ADC)',
-      data:  tpsData,
-      key:   'tps_raw',
-      col:   '#ffcc44',
-      unit:  'hex',
-      dom:   [0, 255],
-      note:  'Raw throttle position ADC reading — increases as throttle opens (0x77≈idle, higher=more open; see BOOST CONTROL tab for %)',
-      empty: tpsData.every(d => d.tps_raw == null),
-    },
-    {
       title: 'TPS ANGLE (deg)',
       data:  tpsData,
       key:   'tps_deg',
       col:   '#ffaa22',
       unit:  '°',
       dom:   [0, 'auto'],
-      note:  'Scaled throttle angle',
-      empty: tpsData.every(d => d.tps_deg == null),
-    },
-    {
-      title: 'BOOST (psi)',
-      data:  boostData,
-      key:   'boost_psi',
-      col:   '#88ccff',
-      unit:  'psi',
-      dom:   ['auto', 'auto'],
-      note:  'ram[0x52] — gauge boost pressure (0psi ≈ atmospheric, no boost)',
-      empty: boostData.length === 0,
-      exp:   exp.boost,
+      tip:   (v, row) => [`${v}°  (raw 0x${row?.tps_raw != null ? h2(row.tps_raw) : '--'})`, 'TPS'],
+      note:  'Scaled throttle angle; the tooltip also gives the raw ADC reading (0x77≈idle, higher=more open; see BOOST CONTROL tab for %)',
+      empty: tpsData.every(d => d.tps_deg == null && d.tps_raw == null),
     },
   ];
 
@@ -3315,6 +3324,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
                       : c.key === 'deg' && n !== 'Firmware Computed Retard' && item?.payload?.us != null
                       ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, c.lines ? n : 'retard']
+                      : c.tip ? c.tip(v, item?.payload)
                       : c.lines ? [`${v}${c.unit}`, n] : [v, c.unit]}
                       content={c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
                         sim={[{ rows: c.data, key: c.key, color: c.col }]}/> : undefined}/>
