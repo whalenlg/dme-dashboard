@@ -647,7 +647,7 @@ const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
 const short = h => h ? h.slice(0, 12) : '--';
 
 function SnapshotPanel({ live, running }) {
-  const { connected, snapshots = [], snapCfg, loadedSnap, send, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
+  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState('');
   const [detail, setDetail] = useState(null);   // {id, data}
@@ -664,7 +664,8 @@ function SnapshotPanel({ live, running }) {
     const data = await snapshotDetail(id);
     if (data) setDetail({ id, data });
   };
-  const badge = r => ({ warn: C.red, manual: C.blue, upload: C.amber }[r] ?? C.textDim);
+  const badge = r => ({ warn: C.red, fail: C.red, manual: C.blue, upload: C.amber, test: '#cc88ff' }[r] ?? C.textDim);
+  const loadedTest = snapshots.find(s => s.id === loadedSnap && s.kind === 'test');
   return (
     <div style={{...panel,fontSize:'10px',padding:'5px 10px'}}>
       <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
@@ -688,8 +689,11 @@ function SnapshotPanel({ live, running }) {
                onChange={e => { const f = e.target.files[0]; e.target.value = ''; uploadSnapshot(f); setOpen(true); }} />
         <button style={btn(false)} disabled={!connected} onClick={() => pick.current.click()}
                 title="Add a snapshot saved earlier with ⬇ (.dmesnap)">UPLOAD .dmesnap</button>
-        {loadedSnap && <span style={{color:C.amber}} title={loadedSnap}>running from snapshot {loadedSnap}</span>}
+        {loadedSnap && !loadedTest && <span style={{color:C.amber}} title={loadedSnap}>running from snapshot {loadedSnap}</span>}
+        {loadedTest && <span style={{color:'#cc88ff'}} title={loadedSnap}>
+          regression test {loadedTest.test}: inputs follow its script (the controls do nothing) · RESTART returns to the live sim</span>}
       </div>
+      {snapBusy && <div style={{color:'#cc88ff',marginTop:'4px'}}>⏳ {snapBusy}</div>}
       {open && (
         <div style={{marginTop:'6px',maxHeight:'260px',overflowY:'auto'}}>
           {snapshots.length === 0 && <div style={{color:'#557755'}}>No snapshots yet. One is saved whenever the sim prints a warning, or press SAVE NOW.</div>}
@@ -703,18 +707,43 @@ function SnapshotPanel({ live, running }) {
                 <span style={{color:'#779977',whiteSpace:'nowrap'}} title={`DME ${s.roms?.dme?.name} sha256 ${s.roms?.dme?.sha256 ?? '?'}\nKLR ${s.roms?.klr?.name} sha256 ${s.roms?.klr?.sha256 ?? '?'}`}>
                   {s.roms?.dme?.name ?? '--'} · {s.roms?.klr?.name ?? '--'}
                 </span>
-                <button style={btn(false, C.amber)} disabled={!connected}
+                <button style={btn(false, C.amber)} disabled={!connected || !!snapBusy}
                         onClick={() => (!running || confirm('The simulation is running. Restart it from this snapshot?')) && loadSnapshot(s.id)}
-                        title="Restart the simulator from this snapshot: same model state, inputs, breakpoints and EPROM images">LOAD</button>
+                        title={s.kind === 'test'
+                          ? `Run regression test ${s.test} to this moment and pause there. The first time, it's built with the debugger first (a few minutes); running there takes as long as the sim needs to reach ${fmtMs(s.t_ns)} ms`
+                          : 'Restart the simulator from this snapshot: same model state, inputs, breakpoints and EPROM images'}>LOAD</button>
                 <button style={btn(detail?.id === s.id)} onClick={() => showDetail(s.id)} title="Inputs, ROM identity, registers">INFO</button>
                 <button style={btn(false)} onClick={() => downloadSnapshot(s.id)} title="Download as one .dmesnap file to keep or share">⬇</button>
                 <button style={btn(false, C.red)} onClick={() => confirm(`Delete snapshot ${s.id}?`) && deleteSnapshot(s.id)} title="Delete">✕</button>
               </div>
-              {detail?.id === s.id && <SnapshotDetail d={detail.data} />}
+              {detail?.id === s.id && (detail.data.kind === 'test' ? <TestSnapshotDetail d={detail.data} /> : <SnapshotDetail d={detail.data} />)}
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// A regression test's warning (test_snap.py): what LOAD will build and run
+function TestSnapshotDetail({ d }) {
+  const row = (k, v) => (
+    <div style={{display:'flex',gap:'8px',lineHeight:1.4}}>
+      <span style={{color:C.textDim,minWidth:'90px'}}>{k}</span>
+      <span style={{color:C.textBright,wordBreak:'break-all'}}>{v}</span>
+    </div>
+  );
+  return (
+    <div style={{padding:'4px 0 4px 56px',display:'flex',flexDirection:'column',gap:'2px'}}>
+      {row('test', `${d.test}  (${d.script ?? 'run_dashboard_tests.sh'})`)}
+      {row('recorded', `${d.created ?? '--'}  (${d.id})`)}
+      {row('trigger', d.trigger)}
+      {row('runs to', `${fmtMs(d.t_ns)} ms`)}
+      {row('defines', (d.defines ?? []).join(' '))}
+      {row('DME ROM', d.roms?.dme ?? '--')}
+      {row('KLR ROM', d.roms?.klr ?? '--')}
+      {row('log', d.log ?? '--')}
+      {row('build', d.built ? 'ready (obj/tests/' + d.test + ')' : 'not built yet: LOAD builds it first')}
     </div>
   );
 }
