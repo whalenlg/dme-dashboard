@@ -127,7 +127,7 @@ export function useLiveSim(url, onLogLines) {
         setSim(s => ({ ...s, tNs: +kv.t_ns, rate: +kv.rate }));
       } else if (kind === 'READY' || kind === 'INPUTS') {
         const kv = {};
-        for (const part of rest.trim().split(',')) { const [k, v] = part.split('='); if (k) kv[k] = v === 'auto' ? 'auto' : +v; }
+        for (const part of rest.trim().split(',')) { const [k, v] = part.split('='); if (k) kv[k] = v === 'auto' || v === 'script' ? v : +v; }
         setInputs(kv);
       } else if (kind === 'BP') {
         const kv = parseKV(rest);
@@ -248,6 +248,12 @@ export function useLiveSim(url, onLogLines) {
   }, [url]);
   const snapUrl = id => `/snapshots/${encodeURIComponent(id)}`;
   const loadSnapshot = useCallback(id => snapCall(`${snapUrl(id)}/load`, { method: 'POST' }, `Couldn't load snapshot ${id}`), [snapCall]);
+  // A regression test run to a chosen time (the bridge's test_snap.py add)
+  const addTestSnapshot = useCallback(async (test, ms, label) => {
+    const r = await snapCall('/snapshots/test', { method: 'POST', body: JSON.stringify({ test, ms, label }) }, `Couldn't add ${test} at ${ms} ms`);
+    if (r) setError(null);
+    return !!r;
+  }, [snapCall]);
   const deleteSnapshot = useCallback(id => snapCall(snapUrl(id), { method: 'DELETE' }, `Couldn't delete snapshot ${id}`), [snapCall]);
   const snapshotDetail = useCallback(async id => {
     const r = await snapCall(snapUrl(id), {}, `Couldn't read snapshot ${id}`);
@@ -270,5 +276,5 @@ export function useLiveSim(url, onLogLines) {
   }, [snapCall]);
 
   return { connected, sim, inputs, bps, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom,
-           snapshots, snapCfg, loadedSnap, snapBusy, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
+           snapshots, snapCfg, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }

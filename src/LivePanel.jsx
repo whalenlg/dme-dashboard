@@ -249,6 +249,8 @@ function EngineRow({ series }) {
 // ── Inputs ──────────────────────────────────────────────────────
 function InputsPanel({ inputs, send }) {
   const [draft, setDraft] = useState({});
+  // a regression-test run reports its inputs as 'script' (or the value now)
+  const scripted = Object.values(inputs).includes('script');
   const commit = (k, v) => {
     setDraft(d => { const n = { ...d }; delete n[k]; return n; });
     send(`set ${k} ${v}`);
@@ -256,17 +258,21 @@ function InputsPanel({ inputs, send }) {
   return (
     <div style={panel}>
       <div style={title}>SIM INPUTS</div>
+      {scripted && <div style={{color:'#cc88ff',fontSize:'9px',marginBottom:'6px'}}>
+        regression test: its script drives these, so they show what the engine reads now and can't be changed</div>}
       {INPUTS.map(d => {
         const cur = inputs[d.k];
         const isAuto = cur === 'auto';
-        const val = draft[d.k] ?? (isAuto ? null : cur);
+        const isScript = cur === 'script';
+        const val = draft[d.k] ?? (isAuto || isScript ? null : cur);
         const max = d.max ?? 255, min = d.min ?? 0;
         return (
           <div key={d.k} style={{marginBottom:'6px'}}>
             <div style={{display:'flex',gap:'6px',alignItems:'center',fontSize:'10px'}}>
               <span style={{color:C.textDim,width:'118px'}}>{d.label}</span>
-              <span style={{color:isAuto ? C.blue : C.textBright,minWidth:'70px'}}>
-                {isAuto && draft[d.k] == null ? 'AUTO'
+              <span style={{color:isAuto ? C.blue : scripted ? '#cc88ff' : C.textBright,minWidth:'70px'}}>
+                {isScript ? 'SCRIPT'
+                  : isAuto && draft[d.k] == null ? 'AUTO'
                   : val == null ? '--'
                   : d.dec ? val
                   : d.positions ? (d.positions.includes(val)
@@ -274,7 +280,7 @@ function InputsPanel({ inputs, send }) {
                       : `0x${hx(val)}`)
                   : `0x${hx(val)} (${val})${d.volts ? ` ${(val * 0.05263 + 2.132).toFixed(1)}V` : ''}`}
               </span>
-              {d.auto && (
+              {d.auto && !scripted && (
                 <label style={{color:C.blue,cursor:'pointer',marginLeft:'auto'}}>
                   <input type="checkbox" checked={isAuto}
                          onChange={e => send(`set ${d.k} ${e.target.checked ? 'auto' : (val ?? d.pin)}`)} /> auto
@@ -289,7 +295,7 @@ function InputsPanel({ inputs, send }) {
                                  border:`1px solid ${cur === raw ? C.textBright : C.border}`,
                                  background: cur === raw ? '#0d4a0d' : C.panelBg2,
                                  color: cur === raw ? C.textBright : C.textDim}}>
-                    <input type="radio" name={d.k} checked={cur === raw} disabled={cur == null}
+                    <input type="radio" name={d.k} checked={cur === raw} disabled={cur == null || scripted}
                            onChange={() => commit(d.k, raw)} style={{display:'none'}} />
                     {d.names ? d.names[i] : i}
                   </label>
@@ -297,13 +303,13 @@ function InputsPanel({ inputs, send }) {
               </div>
             ) : (
             <input type="range" min={min} max={max} step={d.step ?? 1} value={val ?? min}
-                   disabled={cur == null}
+                   disabled={cur == null || scripted}
                    onChange={e => setDraft(dr => ({ ...dr, [d.k]: +e.target.value }))}
                    onPointerUp={e => commit(d.k, e.target.value)}
                    onKeyUp={e => commit(d.k, e.target.value)}
-                   style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto ? 0.5 : 1}} />
+                   style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto || scripted ? 0.5 : 1}} />
             )}
-            {d.hint && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
+            {d.hint && !scripted && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
           </div>
         );
       })}
@@ -647,9 +653,16 @@ const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
 const short = h => h ? h.slice(0, 12) : '--';
 
 function SnapshotPanel({ live, running }) {
-  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
+  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState('');
+  const [testName, setTestName] = useState('');
+  const [testMs, setTestMs] = useState('');
+  const addTest = async () => {
+    if (testName.trim() && testMs.trim() && await addTestSnapshot(testName.trim(), +testMs, label)) {
+      setTestMs(''); setLabel(''); setOpen(true);
+    }
+  };
   const [detail, setDetail] = useState(null);   // {id, data}
   const pick = useRef(null);
   // A new snapshot opens the list so it's noticed
@@ -693,6 +706,18 @@ function SnapshotPanel({ live, running }) {
         {loadedTest && <span style={{color:'#cc88ff'}} title={loadedSnap}>
           regression test {loadedTest.test}: inputs follow its script (the controls do nothing) · RESTART returns to the live sim</span>}
       </div>
+      {open && (
+        <div style={{display:'flex',gap:'8px',alignItems:'center',marginTop:'6px',flexWrap:'wrap'}}
+             title="A regression test (a name from run_dashboard_tests.sh) at a time you pick: it appears as a TEST row, and LOAD builds the test and runs it there">
+          <span style={{color:'#cc88ff'}}>TEST</span>
+          <input value={testName} onChange={e => setTestName(e.target.value)} placeholder="test, e.g. cl_ramp_to_3000" style={{...inp,width:'220px'}} />
+          <span style={{color:C.textDim}}>at</span>
+          <input value={testMs} onChange={e => setTestMs(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="ms" style={{...inp,width:'70px'}}
+                 onKeyDown={e => { if (e.key === 'Enter') addTest(); }} />
+          <span style={{color:C.textDim}}>ms</span>
+          <button style={btn(false, '#cc88ff')} disabled={!connected || !testName.trim() || !testMs.trim()} onClick={addTest}>+ ADD</button>
+        </div>
+      )}
       {snapBusy && <div style={{color:'#cc88ff',marginTop:'4px'}}>⏳ {snapBusy}</div>}
       {open && (
         <div style={{marginTop:'6px',maxHeight:'260px',overflowY:'auto'}}>
