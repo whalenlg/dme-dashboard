@@ -60,6 +60,7 @@ export function useLiveSim(url, onLogLines) {
   const [snapshots, setSnapshots] = useState([]);   // bridge's list, newest first
   const [snapCfg, setSnapCfg] = useState({ auto: true, brk: false, taken: 0, max: 25 });
   const [loadedSnap, setLoadedSnap] = useState(null);   // id of the snapshot this run started from
+  const [snapBusy, setSnapBusy] = useState(null);       // a regression test being built for LOAD: its latest progress line
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -164,6 +165,10 @@ export function useLiveSim(url, onLogLines) {
         // saved (sim) -> ready (bridge, files complete); loaded; deleted
         const what = rest.split(' ')[0];
         if (what === 'ready' || what === 'deleted') fetchSnaps();
+        if (what === 'building') {
+          const msg = rest.replace(/^building id=\S+\s*/, '');
+          setSnapBusy(/ (done|failed)$/.test(msg) ? null : msg);
+        }
         if (what === 'loaded') setLoadedSnap(rest.match(/dir=(.*)$/)?.[1]?.split(/[\\/]/).filter(Boolean).pop() ?? null);
       } else if (kind === 'SNAPCFG') {
         const kv = parseKV(rest);
@@ -265,5 +270,5 @@ export function useLiveSim(url, onLogLines) {
   }, [snapCall]);
 
   return { connected, sim, inputs, bps, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom,
-           snapshots, snapCfg, loadedSnap, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
+           snapshots, snapCfg, loadedSnap, snapBusy, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
