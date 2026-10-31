@@ -249,6 +249,8 @@ function EngineRow({ series }) {
 // ── Inputs ──────────────────────────────────────────────────────
 function InputsPanel({ inputs, send }) {
   const [draft, setDraft] = useState({});
+  // a regression-test run reports its inputs as 'script' (or the value now)
+  const scripted = Object.values(inputs).includes('script');
   const commit = (k, v) => {
     setDraft(d => { const n = { ...d }; delete n[k]; return n; });
     send(`set ${k} ${v}`);
@@ -256,17 +258,21 @@ function InputsPanel({ inputs, send }) {
   return (
     <div style={panel}>
       <div style={title}>SIM INPUTS</div>
+      {scripted && <div style={{color:'#cc88ff',fontSize:'9px',marginBottom:'6px'}}>
+        regression test: its script drives these, so they show what the engine reads now and can't be changed</div>}
       {INPUTS.map(d => {
         const cur = inputs[d.k];
         const isAuto = cur === 'auto';
-        const val = draft[d.k] ?? (isAuto ? null : cur);
+        const isScript = cur === 'script';
+        const val = draft[d.k] ?? (isAuto || isScript ? null : cur);
         const max = d.max ?? 255, min = d.min ?? 0;
         return (
           <div key={d.k} style={{marginBottom:'6px'}}>
             <div style={{display:'flex',gap:'6px',alignItems:'center',fontSize:'10px'}}>
               <span style={{color:C.textDim,width:'118px'}}>{d.label}</span>
-              <span style={{color:isAuto ? C.blue : C.textBright,minWidth:'70px'}}>
-                {isAuto && draft[d.k] == null ? 'AUTO'
+              <span style={{color:isAuto ? C.blue : scripted ? '#cc88ff' : C.textBright,minWidth:'70px'}}>
+                {isScript ? 'SCRIPT'
+                  : isAuto && draft[d.k] == null ? 'AUTO'
                   : val == null ? '--'
                   : d.dec ? val
                   : d.positions ? (d.positions.includes(val)
@@ -274,7 +280,7 @@ function InputsPanel({ inputs, send }) {
                       : `0x${hx(val)}`)
                   : `0x${hx(val)} (${val})${d.volts ? ` ${(val * 0.05263 + 2.132).toFixed(1)}V` : ''}`}
               </span>
-              {d.auto && (
+              {d.auto && !scripted && (
                 <label style={{color:C.blue,cursor:'pointer',marginLeft:'auto'}}>
                   <input type="checkbox" checked={isAuto}
                          onChange={e => send(`set ${d.k} ${e.target.checked ? 'auto' : (val ?? d.pin)}`)} /> auto
@@ -289,7 +295,7 @@ function InputsPanel({ inputs, send }) {
                                  border:`1px solid ${cur === raw ? C.textBright : C.border}`,
                                  background: cur === raw ? '#0d4a0d' : C.panelBg2,
                                  color: cur === raw ? C.textBright : C.textDim}}>
-                    <input type="radio" name={d.k} checked={cur === raw} disabled={cur == null}
+                    <input type="radio" name={d.k} checked={cur === raw} disabled={cur == null || scripted}
                            onChange={() => commit(d.k, raw)} style={{display:'none'}} />
                     {d.names ? d.names[i] : i}
                   </label>
@@ -297,13 +303,13 @@ function InputsPanel({ inputs, send }) {
               </div>
             ) : (
             <input type="range" min={min} max={max} step={d.step ?? 1} value={val ?? min}
-                   disabled={cur == null}
+                   disabled={cur == null || scripted}
                    onChange={e => setDraft(dr => ({ ...dr, [d.k]: +e.target.value }))}
                    onPointerUp={e => commit(d.k, e.target.value)}
                    onKeyUp={e => commit(d.k, e.target.value)}
-                   style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto ? 0.5 : 1}} />
+                   style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto || scripted ? 0.5 : 1}} />
             )}
-            {d.hint && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
+            {d.hint && !scripted && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
           </div>
         );
       })}

@@ -127,7 +127,7 @@ export function useLiveSim(url, onLogLines) {
         setSim(s => ({ ...s, tNs: +kv.t_ns, rate: +kv.rate }));
       } else if (kind === 'READY' || kind === 'INPUTS') {
         const kv = {};
-        for (const part of rest.trim().split(',')) { const [k, v] = part.split('='); if (k) kv[k] = v === 'auto' ? 'auto' : +v; }
+        for (const part of rest.trim().split(',')) { const [k, v] = part.split('='); if (k) kv[k] = v === 'auto' || v === 'script' ? v : +v; }
         setInputs(kv);
       } else if (kind === 'BP') {
         const kv = parseKV(rest);
