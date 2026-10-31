@@ -88,6 +88,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
       <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom} />
+      <SnapshotPanel live={live} running={running} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -100,9 +101,16 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
           {live.warnings.length > 0 && (
             <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto'}}>
               <div style={{...title,color:C.red,marginBottom:'3px'}}>SIM WARNINGS ({live.warnings.length})</div>
-              {live.warnings.slice().reverse().map((w, i) => (
-                <div key={i} style={{color: i === 0 ? C.red : '#aa6666',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{w}</div>
-              ))}
+              {live.warnings.slice().reverse().map((w, i) => {
+                const snap = live.snapshots?.find(s => s.trigger === w);
+                return (
+                  <div key={i} style={{color: i === 0 ? C.red : '#aa6666',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                    {snap && <span title={`Snapshot ${snap.id} saved at this warning: click to load it`} style={{cursor:'pointer',marginRight:'4px'}}
+                                   onClick={() => confirm(`Restart the simulator from snapshot ${snap.id}?`) && live.loadSnapshot(snap.id)}>📷</span>}
+                    {w}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -627,6 +635,120 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Snapshots: the whole model, saved on each warning (or SAVE NOW) ──
+// The sim saves every variable of the model plus inputs, breakpoints,
+// trace and both EPROM images; LOAD restarts it from that moment (the
+// charts get the run up to it), so debugging carries on from there.
+const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
+const short = h => h ? h.slice(0, 12) : '--';
+
+function SnapshotPanel({ live, running }) {
+  const { connected, snapshots = [], snapCfg, loadedSnap, send, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState('');
+  const [detail, setDetail] = useState(null);   // {id, data}
+  const pick = useRef(null);
+  // A new snapshot opens the list so it's noticed
+  const newest = snapshots[0]?.id;
+  const [seen, setSeen] = useState(newest);
+  if (newest !== seen) {
+    setSeen(newest);
+    if (newest) setOpen(true);
+  }
+  const showDetail = async id => {
+    if (detail?.id === id) { setDetail(null); return; }
+    const data = await snapshotDetail(id);
+    if (data) setDetail({ id, data });
+  };
+  const badge = r => ({ warn: C.red, manual: C.blue, upload: C.amber }[r] ?? C.textDim);
+  return (
+    <div style={{...panel,fontSize:'10px',padding:'5px 10px'}}>
+      <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{...title,marginBottom:0,cursor:'pointer'}} onClick={() => setOpen(o => !o)}>
+          {open ? '▾' : '▸'} SNAPSHOTS ({snapshots.length})
+        </span>
+        <input value={label} onChange={e => setLabel(e.target.value)} placeholder="label" style={{...inp,width:'110px'}}
+               onKeyDown={e => { if (e.key === 'Enter') { send(`save ${label}`); setLabel(''); } }} />
+        <button style={btn(false)} disabled={!connected} onClick={() => { send(`save ${label}`); setLabel(''); }}
+                title="Save the whole simulator state now (taken at the next quiescent moment, within a few ns)">📷 SAVE NOW</button>
+        <label style={{color:C.textDim,cursor:'pointer'}} title="Save a snapshot when the sim prints a warning or error ([WARN], WARNING, ERROR): at most once a sim second per kind of warning">
+          <input type="checkbox" checked={!!snapCfg?.auto} disabled={!connected}
+                 onChange={e => send(`autosnap ${e.target.checked ? 'on' : 'off'}`)} /> AUTO ON WARNING
+          {snapCfg?.auto && <span style={{color:'#779977'}}> ({snapCfg.taken}/{snapCfg.max} this run)</span>}
+        </label>
+        <label style={{color:C.textDim,cursor:'pointer'}} title="Also pause the simulation after a warning's snapshot">
+          <input type="checkbox" checked={!!snapCfg?.brk} disabled={!connected}
+                 onChange={e => send(`breakonwarn ${e.target.checked ? 'on' : 'off'}`)} /> PAUSE ON WARNING
+        </label>
+        <input ref={pick} type="file" accept=".dmesnap" style={{display:'none'}}
+               onChange={e => { const f = e.target.files[0]; e.target.value = ''; uploadSnapshot(f); setOpen(true); }} />
+        <button style={btn(false)} disabled={!connected} onClick={() => pick.current.click()}
+                title="Add a snapshot saved earlier with ⬇ (.dmesnap)">UPLOAD .dmesnap</button>
+        {loadedSnap && <span style={{color:C.amber}} title={loadedSnap}>running from snapshot {loadedSnap}</span>}
+      </div>
+      {open && (
+        <div style={{marginTop:'6px',maxHeight:'260px',overflowY:'auto'}}>
+          {snapshots.length === 0 && <div style={{color:'#557755'}}>No snapshots yet. One is saved whenever the sim prints a warning, or press SAVE NOW.</div>}
+          {snapshots.map(s => (
+            <div key={s.id} style={{borderTop:`1px solid ${C.border}`,padding:'3px 0'}}>
+              <div style={{display:'flex',gap:'8px',alignItems:'center',minWidth:0}}>
+                <span style={{color:badge(s.reason),minWidth:'48px'}}>{(s.reason ?? '').toUpperCase()}</span>
+                <span style={{color:C.textBright,minWidth:'92px'}}>t={fmtMs(s.t_ns)} ms</span>
+                <span style={{color:C.textDim,flex:1,minWidth:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
+                      title={s.trigger || s.label || s.id}>{s.trigger || s.label || s.id}</span>
+                <span style={{color:'#779977',whiteSpace:'nowrap'}} title={`DME ${s.roms?.dme?.name} sha256 ${s.roms?.dme?.sha256 ?? '?'}\nKLR ${s.roms?.klr?.name} sha256 ${s.roms?.klr?.sha256 ?? '?'}`}>
+                  {s.roms?.dme?.name ?? '--'} · {s.roms?.klr?.name ?? '--'}
+                </span>
+                <button style={btn(false, C.amber)} disabled={!connected}
+                        onClick={() => (!running || confirm('The simulation is running. Restart it from this snapshot?')) && loadSnapshot(s.id)}
+                        title="Restart the simulator from this snapshot: same model state, inputs, breakpoints and EPROM images">LOAD</button>
+                <button style={btn(detail?.id === s.id)} onClick={() => showDetail(s.id)} title="Inputs, ROM identity, registers">INFO</button>
+                <button style={btn(false)} onClick={() => downloadSnapshot(s.id)} title="Download as one .dmesnap file to keep or share">⬇</button>
+                <button style={btn(false, C.red)} onClick={() => confirm(`Delete snapshot ${s.id}?`) && deleteSnapshot(s.id)} title="Delete">✕</button>
+              </div>
+              {detail?.id === s.id && <SnapshotDetail d={detail.data} />}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SnapshotDetail({ d }) {
+  const kv = obj => Object.entries(obj ?? {}).map(([k, v]) => `${k}=${v}`).join('  ');
+  // The debugger's own register lines, as the testbench printed them at that moment
+  const regsLine = cpu => {
+    const l = d.lines?.find(x => x.startsWith(`SIM: [REGS] ${cpu} `));
+    return l ? l.slice(`SIM: [REGS] ${cpu} `.length).replace(/t_ms=\S+\s*/, '').trim().split(/\s+/).join('  ') : '--';
+  };
+  const row = (k, v) => (
+    <div style={{display:'flex',gap:'8px',lineHeight:1.4}}>
+      <span style={{color:C.textDim,minWidth:'90px'}}>{k}</span>
+      <span style={{color:C.textBright,wordBreak:'break-all'}}>{v}</span>
+    </div>
+  );
+  const rom = cpu => {
+    const m = d.manifest?.roms?.[cpu], r = d.roms?.[cpu];
+    return `${m?.name ?? r?.path ?? '--'}  sha256 ${short(m?.sha256)}…  crc32 ${r?.crc32 ?? '--'}  ${m?.workbook ? `listing ${m.workbook}` : 'no workbook'}`;
+  };
+  return (
+    <div style={{padding:'4px 0 4px 56px',display:'flex',flexDirection:'column',gap:'2px'}}>
+      {row('saved', `${d.created ?? '--'}  (${d.id})`)}
+      {d.trigger && row('trigger', d.trigger)}
+      {row('PC', `DME ${d.pc?.dme ?? '--'}  KLR ${d.pc?.klr ?? '--'}`)}
+      {row('inputs', kv(d.inputs))}
+      {row('DME ROM', rom('dme'))}
+      {row('KLR ROM', rom('klr'))}
+      {row('DME regs', regsLine('dme'))}
+      {row('KLR regs', regsLine('klr'))}
+      {row('breakpoints', `DME ${d.breakpoints?.dme?.join(',') || '-'}  KLR ${d.breakpoints?.klr?.join(',') || '-'}`)}
+      {d.afm_pending?.length > 0 && row('AFM pending', d.afm_pending.map(a => `${a.value} at ${fmtMs(a.t_ns)} ms`).join(', '))}
+      {row('model', `${d.model?.fields ?? '?'} variables, ${d.model?.bytes ?? '?'} bytes, ${d.manifest?.history_lines ?? 0} lines of run history`)}
     </div>
   );
 }

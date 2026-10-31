@@ -12,6 +12,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    GET  <url>/asm/dme|klr  disassembly listing; fetched again on
 //                        SIM: [ASM] dme|klr <workbook> match=content|name|none,
 //                        which the bridge sends when that CPU's image changes
+//    GET  <url>/snapshots, /snapshots/<id>[/bundle], POST /snapshots/<id>/load,
+//    POST /snapshots/upload, DELETE /snapshots/<id>: snapshots of the whole
+//                        model, saved by the sim on each warning (or "save");
+//                        the list is fetched again on SIM: [SNAP] ready|deleted
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
 //  DME:/KLR: lines are handed to onLogLines in batches, for the
@@ -53,6 +57,9 @@ export function useLiveSim(url, onLogLines) {
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
   const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match} each listing came from
+  const [snapshots, setSnapshots] = useState([]);   // bridge's list, newest first
+  const [snapCfg, setSnapCfg] = useState({ auto: true, brk: false, taken: 0, max: 25 });
+  const [loadedSnap, setLoadedSnap] = useState(null);   // id of the snapshot this run started from
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -77,7 +84,9 @@ export function useLiveSim(url, onLogLines) {
     let lastLog = 0;
     // Rare control replies (breakpoints, run state, errors) skip the queue
     // so clicks feel immediate; queued lines are handled first to keep order.
-    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM)\]/;
+    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM|SNAP|SNAPCFG)\]/;
+    const fetchSnaps = () => fetch(`${url}/snapshots`).then(r => r.ok ? r.json() : null).catch(() => null)
+      .then(list => { if (list) setSnapshots(list); });
     es.onmessage = ev => {
       if (!URGENT.test(ev.data)) { queue.push(ev.data); return; }
       for (const line of queue.splice(0)) handle(line);
@@ -102,6 +111,7 @@ export function useLiveSim(url, onLogLines) {
         }
         ignDirty.current = true;
       } else if (kind === 'RESTART') {
+        setLoadedSnap(null);
         lines.current = []; reset.current = true; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
         setWarnings([]);
@@ -150,6 +160,14 @@ export function useLiveSim(url, onLogLines) {
         setAsmSrc(s => ({ ...s, [cpu]: { workbook, match } }));
         fetch(`${url}/asm/${cpu}`).then(r => r.ok ? r.json() : null).catch(() => null)
           .then(rows => { if (rows) setAsm(a => ({ ...a, [cpu]: rows })); });
+      } else if (kind === 'SNAP') {
+        // saved (sim) -> ready (bridge, files complete); loaded; deleted
+        const what = rest.split(' ')[0];
+        if (what === 'ready' || what === 'deleted') fetchSnaps();
+        if (what === 'loaded') setLoadedSnap(rest.match(/dir=(.*)$/)?.[1]?.split(/[\\/]/).filter(Boolean).pop() ?? null);
+      } else if (kind === 'SNAPCFG') {
+        const kv = parseKV(rest);
+        setSnapCfg({ auto: kv.auto === 'on', brk: kv.break === 'on', taken: +kv.taken, max: +kv.max });
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
@@ -181,6 +199,7 @@ export function useLiveSim(url, onLogLines) {
 
     Promise.all(['dme', 'klr'].map(c => fetch(`${url}/asm/${c}`).then(r => r.ok ? r.json() : []).catch(() => [])))
       .then(([dme, klr]) => setAsm({ dme, klr }));
+    fetchSnaps();
 
     return () => { es.close(); clearInterval(flush); setConnected(false); };
   }, [url]);
@@ -210,5 +229,41 @@ export function useLiveSim(url, onLogLines) {
     }
   }, [url]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom };
+  // ── Snapshots ──
+  const snapCall = useCallback(async (path, opts, what) => {
+    if (!url) return null;
+    try {
+      const r = await fetch(`${url}${path}`, opts);
+      if (!r.ok) { setError(`${what}: ${(await r.text()) || `HTTP ${r.status}`}`); return null; }
+      return r;
+    } catch {
+      setError(`Can't reach the simulator bridge at ${url}`);
+      return null;
+    }
+  }, [url]);
+  const snapUrl = id => `/snapshots/${encodeURIComponent(id)}`;
+  const loadSnapshot = useCallback(id => snapCall(`${snapUrl(id)}/load`, { method: 'POST' }, `Couldn't load snapshot ${id}`), [snapCall]);
+  const deleteSnapshot = useCallback(id => snapCall(snapUrl(id), { method: 'DELETE' }, `Couldn't delete snapshot ${id}`), [snapCall]);
+  const snapshotDetail = useCallback(async id => {
+    const r = await snapCall(snapUrl(id), {}, `Couldn't read snapshot ${id}`);
+    return r ? r.json() : null;
+  }, [snapCall]);
+  // Save the one-file bundle (.dmesnap) through the browser
+  const downloadSnapshot = useCallback(async id => {
+    const r = await snapCall(`${snapUrl(id)}/bundle`, {}, `Couldn't download snapshot ${id}`);
+    if (!r) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await r.blob());
+    a.download = `${id}.dmesnap`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, [snapCall]);
+  const uploadSnapshot = useCallback(async file => {
+    if (!file) return;
+    const r = await snapCall('/snapshots/upload', { method: 'POST', body: file }, `Couldn't upload ${file.name}`);
+    if (r) setError(null);
+  }, [snapCall]);
+
+  return { connected, sim, inputs, bps, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom,
+           snapshots, snapCfg, loadedSnap, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
