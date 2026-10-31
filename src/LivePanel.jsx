@@ -647,9 +647,16 @@ const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
 const short = h => h ? h.slice(0, 12) : '--';
 
 function SnapshotPanel({ live, running }) {
-  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
+  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState('');
+  const [testName, setTestName] = useState('');
+  const [testMs, setTestMs] = useState('');
+  const addTest = async () => {
+    if (testName.trim() && testMs.trim() && await addTestSnapshot(testName.trim(), +testMs, label)) {
+      setTestMs(''); setLabel(''); setOpen(true);
+    }
+  };
   const [detail, setDetail] = useState(null);   // {id, data}
   const pick = useRef(null);
   // A new snapshot opens the list so it's noticed
@@ -693,6 +700,18 @@ function SnapshotPanel({ live, running }) {
         {loadedTest && <span style={{color:'#cc88ff'}} title={loadedSnap}>
           regression test {loadedTest.test}: inputs follow its script (the controls do nothing) · RESTART returns to the live sim</span>}
       </div>
+      {open && (
+        <div style={{display:'flex',gap:'8px',alignItems:'center',marginTop:'6px',flexWrap:'wrap'}}
+             title="A regression test (a name from run_dashboard_tests.sh) at a time you pick: it appears as a TEST row, and LOAD builds the test and runs it there">
+          <span style={{color:'#cc88ff'}}>TEST</span>
+          <input value={testName} onChange={e => setTestName(e.target.value)} placeholder="test, e.g. cl_ramp_to_3000" style={{...inp,width:'220px'}} />
+          <span style={{color:C.textDim}}>at</span>
+          <input value={testMs} onChange={e => setTestMs(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="ms" style={{...inp,width:'70px'}}
+                 onKeyDown={e => { if (e.key === 'Enter') addTest(); }} />
+          <span style={{color:C.textDim}}>ms</span>
+          <button style={btn(false, '#cc88ff')} disabled={!connected || !testName.trim() || !testMs.trim()} onClick={addTest}>+ ADD</button>
+        </div>
+      )}
       {snapBusy && <div style={{color:'#cc88ff',marginTop:'4px'}}>⏳ {snapBusy}</div>}
       {open && (
         <div style={{marginTop:'6px',maxHeight:'260px',overflowY:'auto'}}>
