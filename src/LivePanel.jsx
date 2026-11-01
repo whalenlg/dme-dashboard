@@ -45,6 +45,19 @@ const btn = (on, col = C.textBright) => ({
 const inp = { background:'#030803', border:`1px solid ${C.border}`, color:C.textBright, fontFamily:'inherit',
               fontSize:'10px', padding:'3px 5px' };
 const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadius:'2px', padding:'8px 10px' };
+// Which code debuggers (DME / KLR) are open; remembered across reloads
+const PANES_KEY = 'dme-dashboard.live.codePanes';
+function loadPanes() {
+  try {
+    const v = JSON.parse(localStorage.getItem(PANES_KEY));
+    if (v && typeof v === 'object') return { dme: v.dme !== false, klr: v.klr !== false };
+  } catch { /* storage unavailable */ }
+  return { dme: true, klr: true };
+}
+function savePanes(p) {
+  try { localStorage.setItem(PANES_KEY, JSON.stringify(p)); } catch { /* storage unavailable */ }
+}
+
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
 export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
@@ -52,6 +65,9 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
+  const [panes, setPanes] = useState(loadPanes);
+  const showPane = (cpu, on) => setPanes(p => { const n = { ...p, [cpu]: on }; savePanes(n); return n; });
+  const anyPane = panes.dme || panes.klr;
   const stopKey = running ? null : `${sim.tNs}:${sim.reason}`;
 
   // Ask for the instruction trace whenever the sim stops
@@ -82,6 +98,10 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
                onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
         <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}>RUN TO</button>
         <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
+        <button style={btn(panes.dme)} onClick={() => showPane('dme', !panes.dme)}
+                title={panes.dme ? 'Close the DME code debugger' : 'Open the DME code debugger'}>DME CODE</button>
+        <button style={btn(panes.klr)} onClick={() => showPane('klr', !panes.klr)}
+                title={panes.klr ? 'Close the KLR code debugger' : 'Open the KLR code debugger'}>KLR CODE</button>
         <label style={{color:C.textDim,fontSize:'10px',cursor:'pointer'}}>
           <input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> FOLLOW
         </label>
@@ -94,7 +114,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
       </div>}
 
       {/* Sim inputs | live engine stats | DME + KLR debuggers */}
-      <div className="live-cols">
+      <div className={anyPane ? 'live-cols' : 'live-cols no-code'}>
         <InputsPanel inputs={inputs} send={send} />
         <div style={{display:'flex',flexDirection:'column',gap:'8px',minWidth:0}}>
           <EngineRow series={series} />
@@ -114,12 +134,15 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
             </div>
           )}
         </div>
-        {/* Side by side when there is room for full operands, else stacked */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(520px,100%),1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
+        {/* Side by side when there is room for full operands, else stacked.
+            A closed pane stays mounted (hidden) so it keeps its breakpoint list and GO pin. */}
+        <div style={{display: anyPane ? 'grid' : 'none',gridTemplateColumns:'repeat(auto-fit,minmax(min(520px,100%),1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
           <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme} traceCtx={traceCtx?.dme}
-                    ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send} />
+                    ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send}
+                    hidden={!panes.dme} onClose={() => showPane('dme', false)} />
           <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr} traceCtx={traceCtx?.klr}
-                    ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send} />
+                    ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send}
+                    hidden={!panes.klr} onClose={() => showPane('klr', false)} />
         </div>
       </div>
     </div>
@@ -407,7 +430,7 @@ function StackView({ cpu, ram, regs, listing, running, onJump }) {
   );
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, running, stopKey, send }) {
+function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
@@ -469,7 +492,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
   };
 
   return (
-    <div style={{...panel,display:'flex',flexDirection:'column',minWidth:0}}>
+    <div style={{...panel,display: hidden ? 'none' : 'flex',flexDirection:'column',minWidth:0}}>
       <div style={{...title,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
         <span>{name}</span>
         <span style={{color:C.textBright,letterSpacing:'0.05em'}}>PC {hx(pc, cpu === 'dme' ? 4 : 3)}</span>
@@ -479,6 +502,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
                  placeholder="label or hex" style={{...inp,width:'90px'}} />
           <button style={btn(false)} onClick={doJump}>GO</button>
           {center != null && <button style={btn(false)} onClick={() => { setCenter(null); setJump(''); }}>PC</button>}
+          <button style={btn(false)} onClick={onClose}
+                  title={`Close the ${cpu.toUpperCase()} debugger (reopen it with ${cpu.toUpperCase()} CODE above)`}>✕</button>
         </span>
       </div>
       {allBps.length > 0 && (
