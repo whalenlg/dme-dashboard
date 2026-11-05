@@ -48,11 +48,11 @@ const MAX_IGN_POINTS = 1500;
 const DEFAULT_PICKS = [{src:'dme', addr:0x7D}, {src:'klr', addr:0x33}];
 const PICKS_KEY = 'dme951.timeline.picks';
 
-// Same conversion as prpmToRpm in App.jsx: prpm=21 @ 840 RPM → K=17640,
+// prpmToRpm (37h × 40 rpm),
 // valid for prpm >= 3 once EngineSync (iram[21h].0) has been seen. The bit
 // is latched here because real logs show it clearing again after sync
 // (21h goes 0x13 → 0x70 at ~1.6 s in warm_idle_5s) while prpm stays valid.
-const fwRpm = (ir, synced) => synced && ir[0x37] >= 3 ? Math.round(17640 / ir[0x37]) : null;
+const fwRpm = (ir, synced) => synced ? prpmToRpm(ir[0x37]) : null;
 const hx = v => v.toString(16).toUpperCase().padStart(2, '0');
 const pickKey = p => `${p.src}_${hx(p.addr)}${p.bit != null ? `_${p.bit}` : ''}`;
 // Disassembly name for a byte (or a DME bit-addressable bit), '' if none
@@ -82,7 +82,7 @@ const UNITS = {
   degC:  { label: '°C (NTC)',        conv: v => ntcLinToC(v), unit: '°C',
            note: 'raw × 165/255 − 40: the DME NTC linearised scale (iram 12h/13h after linearisation)' },
   rpm:   { label: 'RPM (prpm)',      conv: v => prpmToRpm(v), unit: 'rpm',
-           note: '17640 / raw: the DME period byte prpm (iram 37h); blank below 3' },
+           note: 'raw × 40: DME engine speed prpm (iram 37h), in units of 40 rpm; blank below 3' },
 };
 // Unit a newly added pick starts with, by what the byte is known to hold
 const defaultUnit = (src, addr) =>
