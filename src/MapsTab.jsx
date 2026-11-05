@@ -160,21 +160,26 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
   );
 });
 
-// The graph of one map or table, from the bridge's map_graphs.py output for
-// the DME image the sim has loaded. Polls while the bridge is drawing.
-function RomGraph({ def, bridge, onClose }) {
+// The graph of one map or table, from the bridge's map_graphs.py output.
+// logRom: the DME image a loaded log names ({ file, sha }, from its
+// DME: [ROM] line): its graphs are asked for by hash. false: a log that
+// doesn't name one; null: live, where the sim's loaded image is the one.
+// Either way without a hash the bridge's loaded image is drawn.
+// Polls while the bridge is drawing.
+function RomGraph({ def, bridge, logRom, onClose }) {
   const [info, setInfo] = useState(null);     // { status, sha, rom, error, maps, tables } or { unreachable }
   const [img, setImg] = useState(null);       // object URL
   const [imgErr, setImgErr] = useState(null);
 
   useEffect(() => {
     let stop = false, timer = null;
-    const poll = () => fetch(`${bridge}/maps/dme`).then(r => r.json())
+    const q = /^[0-9a-f]{16}$/.test(logRom?.sha ?? '') ? `?sha=${logRom.sha}` : '';
+    const poll = () => fetch(`${bridge}/maps/dme${q}`).then(r => r.json())
       .then(j => { if (stop) return; setInfo(j); if (j.status === 'generating' || j.status === 'none') timer = setTimeout(poll, 2000); })
       .catch(() => { if (!stop) setInfo({ unreachable: true }); });
     poll();
     return () => { stop = true; clearTimeout(timer); };
-  }, [bridge]);
+  }, [bridge, logRom?.sha]);
 
   const entry = info?.status === 'ready'
     ? (def.id[0] === 'M' ? info.maps?.[def.id.slice(1)] : info.tables?.[def.id.slice(1).padStart(4, '0')])
@@ -202,6 +207,9 @@ function RomGraph({ def, bridge, onClose }) {
   else if (info.unreachable) body = note(<>Can't reach the simulator bridge at {bridge}.<br />
     The graphs are drawn on your machine from the loaded ROM: start it with
     <code style={{color:C.blue}}> node dme_klr/live/bridge.mjs</code> (needs python3 with matplotlib).</>);
+  else if (info.status === 'unknown') body = note(<>This log ran on {logRom?.file} (sha {info.sha}), and the bridge
+    has no image with that content: it isn't in bin_images/dme or among the uploaded ROMs on this machine.<br />
+    Copy the image into bin_images/dme, or load it with LIVE → LOAD .mem, and open the graph again.</>);
   else if (info.status === 'none') body = note('The bridge has no DME image loaded yet. Waiting for the simulator…');
   else if (info.status === 'generating') body = note(`Drawing the graphs for ${info.rom} (once per ROM image, about 20 s)…`);
   else if (info.status === 'error') body = note(<>map_graphs.py failed for {info.rom}:<br />
@@ -210,6 +218,13 @@ function RomGraph({ def, bridge, onClose }) {
   else if (imgErr) body = note(`Couldn't load the graph: ${imgErr}`);
   else if (!img) body = note('loading…');
   else body = <img src={img} alt={`${def.title} graph`} style={{maxWidth:'100%',maxHeight:'calc(100vh - 140px)',display:'block',margin:'0 auto',background:'#fff'}} />;
+
+  // Graphs that may not be the log's ROM: say so above them
+  const caution = info?.status === 'ready' && logRom !== null && !(logRom?.sha && logRom.sha === info.sha)
+    ? (logRom === false
+        ? "This log doesn't say which ROM it ran on (it's from before the run scripts recorded it), so this is the bridge's loaded ROM."
+        : `The log's ROM ${logRom.file} couldn't be identified when it ran (sha=${logRom.sha}), so this is the bridge's loaded ROM.`)
+    : null;
 
   return (
     <div onClick={onClose} style={{position:'fixed',inset:0,background:'#000c',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:'16px'}}>
@@ -223,6 +238,7 @@ function RomGraph({ def, bridge, onClose }) {
           <button onClick={onClose} style={{marginLeft:'auto',background:C.panelBg2,border:`1px solid ${C.border}`,color:C.textDim,
                                             fontFamily:'inherit',fontSize:'11px',cursor:'pointer',padding:'2px 10px'}}>CLOSE ✕</button>
         </div>
+        {caution && <div style={{color:C.amber,fontSize:'10px',margin:'-2px 0 6px'}}>⚠ {caution}</div>}
         {body}
       </div>
     </div>
@@ -231,7 +247,7 @@ function RomGraph({ def, bridge, onClose }) {
 
 // lookups: id -> [{ t, v, in }] (dmeLogParser); ver bumps when any grows
 // bridge: the simulator bridge's URL, where the ROM graphs come from
-const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge }) {
+const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge, logRom }) {
   const [open, setOpen] = useState(null);   // def whose ROM graph is shown
   const [filter, setFilter] = useState('');
   const [showMaps, setShowMaps] = useState(true);
@@ -310,7 +326,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
 
   return (
     <div style={{userSelect:'none',textAlign:'left'}}>
-      {open && <RomGraph def={open} bridge={bridge} onClose={() => setOpen(null)} />}
+      {open && <RomGraph def={open} bridge={bridge} logRom={logRom} onClose={() => setOpen(null)} />}
       <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap'}}>
         <ZoomBar zoom={zoom} range={range} full={full} btn={btn} color={C.textBright} dim={C.textDim} hint={false} />
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="filter: number, name, purpose"
