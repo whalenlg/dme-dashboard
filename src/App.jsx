@@ -340,6 +340,9 @@ function dmeLogParser(max = {}) {
   // memos can key on it without copying every series on each live tick
   const lookups = {};
   let lookupsVer = 0;
+  // The KLR's lookups (KLR: [LKUP], same format, T<addr> ids), for KLR MAPS
+  const klrLookups = {};
+  let klrLookupsVer = 0;
   // rom: { dme, klr: { file, sha } } from the DME:/KLR: [ROM] lines the run
   // scripts put at the top of a dash.log (rom_stamp.py); null in older logs
   let rom = null;
@@ -400,6 +403,15 @@ function dmeLogParser(max = {}) {
             lookupsVer++;
           }
         }
+        else if (t.startsWith('KLR: [LKUP]')) {
+          const l = parseLookupLine(t);
+          if (l) {
+            const arr = (klrLookups[l.id] ??= []);
+            arr.push(l.p);
+            trimFront(arr, max.lookups);
+            klrLookupsVer++;
+          }
+        }
       }
       const n = trimFront(snapshots, max.snapshots);
       if (n || trimFront(phases, max.phases)) out = null;
@@ -409,7 +421,7 @@ function dmeLogParser(max = {}) {
     // same arrays otherwise. dropped: snapshots trimmed since the last call.
     result() {
       out ??= { snapshots: snapshots.slice(), phases: phases.slice(), expect: expect.slice() };
-      const r = { ...out, lookups, lookupsVer, rom, dropped };
+      const r = { ...out, lookups, lookupsVer, klrLookups, klrLookupsVer, rom, dropped };
       dropped = 0;
       return r;
     },
@@ -419,8 +431,8 @@ function dmeLogParser(max = {}) {
 function parseLog(text) {
   const p = dmeLogParser();
   p.push(text.split('\n'));
-  const { snapshots, phases, expect, lookups, lookupsVer, rom } = p.result();
-  return { snapshots, phases, expect, lookups, lookupsVer, rom };
+  const { snapshots, phases, expect, lookups, lookupsVer, klrLookups, klrLookupsVer, rom } = p.result();
+  return { snapshots, phases, expect, lookups, lookupsVer, klrLookups, klrLookupsVer, rom };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -846,6 +858,7 @@ export default function DMEDashboard() {
   // The RPM-axis chart tabs' zoom ([rpm0, rpm1]), apart from the time zoom
   const [rpmZoom, setRpmZoom] = useState(null);
   const [rpmMapZoom, setRpmMapZoom] = useState(null);   // DME RPM MAPS: rpm range
+  const [klrRpmMapZoom, setKlrRpmMapZoom] = useState(null);   // KLR RPM MAPS: rpm range
   const followRef = useRef(follow);
   useEffect(() => { followRef.current = follow; }, [follow]);
   const liveRef = useRef(liveUrl);
@@ -864,8 +877,8 @@ export default function DMEDashboard() {
     // A transition: React renders the new data in short slices that the
     // browser can interrupt, instead of one long frame per update
     startTransition(() => {
-      if (fresh) { setZoom(null); setRpmZoom(null); }
-      setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases && d.lookupsVer === dme.lookupsVer ? d : dme);
+      if (fresh) { setZoom(null); setRpmZoom(null); setRpmMapZoom(null); setKlrRpmMapZoom(null); }
+      setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases && d.lookupsVer === dme.lookupsVer && d.klrLookupsVer === dme.klrLookupsVer ? d : dme);
       setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status && k.sparks === klr.sparks ? k : klr);
       // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
       if (followRef.current) {
@@ -1053,7 +1066,7 @@ export default function DMEDashboard() {
   // Only the chart tabs read these, and on long runs they cost a pass
   // over every snapshot per update, so they are skipped on other tabs
   // maps: no chart rows of its own, but this throttles its live feed too
-  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline' || tab === 'maps' || tab === 'rpm_maps';
+  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline' || tab === 'maps' || tab === 'rpm_maps' || tab === 'klr_maps' || tab === 'klr_rpm_maps';
   const chartData = useMemo(() => {
     if (!needCharts) return NO_ROWS;
     // Merge DS + STATUS snapshots at same timestamp.
@@ -1205,9 +1218,13 @@ export default function DMEDashboard() {
   const throttled = useThrottled(feedNow, liveUrl ? LIVE_CHART_MS : 0);
   // ...except the first rows after switching to a chart tab
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
+  // KLR RPM MAPS: the DME's engine speed over time (the KLR logs none in rpm)
+  const dmeRpmRows = useMemo(() => tab !== 'klr_rpm_maps' ? null : (feed.data.snapshots ?? [])
+    .map(s => ({ t: s.t, rpm: snapRpm(s) })).filter(d => d.rpm != null), [tab, feed.data.snapshots]);
 
+  // (KLR MAPS keep the DME scrubber: their cursor and click-to-seek follow the DME snapshots)
   const KLR_TABS = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'];
-  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','timeline','maps','rpm_maps'];
+  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','klr_maps','klr_rpm_maps','timeline','maps','rpm_maps'];
 
   return (
     <div style={S.root}>
@@ -1264,8 +1281,9 @@ export default function DMEDashboard() {
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'].map(t=>(
-            <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}>
+          {['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','klr_maps','klr_rpm_maps'].map(t=>(
+            <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}
+              title={t==='klr_maps' ? 'KLR map and table lookup results over time' : t==='klr_rpm_maps' ? 'KLR maps and tables against the engine speed' : undefined}>
               {t==='klr'       ?'KLR OVERVIEW':
                t==='klr_ports' ?'KLR PORTS'   :
                t==='klr_iram'  ?'KLR IRAM'    :
@@ -1273,6 +1291,8 @@ export default function DMEDashboard() {
                t==='klr_rpm_charts'?'KLR RPM CHARTS':
                t==='klr_phase' ?'KLR PHASE'   :
                t==='klr_diag'  ?'KLR DIAG'    :
+               t==='klr_maps'  ?'KLR MAPS'    :
+               t==='klr_rpm_maps'?'KLR RPM MAPS':
                t.toUpperCase()}
             </button>
           ))}
@@ -1309,6 +1329,12 @@ export default function DMEDashboard() {
           {tab==='rpm_maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} byRpm
               range={rpmMapZoom} setRange={setRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
               logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
+          {tab==='klr_maps' && <MapsTab cpu="klr" lookups={feed.data.klrLookups} ver={feed.data.klrLookupsVer} onSeek={seekTo}
+              range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+              logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
+          {tab==='klr_rpm_maps' && <MapsTab cpu="klr" lookups={feed.data.klrLookups} ver={feed.data.klrLookupsVer} byRpm
+              rpmRows={dmeRpmRows} range={klrRpmMapZoom} setRange={setKlrRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+              logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
         </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
