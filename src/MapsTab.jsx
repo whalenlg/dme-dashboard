@@ -36,24 +36,56 @@ const iramName = a => {
 };
 const inLabel = k => k === 'in' ? 'index' : `${hx(k)}h${iramName(k) ? ` ${iramName(k)}` : ''}`;
 
-// Every chart the tab can show, in workbook order, then anything else the
-// log has (maps and tables that aren't on the two sheets)
+// A map's input iram addresses, from the workbook's Axes column ("37h, 49h")
+const parseAxes = s => (s ?? '').split(',').map(a => parseInt(a, 16)).filter(a => !Number.isNaN(a));
+const RPM = 0x37;
+
+// Maps sorted by their inputs: rpm (37h) first, then the other inputs from
+// most to least used; within a group 2D before 3D, then by map number
+function sortByInputs(maps) {
+  const uses = new Map();
+  for (const d of maps) for (const a of d.axes) uses.set(a, (uses.get(a) ?? 0) + 1);
+  const rank = a => a === RPM ? -1e9 : -(uses.get(a) ?? 0) * 256 + a;   // ties: lower address first
+  const key = d => d.axes.length ? d.axes.map(rank) : [Infinity];
+  return [...maps].sort((x, y) => {
+    const kx = key(x), ky = key(y);
+    for (let i = 0; i < Math.min(kx.length, ky.length); i++) if (kx[i] !== ky[i]) return kx[i] - ky[i];
+    return kx.length - ky.length || +x.id.slice(1) - +y.id.slice(1);
+  });
+}
+
+// Every chart the tab can show: the numbered maps sorted by input, the
+// tables in workbook order, then anything else the log has (maps and tables
+// that aren't on the two sheets)
 function allDefs(lookups) {
+  const maps = sortByInputs(NUMBERED_MAPS.map(m => {
+    const axes = parseAxes(m.axes);
+    return { id: `M${m.n}`, kind: 'map', title: `MAP ${m.n}`, name: m.name, axes, dim: axes.length > 1 ? 3 : 2,
+      purpose: m.purpose, detail: `R2=${m.r2} · ${m.addr} · axes ${m.axes}`, covered: m.covered };
+  }));
   const defs = [
-    ...NUMBERED_MAPS.map(m => ({ id: `M${m.n}`, kind: 'map', title: `MAP ${m.n}`, name: m.name,
-      purpose: m.purpose, detail: `R2=${m.r2} · ${m.addr} · axes ${m.axes}`, covered: m.covered })),
+    ...maps,
     ...DIRECT_TABLES.map(t => ({ id: `T${t.addr}`, kind: 'table', title: `${t.addr}h`, name: t.name,
       purpose: t.purpose, detail: `table at ${t.addr}h`, covered: t.covered })),
   ];
   const known = new Set(defs.map(d => d.id));
   const extra = Object.keys(lookups ?? {}).filter(id => !known.has(id)).sort((a, b) =>
     a[0] !== b[0] ? (a[0] === 'M' ? -1 : 1) : parseInt(a.slice(1), a[0] === 'M' ? 10 : 16) - parseInt(b.slice(1), a[0] === 'M' ? 10 : 16));
-  for (const id of extra) defs.push(id[0] === 'M'
-    ? { id, kind: 'other', title: `MAP ${id.slice(1)}`, name: '(not on the Numbered Maps sheet)', purpose: '',
-        detail: `R2=${hx(+id.slice(1))}h` }
-    : { id, kind: 'other', title: `${id.slice(1)}h`, name: '(not on the Directly Addressed Tables sheet)', purpose: '',
+  const others = [];
+  for (const id of extra) {
+    if (id[0] === 'M') {
+      // Inputs as the log shows them (the axis addresses of the last lookup)
+      const arr = lookups[id];
+      const axes = (arr[arr.length - 1]?.in ?? []).map(([k]) => k).filter(k => k !== 'in');
+      others.push({ id, kind: 'other', title: `MAP ${id.slice(1)}`, name: '(not on the Numbered Maps sheet)', purpose: '',
+        axes, dim: axes.length ? (axes.length > 1 ? 3 : 2) : null, detail: `R2=${hx(+id.slice(1))}h` });
+    } else {
+      others.push({ id, kind: 'other', title: `${id.slice(1)}h`, name: '(not on the Directly Addressed Tables sheet)', purpose: '',
         detail: `table at ${id.slice(1)}h` });
-  return defs;
+    }
+  }
+  const otherMaps = sortByInputs(others.filter(d => d.id[0] === 'M'));
+  return [...defs, ...otherMaps, ...others.filter(d => d.id[0] !== 'M')];
 }
 
 function TipBox({ active, payload, label }) {
@@ -85,6 +117,9 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
           <span style={{color:C.textBright,fontSize:'11px',letterSpacing:'0.1em'}}>{def.title}</span>
           <span style={{color:C.blue,fontSize:'10px'}}>{def.name}</span>
         </span>
+        {def.dim && <span title={def.dim === 3 ? 'two inputs: bilinear over a grid' : 'one input: linear between breakpoints'}
+              style={{color:def.dim === 3 ? C.amber : C.textDim,border:`1px solid ${def.dim === 3 ? C.amber : C.border}`,
+                      fontSize:'9px',padding:'0 4px',borderRadius:'2px',letterSpacing:'0.05em'}}>{def.dim}D MAP</span>}
         <span style={{marginLeft:'auto',color:C.amber,fontSize:'10px'}}>
           {last ? `0x${hx(last.v)} (${last.v})` : ''}
         </span>
@@ -237,7 +272,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
   );
 
   const q = filter.trim().toLowerCase();
-  const match = d => !q || [d.title, d.name, d.purpose, d.detail, d.covered, d.id].some(s => s?.toLowerCase().includes(q));
+  const match = d => !q || [d.title, d.name, d.purpose, d.detail, d.covered, d.id, d.dim && `${d.dim}D`].some(s => s?.toLowerCase().includes(q));
   const visible = kind => defs.filter(d => d.kind === kind && match(d) && (!usedOnly || series[d.id].n > 0));
 
   const panel = {background:C.panelBg,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 10px',marginBottom:'8px'};
@@ -283,7 +318,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
           click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · click to move scrubber · hover for the inputs
         </span>
       </div>
-      {showMaps && section('map', 'NUMBERED MAPS', 'map_lookup result (A on return), axes from the map header')}
+      {showMaps && section('map', 'NUMBERED MAPS', 'map_lookup result (A on return), sorted by input: rpm first, then the most used inputs')}
       {showTables && section('table', 'DIRECTLY ADDRESSED TABLES', 'byte read from the table; 1140h/1150h share one read (1150h = index 10h and up)')}
       {showOther && section('other', 'OTHER MAPS AND TABLES IN THIS LOG', 'looked up by the firmware but not on either sheet')}
     </div>
