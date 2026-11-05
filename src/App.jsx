@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition, useContext } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine, DefaultTooltipContent
@@ -806,6 +806,8 @@ export default function DMEDashboard() {
   const [follow, setFollow] = useState(true);
   // Time-axis zoom shared by DME CHARTS, KLR CHARTS and TIMELINE ([t0, t1] or null = all)
   const [zoom, setZoom] = useState(null);
+  // The RPM-axis chart tabs' zoom ([rpm0, rpm1]), apart from the time zoom
+  const [rpmZoom, setRpmZoom] = useState(null);
   const followRef = useRef(follow);
   useEffect(() => { followRef.current = follow; }, [follow]);
   const liveRef = useRef(liveUrl);
@@ -824,7 +826,7 @@ export default function DMEDashboard() {
     // A transition: React renders the new data in short slices that the
     // browser can interrupt, instead of one long frame per update
     startTransition(() => {
-      if (fresh) setZoom(null);
+      if (fresh) { setZoom(null); setRpmZoom(null); }
       setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases ? d : dme);
       setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status && k.sparks === klr.sparks ? k : klr);
       // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
@@ -935,6 +937,7 @@ export default function DMEDashboard() {
         setData(dme);
         setKlrData(klr);
         setZoom(null);
+        setRpmZoom(null);
         setIdx(0);
         setKlrIdx(0);
         setPlaying(false);
@@ -953,6 +956,7 @@ export default function DMEDashboard() {
     setData(dme);
     setKlrData(klr);
     setZoom(null);
+    setRpmZoom(null);
     setIdx(0);
     setKlrIdx(0);
     setPlaying(false);
@@ -1010,7 +1014,7 @@ export default function DMEDashboard() {
 
   // Only the chart tabs read these, and on long runs they cost a pass
   // over every snapshot per update, so they are skipped on other tabs
-  const needCharts = tab === 'charts' || tab === 'timeline';
+  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline';
   const chartData = useMemo(() => {
     if (!needCharts) return NO_ROWS;
     // Merge DS + STATUS snapshots at same timestamp.
@@ -1163,7 +1167,8 @@ export default function DMEDashboard() {
   // ...except the first rows after switching to a chart tab
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
-  const TABS = ['overview','ports','iram','charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag','timeline'];
+  const KLR_TABS = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'];
+  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','timeline'];
 
   return (
     <div style={S.root}>
@@ -1198,12 +1203,13 @@ export default function DMEDashboard() {
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','ports','iram','charts','phase','diag'].map(t=>(
+          {['overview','ports','iram','charts','rpm_charts','phase','diag'].map(t=>(
             <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
               {t==='overview'?'DME OVERVIEW':
                t==='ports'   ?'DME PORTS'  :
                t==='iram'    ?'DME IRAM'   :
                t==='charts'  ?'DME CHARTS' :
+               t==='rpm_charts'?'DME RPM CHARTS':
                t==='phase'   ?'DME PHASE'  :
                t==='diag'    ?'DME DIAG'   :
                t.toUpperCase()}
@@ -1212,12 +1218,13 @@ export default function DMEDashboard() {
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].map(t=>(
+          {['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'].map(t=>(
             <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}>
               {t==='klr'       ?'KLR OVERVIEW':
                t==='klr_ports' ?'KLR PORTS'   :
                t==='klr_iram'  ?'KLR IRAM'    :
                t==='klr_charts'?'KLR CHARTS'  :
+               t==='klr_rpm_charts'?'KLR RPM CHARTS':
                t==='klr_phase' ?'KLR PHASE'   :
                t==='klr_diag'  ?'KLR DIAG'    :
                t.toUpperCase()}
@@ -1245,6 +1252,8 @@ export default function DMEDashboard() {
         <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
           {tab==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
               onSeek={seekTo} range={zoom} setRange={setZoom} />}
+          {tab==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
+              xRpm range={rpmZoom} setRange={setRpmZoom} />}
           {tab==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
               dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
               range={zoom} setRange={setZoom} />}
@@ -1260,12 +1269,15 @@ export default function DMEDashboard() {
         {tab==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
             range={zoom} setRange={setZoom}
             currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
+        {tab==='klr_rpm_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
+            xRpm range={rpmZoom} setRange={setRpmZoom}
+            currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
         {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
         {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
       </div>
 
       {/* ── TIME SCRUBBER + PLAYBACK ────────────────────────── */}
-      {data.snapshots.length>0 && !['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
+      {data.snapshots.length>0 && !KLR_TABS.includes(tab) && (
         <div style={S.scrubber}>
           {/* Play / Pause */}
           <button onClick={()=>setPlaying(p=>!p)}
@@ -1319,7 +1331,7 @@ export default function DMEDashboard() {
       )}
 
       {/* ── KLR PLAYBACK SCRUBBER — KLR tabs only ──────────── */}
-      {klrData.phases?.length > 0 && ['klr','klr_ports','klr_iram','klr_charts','klr_phase','klr_diag'].includes(tab) && (
+      {klrData.phases?.length > 0 && KLR_TABS.includes(tab) && (
         <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
           <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
           <button onClick={()=>setKlrPlaying(p=>!p)}
@@ -2116,6 +2128,7 @@ const DME_CHARTS = [
   {title:'ADVANCE TARGET 32h − APPLIED (°)', k:'timingRetard', col:'#ff8800', unit:'°retard', dom:['auto','auto'], cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
 ];
+const DME_RPM_CHARTS = DME_CHARTS.filter(c => c.k !== 'rpm');
 
 // Replay logs' expected (recorded) values, drawn dashed over the sim traces
 const EXP_COL = '#e8e8e8';
@@ -2131,7 +2144,7 @@ function expectSeries(expect, f, T = null) {
   for (const e of expect) {
     if (T != null && e.t > T) break;
     const v = get(e);
-    if (v != null && !Number.isNaN(v)) rows.push({ t: e.t, v });
+    if (v != null && !Number.isNaN(v)) rows.push({ t: e.t, v, rpm: e.rpm ?? null });
   }
   return rows;
 }
@@ -2145,6 +2158,47 @@ function rowAt(series, t) {
   while (lo < hi) { const mid = (lo + hi) >> 1; if (series[mid].t <= t) lo = mid + 1; else hi = mid; }
   const row = series[lo - 1];
   return row && t - row.t <= EXP_HOLD_MS ? row : null;
+}
+
+// ── RPM-axis charts (DME RPM CHARTS, KLR RPM CHARTS) ──
+// The rows that have an engine speed, sorted by it (ties stay in time order)
+const byRpm = rows => (rows ?? []).filter(r => r.rpm > 0).sort((a, b) => a.rpm - b.rpm);
+
+// Each row of a time-sorted series with the engine speed at its time: its
+// own rpm if it has one, else the latest rpmRows entry at or before it
+// (none past a gap of EXP_HOLD_MS)
+function withRpm(rows, rpmRows) {
+  let j = -1;
+  return rows.map(r => {
+    while (j + 1 < rpmRows.length && rpmRows[j + 1].t <= r.t) j++;
+    if (r.rpm != null) return r;
+    const rpm = j >= 0 && r.t - rpmRows[j].t <= EXP_HOLD_MS ? rpmRows[j].rpm : null;
+    return { ...r, rpm };
+  });
+}
+
+// [lo, hi] rpm over several rpm-sorted series, or null with none
+function rpmSpan(lists) {
+  let lo = Infinity, hi = -Infinity;
+  for (const rows of lists)
+    if (rows?.length) { lo = Math.min(lo, rows[0].rpm); hi = Math.max(hi, rows[rows.length - 1].rpm); }
+  return hi > lo ? [lo, hi] : null;
+}
+
+// RPM charts are scatter plots: each sample a dot, no line through them
+const rpmDot = col => ({ r: 1.5, fill: col, stroke: 'none' });
+
+// The expected line's tooltip entry is picked by index, not by rpm, so the
+// RPM charts leave it out (the dots still show the logged values)
+const RpmTooltip = props =>
+  <DefaultTooltipContent {...props} payload={(props.payload ?? []).filter(p => p.name !== EXP_NAME)}/>;
+
+// The playback cursor on an RPM chart: a line at the engine speed at the
+// cursor time (rows: time-sorted, with rpm)
+function RpmCursorLine({ rows, t, ...props }) {
+  const ctxT = useContext(CursorContext);
+  const r = rowAt(rows, t ?? ctxT);
+  return r?.rpm > 0 ? <ReferenceLine x={r.rpm} {...props}/> : null;
 }
 
 // Tooltip content: the logged value at the hovered time next to the sim's.
@@ -2176,20 +2230,29 @@ const ExpectKey = () => (
 // Memoized: live mode re-renders the page on every sim tick, and the charts
 // only need redrawing when their data changes (the cursor is a CursorLine)
 // range/setRange: the zoom shared with the other chart tabs; onSeek: a click
-const ChartsTab = memo(function ChartsTab({ chartData, expect, onSeek, range, setRange }) {
-  const tMin = chartData[0]?.t ?? 0, tMax = chartData[chartData.length - 1]?.t ?? 0;
-  const full = useMemo(() => [tMin, tMax], [tMin, tMax]);
-  const zoom = useZoom(range, setRange, full, onSeek);
+const ChartsTab = memo(function ChartsTab({ chartData, expect, onSeek, range, setRange, xRpm = false }) {
+  // xRpm: DME RPM CHARTS — the same charts against engine speed (no RPM chart)
+  const X = xRpm ? 'rpm' : 't';
+  const charts = xRpm ? DME_RPM_CHARTS : DME_CHARTS;
+  const rows = useMemo(() => xRpm ? byRpm(chartData) : chartData, [chartData, xRpm]);
+  const lo = rows[0]?.[X] ?? 0, hi = rows[rows.length - 1]?.[X] ?? 0;
+  const full = useMemo(() => [lo, hi], [lo, hi]);
+  // A click with no drag seeks to that time, which an rpm isn't
+  const zoom = useZoom(range, setRange, full, xRpm ? undefined : onSeek);
   // The zoomed rows, thinned per chart (keeping each series' peaks)
   const thinned = useMemo(() => {
-    const vis = inRange(chartData, range);
-    return Object.fromEntries(DME_CHARTS.map(c => [c.k, thin(vis, [c.k, 'rpm'])]));
-  }, [chartData, range]);
-  const expected = useMemo(() => Object.fromEntries(Object.entries(DME_EXPECT).map(([k, f]) => [k, expectSeries(expect, f)])), [expect]);
-  const expectedLine = useMemo(() => Object.fromEntries(Object.entries(expected).map(([k, rows]) => [k, thin(inRange(rows, range), 'v')])), [expected, range]);
-  if (!chartData.length) return (
+    const vis = inRange(rows, range, X);
+    return Object.fromEntries(charts.map(c => [c.k, thin(vis, xRpm ? c.k : [c.k, 'rpm'])]));
+  }, [rows, range, X, charts, xRpm]);
+  const expected = useMemo(() => Object.fromEntries(Object.entries(DME_EXPECT).map(([k, f]) => {
+    const e = expectSeries(expect, f);
+    return [k, xRpm ? byRpm(e) : e];
+  })), [expect, xRpm]);
+  const expectedLine = useMemo(() => Object.fromEntries(Object.entries(expected).map(([k, rows]) => [k, thin(inRange(rows, range, X), 'v')])), [expected, range, X]);
+  if (!rows.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
-      No snapshot data loaded — use LOAD LOG to parse a log file
+      {chartData.length ? 'No engine speed in this log yet — the RPM charts need rpm samples'
+                        : 'No snapshot data loaded — use LOAD LOG to parse a log file'}
     </div>
   );
 
@@ -2198,36 +2261,42 @@ const ChartsTab = memo(function ChartsTab({ chartData, expect, onSeek, range, se
   return (
     <div>
     <div style={{...S.panel,padding:'6px 10px'}}>
-      <ZoomBar zoom={zoom} range={range} full={full} btn={zoomBtn} color={C.textBright} dim={C.textDim} />
+      <ZoomBar zoom={zoom} range={range} full={full} btn={zoomBtn} color={C.textBright} dim={C.textDim} unit={xRpm ? 'rpm' : 'ms'} />
     </div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
-      {DME_CHARTS.map(c=>(
+      {charts.map(c=>(
         <div key={c.k} style={S.panel}>
-          <div style={S.panelTitle}>{c.title}{expected[c.k]?.length > 0 && <ExpectKey/>}</div>
+          <div style={S.panelTitle}>{c.title}{xRpm && ' vs RPM'}{expected[c.k]?.length > 0 && <ExpectKey/>}</div>
           <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={150}>
-            <ComposedChart data={thinned[c.k]} margin={{top:2,right:36,bottom:0,left:0}} {...zoomHandlers(zoom)}>
+            <ComposedChart data={thinned[c.k]} margin={{top:2,right:xRpm ? 10 : 36,bottom:0,left:0}} {...zoomHandlers(zoom)}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
-              <XAxis dataKey="t" type="number" domain={range ?? full} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
+              <XAxis dataKey={X} type="number" domain={range ?? full} allowDataOverflow tick={ax} tickFormatter={v=>xRpm ? `${v}` : `${v}ms`} stroke={C.textDim} />
               <YAxis yAxisId="left"  tick={ax} domain={c.dom} stroke={C.textDim} />
-              <YAxis yAxisId="right" tick={ax} domain={[0,7000]} stroke="#888855"
-                     orientation="right" tickFormatter={v=>`${v}`} width={36}/>
+              {!xRpm && <YAxis yAxisId="right" tick={ax} domain={[0,7000]} stroke="#888855"
+                     orientation="right" tickFormatter={v=>`${v}`} width={36}/>}
               <Tooltip
                 contentStyle={{background:'#060e06',border:`1px solid ${c.col}55`,
                                color:c.col,fontSize:'11px',fontFamily:'inherit'}}
                 formatter={(v,n)=>n==='rpm'?[`${v} RPM`,'RPM']:c.unit==='hex'?[`0x${v.toString(16).toUpperCase().padStart(2,'0')} (${v}d)`,n]:c.unit==='°BTDC'?[`${v}°BTDC`,n]:c.unit==='°retard'?[`${v}° retard`,n]:[v,n]}
-                labelFormatter={t=>`t=${t} ms`}
-                content={expected[c.k]?.length ? p => <ExpectTooltip {...p} series={expected[c.k]}
+                labelFormatter={v=>xRpm ? `${v} rpm` : `t=${v} ms`}
+                content={xRpm ? RpmTooltip : expected[c.k]?.length ? p => <ExpectTooltip {...p} series={expected[c.k]}
                   sim={[{ rows: thinned[c.k], key: c.k, color: c.col }, ...(c.k !== 'rpm' ? [{ rows: thinned[c.k], key: 'rpm', color: '#888855' }] : [])]}/> : undefined}
               />
-              <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
+              {xRpm ? <RpmCursorLine rows={chartData} yAxisId="left" stroke={C.textDim} strokeDasharray="3 3" />
+                    : <CursorLine stroke={C.textDim} strokeDasharray="3 3" />}
               <DragArea zoom={zoom} fill={C.textBright} />
-              <Line yAxisId="left"  type="monotone" dataKey={c.k}    stroke={c.col}
-                    dot={false} strokeWidth={1.5} connectNulls={c.cn??false} isAnimationActive={false} />
-              {expected[c.k]?.length > 0 &&
-                <Line yAxisId="left" type="linear" data={expectedLine[c.k]} dataKey="v" name={EXP_NAME}
+              {xRpm
+                ? <Line yAxisId="left" dataKey={c.k} stroke="none" dot={rpmDot(c.col)} activeDot={{r:3}}
+                        isAnimationActive={false} />
+                : <Line yAxisId="left"  type="monotone" dataKey={c.k}    stroke={c.col}
+                    dot={false} strokeWidth={1.5} connectNulls={c.cn??false} isAnimationActive={false} />}
+              {expected[c.k]?.length > 0 && (xRpm
+                ? <Line yAxisId="left" data={expectedLine[c.k]} dataKey="v" name={EXP_NAME}
+                        stroke="none" dot={{...rpmDot(EXP_COL), fillOpacity:0.6}} activeDot={false} isAnimationActive={false} />
+                : <Line yAxisId="left" type="linear" data={expectedLine[c.k]} dataKey="v" name={EXP_NAME}
                       stroke={EXP_COL} strokeOpacity={0.8} dot={false} strokeWidth={1}
-                      strokeDasharray="3 2" isAnimationActive={false} />}
-              {c.k !== 'rpm' &&
+                      strokeDasharray="3 2" isAnimationActive={false} />)}
+              {c.k !== 'rpm' && !xRpm &&
                 <Line yAxisId="right" type="monotone" dataKey="rpm" stroke="#888855"
                       dot={false} strokeWidth={1} connectNulls={false} strokeDasharray="4 2" isAnimationActive={false} />}
             </ComposedChart>
@@ -2757,11 +2826,22 @@ const upTo = (arr, T) => {
 // green-on-black theme as the DME charts tab. Series are built once per
 // log update (klrChartSeries); playback only cuts them at the cursor.
 // range/setRange: the zoom shared with the other chart tabs
-const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, expect, range, setRange }) {
-  const all = useMemo(() => klrChartSeries(klrData, dmeSnaps), [klrData, dmeSnaps]);
+// xRpm: KLR RPM CHARTS — the same charts against engine speed (no RPM chart)
+const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, expect, range, setRange, xRpm = false }) {
+  const all = useMemo(() => {
+    const a = klrChartSeries(klrData, dmeSnaps);
+    if (!xRpm) return a;
+    // Every series gets the engine speed at each sample's time
+    const w = rows => withRpm(rows, a.rpmData);
+    return { ...a, sparkData: w(a.sparkData), measured: w(a.measured), ignPulseData: w(a.ignPulseData),
+             statusData: w(a.statusData), boostData: w(a.boostData), knockPulseEvents: w(a.knockPulseEvents),
+             tpsData: w(a.tpsData), ignOutData: w(a.ignOutData) };
+  }, [klrData, dmeSnaps, xRpm]);
   const { firstKlrT, lastKlrT } = all;
-  // Zoom limits: the whole log's KLR time span, not cut at the cursor
-  const fullLo = firstKlrT ?? all.rpmData[0]?.t, fullHi = lastKlrT ?? all.rpmData[all.rpmData.length - 1]?.t;
+  // Zoom limits: the whole log's KLR time span (or rpm span), not cut at the cursor
+  const rpmFull = useMemo(() => xRpm ? rpmSpan([byRpm(all.rpmData)]) : null, [all, xRpm]);
+  const fullLo = xRpm ? rpmFull?.[0] : firstKlrT ?? all.rpmData[0]?.t;
+  const fullHi = xRpm ? rpmFull?.[1] : lastKlrT ?? all.rpmData[all.rpmData.length - 1]?.t;
   const full = useMemo(() => fullLo != null && fullHi != null && fullHi > fullLo ? [fullLo, fullHi] : null, [fullLo, fullHi]);
   const zoom = useZoom(range, setRange, full);
   // If currentT predates KLR data (e.g. from a DME phase entry at t=2ms),
@@ -2977,11 +3057,22 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     },
   ];
 
+  // RPM charts: each series' samples sorted by engine speed, as dots. The
+  // knock output is its edges (the rpm where knock started and ended).
+  const X = xRpm ? 'rpm' : 't';
+  const shown = !xRpm ? charts : charts.filter(c => c.key !== 'rpm').map(c => {
+    const data = byRpm(c.segments ? knockPulseEvents : c.data);
+    return { ...c, title: `${c.title} vs RPM`, data, segments: undefined, exp: c.exp && byRpm(c.exp),
+             empty: c.empty || !data.length,
+             ...(c.segments && { note: 'KLR knock_out (P1.6) edges: a dot at 0 where each knock started, at 1 where the next ignition cycle reset it. No knock, no dots.' }) };
+  });
+  const cursorRpm = xRpm ? rowAt(all.rpmData, effectiveT)?.rpm : null;
+
   // Every chart on the page spans the same time range (first to last
   // sample of any of them), so they line up however sparse each one is
   let x0 = Infinity, x1 = -Infinity;
-  for (const rows of [...charts.map(c => c.data), ignOutData])
-    if (rows?.length) { x0 = Math.min(x0, rows[0].t); x1 = Math.max(x1, rows[rows.length - 1].t); }
+  for (const rows of [...shown.map(c => c.data), ...(xRpm ? [] : [ignOutData])])
+    if (rows?.length) { x0 = Math.min(x0, rows[0][X]); x1 = Math.max(x1, rows[rows.length - 1][X]); }
   const xdom = range ?? (x0 <= x1 ? [x0, x1] : ['dataMin', 'dataMax']);
 
   return (
@@ -2995,11 +3086,11 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       )}
 
       <div style={{...S.panel, padding:'6px 10px'}}>
-        <ZoomBar zoom={zoom} range={range} full={full} btn={zoomBtn} color={C.textBright} dim={C.textDim} />
+        <ZoomBar zoom={zoom} range={range} full={full} btn={zoomBtn} color={C.textBright} dim={C.textDim} unit={xRpm ? 'rpm' : 'ms'} />
       </div>
 
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px'}}>
-        {charts.map(c => (
+        {shown.map(c => (
           <div key={c.title} style={S.panel}>
             <div style={S.panelTitle}>{c.title}{c.exp?.length > 0 && <ExpectKey/>}
               {c.lines && c.lines.map(l => (
@@ -3017,20 +3108,21 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
             ) : (
               <>
                 <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={130}>
-                  <LineChart data={c.segments ? c.data : thin(inRange(c.data, range), c.lines ? c.lines.map(l => l.key) : c.key)}
+                  <LineChart data={c.segments ? c.data : thin(inRange(c.data, range, X), c.lines ? c.lines.map(l => l.key) : c.key)}
                              margin={{top:2,right:6,bottom:0,left:0}} {...zoomHandlers(zoom)}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d"/>
-                    <XAxis dataKey="t" type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim}/>
+                    <XAxis dataKey={X} type="number" domain={xdom} allowDataOverflow tick={ax} tickFormatter={v=>xRpm ? `${v}` : `${v}ms`} stroke={C.textDim}/>
                     <YAxis tick={ax} domain={c.dom} ticks={c.ticks} stroke={C.textDim}/>
                     <Tooltip {...tt} formatter={(v, n, item) => n === EXP_NAME ? [`${v}${c.unit === 'hex' ? '' : c.unit}`, EXP_NAME]
                       : c.key === 'deg' && n !== 'Firmware Computed Retard' && item?.payload?.us != null
                       ? [`${v}° crank  =  ${item.payload.us} μs @ ${item.payload.rpm} rpm`, c.lines ? n : 'retard']
                       : c.tip ? c.tip(v, item?.payload)
                       : c.lines ? [`${v}${c.unit}`, n] : [v, c.unit]}
-                      content={c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
+                      labelFormatter={v => xRpm ? `${v} rpm` : `t=${v}ms`}
+                      content={xRpm ? RpmTooltip : c.exp?.length ? p => <ExpectTooltip {...p} series={c.exp}
                         sim={[{ rows: c.data, key: c.key, color: c.col }]}/> : undefined}/>
-                    {currentT != null &&
-                      <ReferenceLine x={currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
+                    {(xRpm ? cursorRpm : currentT) != null &&
+                      <ReferenceLine x={xRpm ? cursorRpm : currentT} stroke={C.textDim} strokeDasharray="3 3"/>}
                     <DragArea zoom={zoom} fill={C.textBright}/>
                     {c.segments ? (
                       c.segments.map((seg, i) => (
@@ -3039,6 +3131,12 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                               dot={seg.data.length < 100}
                               strokeWidth={c.data.length < 50 ? 1.5 : 1}
                               connectNulls={false} isAnimationActive={false}/>
+                      ))
+                    ) : xRpm ? (
+                      (c.lines ?? [{ key: c.key, col: c.col }]).map(l => (
+                        <Line key={l.key} dataKey={l.key} name={l.name ?? l.key} stroke="none"
+                              dot={l.dash ? { ...rpmDot(l.col), fillOpacity: 0.6 } : rpmDot(l.col)} activeDot={{ r: 3 }}
+                              isAnimationActive={false}/>
                       ))
                     ) : c.lines ? (
                       c.lines.map(l => (
@@ -3052,7 +3150,10 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
                             strokeWidth={c.data.length < 50 ? 1.5 : 1}
                             connectNulls={false} isAnimationActive={false}/>
                     )}
-                    {c.exp?.length > 0 &&
+                    {c.exp?.length > 0 && xRpm &&
+                      <Line data={thin(inRange(c.exp, range, X), 'v')} dataKey="v" name={EXP_NAME} stroke="none"
+                            dot={{ ...rpmDot(EXP_COL), fillOpacity: 0.6 }} activeDot={false} isAnimationActive={false}/>}
+                    {c.exp?.length > 0 && !xRpm &&
                       <Line type={c.type === 'stepAfter' ? 'stepAfter' : 'linear'} data={thin(inRange(c.exp, range), 'v')} dataKey="v"
                             name={EXP_NAME} stroke={EXP_COL} strokeOpacity={0.8} dot={false} strokeWidth={1}
                             strokeDasharray="3 2" isAnimationActive={false}/>}
