@@ -1322,7 +1322,9 @@ export default function DMEDashboard() {
               xRpm range={rpmZoom} setRange={setRpmZoom} />}
           {tab==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
               dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
-              range={zoom} setRange={setZoom} />}
+              range={zoom} setRange={setZoom}
+              lookups={feed.data.lookups} lookupsVer={feed.data.lookupsVer}
+              klrLookups={feed.data.klrLookups} klrLookupsVer={feed.data.klrLookupsVer} />}
           {tab==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
               range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
               logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
