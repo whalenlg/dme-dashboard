@@ -103,7 +103,7 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
               <XAxis dataKey="t" type="number" domain={[t0, t1]} allowDataOverflow tick={ax}
                      tickFormatter={v => `${+v.toFixed(0)}`} stroke={C.textDim} />
               <YAxis tick={ax} stroke={C.textDim} width={34} allowDecimals={false}
-                     domain={lo === hi ? [Math.max(0, lo - 1), Math.min(255, hi + 1)] : ['dataMin', 'dataMax']} />
+                     domain={[0, hi > 0 ? 'dataMax' : 1]} />
               <Tooltip content={<TipBox />} isAnimationActive={false} />
               <CursorLine stroke={C.textBright} strokeWidth={1} />
               <DragArea zoom={zoom} fill={C.textBright} />
