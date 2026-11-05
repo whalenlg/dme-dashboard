@@ -7,7 +7,7 @@ import {
 import { thin, syncNearest, inRange } from "./thin.js";
 import { CursorLine } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
-import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
+import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, BIT_DESC, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  TIMELINE TAB
@@ -102,7 +102,7 @@ const SEARCH_LIST = {
   dme: [
     ...IRAM_MAP.filter(e => !/^r[0-9A-F]{2}$/.test(e.n)).map(e => ({ addr: e.a, name: e.n, desc: e.d })),
     ...Object.entries(BIT_LABELS).filter(([, n]) => n).map(([b, n]) => ({
-      addr: 0x20 + (b >> 3), bit: b & 7, name: n, desc: `bit ${hx(+b)}h` })),
+      addr: 0x20 + (b >> 3), bit: b & 7, name: n, desc: BIT_DESC[b] ? `bit ${hx(+b)}h: ${BIT_DESC[b]}` : `bit ${hx(+b)}h` })),
   ].sort((x, y) => x.addr - y.addr || (x.bit ?? -1) - (y.bit ?? -1)),
   klr: Object.entries(KLR_KNOWN).map(([a, e]) => ({ addr: +a, name: e.n, desc: e.d })),
 };

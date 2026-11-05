@@ -80,35 +80,35 @@ export const IRAM_MAP = [
   {a:0x3A,n:'RESERVED_3AH',g:'timer',d:'undefined/unknown'},
   {a:0x3B,n:'RESERVED_3BH',g:'rpm',d:'undefined/unknown'},
   {a:0x3C,n:'POST_START_ENR_TIMER',g:'timer',d:'post-start enrichment (software counter, 414ms units). Notes: After start enrichment'},
-  {a:0x3D,n:'ACCEL_ENR_TIMER',g:'rpm',d:'all-rpm acceleration enrichment (software counter, 58ms units)'},
+  {a:0x3D,n:'ACCEL_ENR_TIMER',g:'timer',d:'all-rpm acceleration enrichment (software counter, 58ms units)'},
   {a:0x3E,n:'LAMBDA_TIMER',g:'lambda',d:'lambda timer (software counter, 11.5ms units)'},
-  {a:0x3F,n:'LAMBDA_LOAD_TIMER',g:'sys',d:'lambda load threshold timer (software counter, 345ms units)'},
+  {a:0x3F,n:'LAMBDA_LOAD_TIMER',g:'lambda',d:'lambda load threshold timer (software counter, 345ms units)'},
   {a:0x40,n:'RESERVED_40H',g:'fuel',d:'undefined/unknown'},
-  {a:0x41,n:'ISV_ON_TIME_HI',g:'fuel',d:'timer1 ISV on-time, high byte'},
-  {a:0x42,n:'ISV_ON_TIME_LO',g:'fuel',d:'timer1 ISV on-time, low byte'},
-  {a:0x43,n:'RESERVED_43H',g:'fuel',d:'undefined/unknown'},
-  {a:0x44,n:'ISV_OFF_TIME_LO',g:'fuel',d:'timer1 ISV off-time, low byte'},
-  {a:0x45,n:'ISV_OFF_TIME_HI',g:'fuel',d:'timer1 ISV off-time, high byte'},
+  {a:0x41,n:'ISV_ON_TIME_HI',g:'isv',d:'timer1 ISV on-time, high byte'},
+  {a:0x42,n:'ISV_ON_TIME_LO',g:'isv',d:'timer1 ISV on-time, low byte'},
+  {a:0x43,n:'RESERVED_43H',g:'isv',d:'undefined/unknown'},
+  {a:0x44,n:'ISV_OFF_TIME_LO',g:'isv',d:'timer1 ISV off-time, low byte'},
+  {a:0x45,n:'ISV_OFF_TIME_HI',g:'isv',d:'timer1 ISV off-time, high byte'},
   {a:0x46,n:'LOAD_SMOOTHED_HI',g:'fuel',d:'smoothed 24-bit load value, high byte'},
   {a:0x47,n:'LOAD_SMOOTHED_MID',g:'fuel',d:'smoothed 24-bit load value, middle byte'},
   {a:0x48,n:'LOAD_SMOOTHED_LO',g:'fuel',d:'smoothed 24-bit load value, low byte'},
   {a:0x49,n:'LOAD_VALUE',g:'fuel',d:'load, i.e. the high byte of the scaled base fuel pulse'},
   {a:0x4A,n:'FUEL_PULSE_LO',g:'fuel',d:'final fuel pulse, low byte (timer0 ticks of 2us)'},
   {a:0x4B,n:'FUEL_PULSE_HI',g:'fuel',d:'final fuel pulse, high byte'},
-  {a:0x4C,n:'ACCEL_ENR_LOWRPM',g:'fuel',d:'low-rpm acceleration enrichment, added directly to the pulse'},
+  {a:0x4C,n:'ACCEL_ENR_LOWRPM',g:'enrich',d:'low-rpm acceleration enrichment, added directly to the pulse'},
   {a:0x4D,n:'INJ_EVENT_CNT',g:'fuel',d:'injection event counter, capped at 128'},
   {a:0x4E,n:'FUEL_ADJ_ACCUM_LO',g:'fuel',d:'accumulated fuel adjustment, low byte'},
   {a:0x4F,n:'FUEL_ADJ_ACCUM_HI',g:'fuel',d:'accumulated fuel adjustment, high byte'},
-  {a:0x50,n:'FUEL_ADJ_SHIFT_CNT',g:'misc',d:'count of outstanding left shifts (pending multiplications by 2)'},
-  {a:0x51,n:'AFM_HIST_1',g:'misc',d:'AFM history queue, most recent previous reading'},
-  {a:0x52,n:'AFM_HIST_2',g:'misc',d:'AFM history queue, second previous reading'},
-  {a:0x53,n:'AFM_HIST_3',g:'adc',d:'AFM history queue, third previous reading (~35ms old)'},
-  {a:0x54,n:'INJ_DEADTIME',g:'misc',d:'injector dead-time. Notes: Number of ticks/5 to add to injection signal to compensate for injector opening time.'},
-  {a:0x55,n:'RPM_LAG_REF',g:'misc',d:'lagging rpm reference that chases 37h'},
-  {a:0x56,n:'RPM_LAG_ACCUM',g:'misc',d:'fractional accumulator controlling how fast 55h chases 37h'},
-  {a:0x57,n:'IGN_ACCEL_ADJ',g:'misc',d:'acceleration/deceleration ignition timing adjustment. Notes: half-tooth spark timing adjustment for acceleration or deceleration. can have values 0, 1 or -1'},
-  {a:0x58,n:'OVERLOAD_TIMER',g:'enrich',d:'overload timer'},
-  {a:0x59,n:'OVERLOAD_PRESCALE',g:'enrich',d:'prescale counter for 58h'},
+  {a:0x50,n:'FUEL_ADJ_SHIFT_CNT',g:'fuel',d:'count of outstanding left shifts (pending multiplications by 2)'},
+  {a:0x51,n:'AFM_HIST_1',g:'fuel',d:'AFM history queue, most recent previous reading'},
+  {a:0x52,n:'AFM_HIST_2',g:'fuel',d:'AFM history queue, second previous reading'},
+  {a:0x53,n:'AFM_HIST_3',g:'fuel',d:'AFM history queue, third previous reading (~35ms old)'},
+  {a:0x54,n:'INJ_DEADTIME',g:'fuel',d:'injector dead-time. Notes: Number of ticks/5 to add to injection signal to compensate for injector opening time.'},
+  {a:0x55,n:'RPM_LAG_REF',g:'ign',d:'lagging rpm reference that chases 37h'},
+  {a:0x56,n:'RPM_LAG_ACCUM',g:'ign',d:'fractional accumulator controlling how fast 55h chases 37h'},
+  {a:0x57,n:'IGN_ACCEL_ADJ',g:'ign',d:'acceleration/deceleration ignition timing adjustment. Notes: half-tooth spark timing adjustment for acceleration or deceleration. can have values 0, 1 or -1'},
+  {a:0x58,n:'OVERLOAD_TIMER',g:'fuel',d:'overload timer'},
+  {a:0x59,n:'OVERLOAD_PRESCALE',g:'fuel',d:'prescale counter for 58h'},
   {a:0x5A,n:'RESERVED_5AH',g:'misc',d:'undefined/unknown'},
   {a:0x5B,n:'RESERVED_5BH',g:'misc',d:'undefined/unknown'},
   {a:0x5C,n:'RESERVED_5CH',g:'misc',d:'undefined/unknown'},
@@ -142,10 +142,10 @@ export const IRAM_MAP = [
   {a:0x78,n:'stack_L',g:'misc',d:'stack'},
   {a:0x79,n:'stack_M',g:'misc',d:'stack'},
   {a:0x7A,n:'RESERVED_7AH',g:'misc',d:'undefined/unknown. Notes: probably used as sequence number, written and read during diagnostics'},
-  {a:0x7B,n:'ISV_CORR_DBL_HI',g:'misc',d:'high byte of the doubled ISV correction'},
-  {a:0x7C,n:'ISV_FLARE_HOLD_CNT',g:'misc',d:'ISV flare hold counter'},
-  {a:0x7D,n:'ISV_INTEGRAL_LO',g:'misc',d:'ISV integral term, low byte'},
-  {a:0x7E,n:'ISV_INTEGRAL_HI',g:'misc',d:'ISV integral term, high byte'},
+  {a:0x7B,n:'ISV_CORR_DBL_HI',g:'isv',d:'high byte of the doubled ISV correction'},
+  {a:0x7C,n:'ISV_FLARE_HOLD_CNT',g:'isv',d:'ISV flare hold counter'},
+  {a:0x7D,n:'ISV_INTEGRAL_LO',g:'isv',d:'ISV integral term, low byte'},
+  {a:0x7E,n:'ISV_INTEGRAL_HI',g:'isv',d:'ISV integral term, high byte'},
   {a:0x7F,n:'ISV_TARGET_RPM',g:'isv',d:'ISV target idle rpm'},
 ];
 
@@ -205,35 +205,60 @@ export const KLR_KNOWN = {
 
 // 8051 bit address labels (bit 0x00–0x7F = iram[20h..2Fh] bits)
 // bit_addr = (byte - 0x20) * 8 + bit_position
-export const BIT_LABELS = {
-  // iram[20h] = bits 00h..07h
-  0x00:'',0x01:'',0x02:'',0x03:'',
-  0x05:'ISVPWMOverflow', // 20h.5
-  0x06:'',0x07:'',
-  // iram[21h] = bits 08h..0Fh
-  0x08:'EngineSync',   // 21h.0
-  0x09:'Phase2Lambda', // 21h.1
-  0x0A:'',0x0B:'',0x0C:'',
-  0x0D:'UseMap1140',   // 21h.5
-  0x0E:'',0x0F:'',
-  // iram[22h] = bits 10h..17h
-  0x10:'',0x11:'',0x12:'',0x13:'',0x14:'',0x15:'',0x16:'',0x17:'',
-  // iram[23h] = bits 18h..1Fh
-  0x18:'',0x19:'',0x1A:'',0x1B:'',0x1C:'',
-  0x1D:'FuelOffCoast', // 23h.5
-  0x1E:'',0x1F:'TXDLambdaDiag',
-  // iram[24h] = bits 20h..27h
-  0x20:'LambdaFlag20', // 24h.0
-  0x21:'LambdaFlag21',
-  0x22:'LambdaFlag22',
-  0x23:'O2Lean/LambdaOK', // 24h.3
-  0x24:'',0x25:'',0x26:'',0x27:'',
-  // iram[25h] = bits 28h..2Fh
-  0x28:'',0x29:'',0x2A:'',0x2B:'',
-  0x2C:'ColdStartTiming', // 25h.4
-  0x2D:'ColdStartEnrich',  // 25h.5
-  0x2E:'',0x2F:'',
-  // iram[26h] = bits 30h..37h
-  0x30:'',0x31:'',0x32:'',0x33:'',0x34:'',0x35:'',0x36:'',0x37:'DataPlug',
-  // iram[27h..2Fh] = bits 38h..7Fh (mostly unnamed)
+// Names are the disassembly's (asm_full.json); meanings in BIT_DESC are from
+// the DME memory map, https://jhnbyrn.github.io/951-KLR-PAGES/dme_memory_map.html
+const BIT_DEFS = {
+  // iram[20h] — ISV control and lambda enable
+  0x00: ['ISV_FLARE_VARIANT', 'ISV flare variant: 0 = return to idle, 1 = startup'],
+  0x01: ['init_flag', ''],
+  0x02: ['ISV_RPM_ERR_SIGN_LAMBDA_COND_CURRENT', 'ISV idle rpm error sign: 1 = rpm too high, 0 = rpm too low. Reused for lambda: current condition, 0 = lean, 1 = not lean'],
+  0x03: ['ISV_INT_BLOCK_POS', 'blocks integration when a positive ISV correction is clamped'],
+  0x04: ['ISV_INT_BLOCK_NEG', 'blocks integration when a negative ISV correction is clamped, or when load is below the Map 87 value'],
+  0x05: ['ISV_PWM_OVF_SIGN', 'ISV PWM correction overflow sign (which way to clamp)'],
+  0x06: ['ISV_FLARE_NEEDED', 'an idle flare is needed on return to idle'],
+  0x07: ['LAMBDA_ENABLE', 'master enable for closed loop lambda control; only set on US (cat/O2) cars'],
+  // iram[21h] — fuel cut, enrichment latches, injector state
+  0x08: ['OVERLOAD_PRETIMER_RUN', 'the ~3 second overload pre-timer is running'],
+  0x09: ['OVERLOAD_LOCKOUT_RUN', 'overload confirmed; the ~60 second lockout is running'],
+  0x0A: ['INJECTORS_ON', 'injectors are currently on'],
+  0x0C: ['CRANK_ENR_PHASEOUT_LATCH', 'latch marking that the cranking enrichment phase-out has started'],
+  0x0D: ['FUEL_REACT_TRANS_ACTIVE', 'transient fuel correction after reactivation is active'],
+  0x0E: ['FUELCUT_REACT_MODE', 'selects return-to-idle (Map 1140) vs return-to-throttle (Map 1150)'],
+  0x0F: ['ACCEL_PUMP_SHOT_LATCH', 'latch for a pending 4Ch acceleration enrichment pump shot'],
+  // iram[22h] — half-tooth corrections and timing change rate
+  0x10: ['IGN_HALFTOOTH_CORR', 'half-tooth correction applied to the next ignition event'],
+  0x11: ['IGN_HALFTOOTH_ROUND_ERR', 'half-tooth rounding error left over from the 021D calculation'],
+  0x13: ['COIL_STATE_REF', 'coil state to apply in the ref sensor routine (set = dwell off)'],
+  0x14: ['TIMING_RATE_SEL_LOW', 'timing change rate select, lowest priority of the three'],
+  0x15: ['TIMING_RATE_SEL_MED', 'timing change rate select, medium priority'],
+  0x16: ['TIMING_RATE_SEL_HIGH', 'timing change rate select, highest priority'],
+  0x17: ['Time1FlagLowIdle', ''],
+  // iram[23h] — engine operating mode
+  0x18: ['TPS_AT_IDLE', 'TPS at idle (1 = at idle)'],
+  0x19: ['WOT_FLAG', 'WOT (1 = WOT). Controlled by the KLR, which calls > 65 deg. WOT'],
+  0x1A: ['CRANKING_FLAG', 'cranking (1 = rpm below 160). Cleared at a temperature-dependent threshold from Map 3'],
+  0x1B: ['ISV_ALT_PATH', 'ISV alternate code path, set via ADC channel 5 (DME pin 28)'],
+  0x1C: ['STARTUP_FLAG', 'startup'],
+  0x1D: ['FUEL_CUT_FLAG', 'fuel cut, for coasting or overload'],
+  0x1E: ['TRG_IDLE_FLARE', 'unidentified in the memory map; appears at 040D in the post-load routine'],
+  0x1F: ['TXDLambdaDiag', ''],
+  // iram[24h] — lambda control state
+  0x20: ['LAMBDA_WATCHDOG_EN', 'lambda watchdog enable; always set in the production code'],
+  0x21: ['LAMBDA_LOAD_TIMER_RUN', 'the load threshold timer (3Fh) is running'],
+  0x22: ['LAMBDA_WATCHDOG_ACTIVE', 'watchdog countdown active; never set by reachable code'],
+  0x23: ['LAMBDA_NEUTRAL_PHASE', 'the lambda-neutral timer phase is running'],
+  0x24: ['LAMBDA_RICHLEAN_PHASE', 'the rich/lean timer phase is running'],
+  0x25: ['LAMBDA_COND_MET', 'all lambda threshold conditions are met (1 = correction permitted)'],
+  0x26: ['LAMBDA_COND_PREV', 'previous value of 20h.2: 0 = previously lean, 1 = previously not lean'],
+  0x27: ['LAMBDA_COND_PERSISTED', 'the current condition has persisted long enough to act on'],
+  // iram[25h] — cranking temperature, region and altitude coding
+  0x2A: ['MapLookFail', ''],
+  0x2C: ['COLD_CRANK_LAMBDA_SEL', 'NTC II was below ~14.7C while cranking; selects the lambda enable temperature (US cars only)'],
+  0x2D: ['COLD_CRANK_WARMUP_SEL', 'NTC II was below ~14.7C while cranking; selects between warmup maps 43 and 45 (US cars only)'],
+  0x2E: ['REGION_CODE', 'region coding: 0 = US, 1 = RoW'],
+  0x2F: ['ALTITUDE_HIGH_FLAG', 'altitude sensor: 1 = above 1000M'],
+  // iram[26h]
+  0x37: ['DataPlug', ''],
 };
+export const BIT_LABELS = Object.fromEntries(Object.entries(BIT_DEFS).map(([b, [n]]) => [b, n]));
+export const BIT_DESC   = Object.fromEntries(Object.entries(BIT_DEFS).map(([b, [, d]]) => [b, d]));
