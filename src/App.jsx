@@ -340,6 +340,9 @@ function dmeLogParser(max = {}) {
   // memos can key on it without copying every series on each live tick
   const lookups = {};
   let lookupsVer = 0;
+  // rom: { dme, klr: { file, sha } } from the DME:/KLR: [ROM] lines the run
+  // scripts put at the top of a dash.log (rom_stamp.py); null in older logs
+  let rom = null;
   let dropped = 0, out = null;   // out: last result's arrays, reused while nothing changes
   // Annotate each snapshot with last valid raw temp bytes so Overview
   // can carry-forward across mid-scan raw ADC artifacts.
@@ -384,6 +387,10 @@ function dmeLogParser(max = {}) {
         else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t); if (p) { insertByT(phases, p); out = null; } }
         else if (t.startsWith('DME: [STATUS]'))                            addSnap(parseStatusLine(t.replace(/^DME: /,'')));
         else if (t.startsWith('REPLAY: [EXPECT]'))                         { const e = parseExpectLine(t); if (e) { insertByT(expect, e); out = null; } }
+        else if (t.startsWith('DME: [ROM]') || t.startsWith('KLR: [ROM]')) {
+          const m = t.match(/^(DME|KLR): \[ROM\] (\S+) sha=(\S+)/);
+          if (m) rom = { ...rom, [m[1].toLowerCase()]: { file: m[2], sha: m[3] } };
+        }
         else if (t.startsWith('DME: [LKUP]')) {
           const l = parseLookupLine(t);
           if (l) {
@@ -402,7 +409,7 @@ function dmeLogParser(max = {}) {
     // same arrays otherwise. dropped: snapshots trimmed since the last call.
     result() {
       out ??= { snapshots: snapshots.slice(), phases: phases.slice(), expect: expect.slice() };
-      const r = { ...out, lookups, lookupsVer, dropped };
+      const r = { ...out, lookups, lookupsVer, rom, dropped };
       dropped = 0;
       return r;
     },
@@ -412,8 +419,8 @@ function dmeLogParser(max = {}) {
 function parseLog(text) {
   const p = dmeLogParser();
   p.push(text.split('\n'));
-  const { snapshots, phases, expect, lookups, lookupsVer } = p.result();
-  return { snapshots, phases, expect, lookups, lookupsVer };
+  const { snapshots, phases, expect, lookups, lookupsVer, rom } = p.result();
+  return { snapshots, phases, expect, lookups, lookupsVer, rom };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1212,6 +1219,10 @@ export default function DMEDashboard() {
             <div style={{color:'#66ddaa',fontSize:'10px',marginTop:'3px',
                          fontFamily:"'Courier New',monospace",letterSpacing:'0.05em'}}>
               📄 {logFileName}
+              {!liveUrl && data.rom && <span style={{color:C.textDim,marginLeft:'10px'}}
+                title={Object.entries(data.rom).map(([c, r]) => `${c.toUpperCase()} ${r.file} sha=${r.sha}`).join('\n')}>
+                ROM: {[data.rom.dme && `DME ${data.rom.dme.file}`, data.rom.klr && `KLR ${data.rom.klr.file}`].filter(Boolean).join(' · ')}
+              </span>}
             </div>
           )}
         </div>
@@ -1291,7 +1302,8 @@ export default function DMEDashboard() {
               dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
               range={zoom} setRange={setZoom} />}
           {tab==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
-              range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL} />}
+              range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+              logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
         </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
