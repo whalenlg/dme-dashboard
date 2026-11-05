@@ -2386,7 +2386,7 @@ function DiagTab({ iram, snap }) {
       raw: prpm, tx: prpmTx,
       decode: refRpm != null
         ? `${refRpm} RPM  (from DS header)  |  iram[0x37]=0x${h2(prpm)} raw`
-        : prpm >= 3 ? `${Math.round(17640 / prpm)} RPM  (17640 / ${prpm})` : 'Engine not running',
+        : prpm >= 3 ? `${prpmToRpm(prpm)} RPM  (${prpm} × 40)` : 'Engine not running',
       col: '#66ffaa',
       detail: `Previous PRPM: iram[0x3B]=0x${h2(ir[0x3B]??0)}`,
     },

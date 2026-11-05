@@ -1,10 +1,13 @@
 // Memory labels and unit conversions shared by App.jsx and TimelineTab.jsx.
 
-// PRPM → RPM  (empirical: prpm=21 @ 840 RPM → K=17640)
-// prpm=3 → ~5880 RPM (near redline).  prpm < 3 is a pre-sync
-// garbage value — return null so it is excluded from display and charts.
+// PRPM (iram 37h) → RPM. 37h is engine speed in units of 40 rpm (the
+// memory map, and the testbench STATUS line prints 37h × 40): idle 15h = 840,
+// A0h = 6400. (The older 17640 / prpm read it as a period; that only agrees
+// at 840 rpm.) prpm < 3 (< 120 rpm) is a pre-sync value — return null so it
+// is excluded from display and charts.
 export const PRPM_MIN_VALID = 3;
-export const prpmToRpm = prpm => (prpm >= PRPM_MIN_VALID) ? Math.round(17640 / prpm) : null;
+export const PRPM_RPM_PER_COUNT = 40;
+export const prpmToRpm = prpm => (prpm >= PRPM_MIN_VALID) ? prpm * PRPM_RPM_PER_COUNT : null;
 
 // NTC linearised byte → °C. The DME's NTC map (maps 1/2) outputs
 // iram[12h]/[13h] on a linear −40…+125 °C scale, which puts the ROM's own
