@@ -845,6 +845,7 @@ export default function DMEDashboard() {
   const [zoom, setZoom] = useState(null);
   // The RPM-axis chart tabs' zoom ([rpm0, rpm1]), apart from the time zoom
   const [rpmZoom, setRpmZoom] = useState(null);
+  const [rpmMapZoom, setRpmMapZoom] = useState(null);   // DME RPM MAPS: rpm range
   const followRef = useRef(follow);
   useEffect(() => { followRef.current = follow; }, [follow]);
   const liveRef = useRef(liveUrl);
@@ -1052,7 +1053,7 @@ export default function DMEDashboard() {
   // Only the chart tabs read these, and on long runs they cost a pass
   // over every snapshot per update, so they are skipped on other tabs
   // maps: no chart rows of its own, but this throttles its live feed too
-  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline' || tab === 'maps';
+  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline' || tab === 'maps' || tab === 'rpm_maps';
   const chartData = useMemo(() => {
     if (!needCharts) return NO_ROWS;
     // Merge DS + STATUS snapshots at same timestamp.
@@ -1206,7 +1207,7 @@ export default function DMEDashboard() {
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
   const KLR_TABS = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'];
-  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','timeline','maps'];
+  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','timeline','maps','rpm_maps'];
 
   return (
     <div style={S.root}>
@@ -1245,8 +1246,9 @@ export default function DMEDashboard() {
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','ports','iram','charts','rpm_charts','phase','diag'].map(t=>(
-            <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
+          {['overview','ports','iram','charts','rpm_charts','phase','diag','maps','rpm_maps'].map(t=>(
+            <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}
+              title={t==='maps' ? 'DME map and table lookup results over time' : t==='rpm_maps' ? 'DME maps that take rpm as an input, against rpm' : undefined}>
               {t==='overview'?'DME OVERVIEW':
                t==='ports'   ?'DME PORTS'  :
                t==='iram'    ?'DME IRAM'   :
@@ -1254,6 +1256,8 @@ export default function DMEDashboard() {
                t==='rpm_charts'?'DME RPM CHARTS':
                t==='phase'   ?'DME PHASE'  :
                t==='diag'    ?'DME DIAG'   :
+               t==='maps'    ?'DME MAPS'   :
+               t==='rpm_maps'?'DME RPM MAPS':
                t.toUpperCase()}
             </button>
           ))}
@@ -1276,8 +1280,6 @@ export default function DMEDashboard() {
         {/* Row 3 — DME + KLR together */}
         <div style={S.tabRowKlr}>
           <button style={S.tab(tab==='timeline')} onClick={()=>setTab('timeline')}>TIMELINE</button>
-          <button style={S.tab(tab==='maps')} onClick={()=>setTab('maps')}
-            title="DME map and table lookup results over time">DME MAPS</button>
         </div>
       </div>
 
@@ -1303,6 +1305,9 @@ export default function DMEDashboard() {
               range={zoom} setRange={setZoom} />}
           {tab==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
               range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+              logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
+          {tab==='rpm_maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} byRpm
+              range={rpmMapZoom} setRange={setRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
               logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
         </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
