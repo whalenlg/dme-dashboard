@@ -5,8 +5,9 @@ import {
 import { thin, inRange } from "./thin.js";
 import { CursorLine } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
-import { IRAM_MAP } from "./memDefs.js";
+import { IRAM_MAP, KLR_KNOWN } from "./memDefs.js";
 import { NUMBERED_MAPS, DIRECT_TABLES } from "./mapDefs.js";
+import { KLR_MAPS } from "./klrMapDefs.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  MAPS TAB
@@ -26,6 +27,12 @@ import { NUMBERED_MAPS, DIRECT_TABLES } from "./mapDefs.js";
 //  lookup drawn as a point against engine speed (37h x 40 rpm) instead of
 //  time; for a 3D map the point's colour is the other input (blue low,
 //  amber high). The zoom is an rpm range.
+//  cpu="klr" (KLR MAPS / KLR RPM MAPS): the KLR's maps and tables
+//  (klrMapDefs.js) from the testbench's KLR: [LKUP] lines, with the graphs
+//  from <bridge>/maps/klr. The KLR has no engine speed of its own in rpm,
+//  so byRpm puts each lookup at the DME's engine speed at its time
+//  (rpmRows, interpolated between DME snapshots, like KLR RPM CHARTS); a
+//  map's colour is then its throttle input 43h.
 // ─────────────────────────────────────────────────────────────────
 
 const C = {
@@ -34,31 +41,62 @@ const C = {
 };
 const MAX_POINTS = 400;   // per chart, after thinning
 const hx = v => v.toString(16).toUpperCase().padStart(2, '0');
-const iramName = a => {
+const iramName = (a, cpu) => {
+  if (cpu === 'klr') return KLR_KNOWN[a]?.n ?? (a === 0x07 ? 'R7 (bank 0)' : '');
   const n = IRAM_MAP.find(e => e.a === a)?.n ?? '';
   return /^r[0-9A-F]{2}$/.test(n) ? '' : n;
 };
-const inLabel = k => k === 'in' ? 'index' : `${hx(k)}h${iramName(k) ? ` ${iramName(k)}` : ''}`;
+const inLabel = (k, cpu) => k === 'in' ? 'index' : `${hx(k)}h${iramName(k, cpu) ? ` ${iramName(k, cpu)}` : ''}`;
 
 // A map's input iram addresses, from the workbook's Axes column ("37h, 49h")
 const parseAxes = s => (s ?? '').split(',').map(a => parseInt(a, 16)).filter(a => !Number.isNaN(a));
 const RPM = 0x37;
 const RPM_SCALE = 40;          // 37h counts 40 rpm
+const KLR_RPM = 0x44;          // the KLR's rpm index (map axis)
+const KLR_RPM_KEYS = new Set([0x44, 0x24, 0x07]);   // its rpm inputs: index, ticks, timer reload
 const MAX_RPM_POINTS = 1500;   // per chart: distinct (rpm, inputs, result) points
-const hasRpm = (d, lookups) => d.id[0] === 'M' && (d.axes?.includes(RPM) ||
-  (lookups?.[d.id]?.at(-1)?.in ?? []).some(([k]) => k === RPM));
+const hasRpm = (d, lookups, cpu) => cpu === 'klr'
+  ? (d.axes ?? []).some(a => KLR_RPM_KEYS.has(a))
+  : d.id[0] === 'M' && (d.axes?.includes(RPM) || (lookups?.[d.id]?.at(-1)?.in ?? []).some(([k]) => k === RPM));
+
+// Engine speed at time t from DME rows [{ t, rpm }] (time sorted), linear
+// between rows no more than 500 ms apart, else null
+function rpmAtFn(rows) {
+  let j = 0;
+  return t => {
+    if (!rows?.length) return null;
+    if (j >= rows.length || rows[j].t > t) j = 0;
+    while (j + 1 < rows.length && rows[j + 1].t <= t) j++;
+    const a = rows[j], b = rows[j + 1];
+    if (a.t > t) return null;
+    if (!b) return t - a.t <= 500 ? a.rpm : null;
+    if (b.t - a.t > 500) return t - a.t <= 500 ? a.rpm : null;
+    return a.rpm + (b.rpm - a.rpm) * (t - a.t) / (b.t - a.t);
+  };
+}
 
 // The distinct lookups of one map as points against rpm, sorted by rpm:
 // { r: rpm, v: result, z: the other input (3D) or null, in, t: first time seen }
-function rpmPoints(arr) {
+// DME: rpm from the map's 37h input. KLR: the DME's rpm at the lookup's time
+// (rpmAt), rounded to 10 rpm; z is the throttle input 43h.
+function rpmPoints(arr, rpmAt) {
   const seen = new Map();
   for (const p of arr) {
-    const ri = p.in?.find(([k]) => k === RPM);
-    if (!ri) continue;
-    const key = `${p.v}|${(p.in ?? []).map(([k, v]) => `${k}:${v}`).join(',')}`;
+    let r, oz;
+    if (rpmAt) {
+      r = rpmAt(p.t);
+      if (r == null || !(r > 0)) continue;
+      r = Math.round(r / 10) * 10;
+      oz = p.in?.find(([k]) => !KLR_RPM_KEYS.has(k) && k !== 'in');
+    } else {
+      const ri = p.in?.find(([k]) => k === RPM);
+      if (!ri) continue;
+      r = ri[1] * RPM_SCALE;
+      oz = p.in.find(([k]) => k !== RPM && k !== 'in');
+    }
+    const key = `${p.v}|${rpmAt ? r : ''}|${(p.in ?? []).map(([k, v]) => `${k}:${v}`).join(',')}`;
     if (seen.has(key)) continue;
-    const oz = p.in.find(([k]) => k !== RPM && k !== 'in');
-    seen.set(key, { r: ri[1] * RPM_SCALE, v: p.v, z: oz ? oz[1] : null, in: p.in, t: p.t });
+    seen.set(key, { r, v: p.v, z: oz ? oz[1] : null, in: p.in, t: p.t });
   }
   let pts = [...seen.values()].sort((a, b) => a.r - b.r || a.z - b.z);
   if (pts.length > MAX_RPM_POINTS) {
@@ -92,7 +130,8 @@ function sortByInputs(maps) {
 // Every chart the tab can show: the numbered maps sorted by input, the
 // tables in workbook order, then anything else the log has (maps and tables
 // that aren't on the two sheets)
-function allDefs(lookups) {
+function allDefs(lookups, cpu) {
+  if (cpu === 'klr') return klrDefs(lookups);
   const maps = sortByInputs(NUMBERED_MAPS.map(m => {
     const axes = parseAxes(m.axes);
     return { id: `M${m.n}`, kind: 'map', title: `MAP ${m.n}`, name: m.name, axes, dim: axes.length > 1 ? 3 : 2,
@@ -123,7 +162,23 @@ function allDefs(lookups) {
   return [...defs, ...otherMaps, ...others.filter(d => d.id[0] !== 'M')];
 }
 
-function TipBox({ active, payload, label, xRpm }) {
+// The KLR's maps and tables in workbook order, then any other T<addr> in the log
+function klrDefs(lookups) {
+  const defs = KLR_MAPS.map(m => {
+    const axes = parseAxes(m.axes);
+    return { id: m.id, kind: m.kind, title: m.addr, name: m.name, axes, dim: axes.length > 1 ? 3 : 2,
+      purpose: m.purpose, detail: `${m.addr} · in ${m.axes} · to ${m.out}`, covered: m.covered };
+  });
+  const known = new Set(defs.map(d => d.id));
+  const extra = Object.keys(lookups ?? {}).filter(id => !known.has(id)).sort();
+  return [...defs, ...extra.map(id => {
+    const axes = (lookups[id].at(-1)?.in ?? []).map(([k]) => k).filter(k => k !== 'in');
+    return { id, kind: 'other', title: `${id.slice(1)}h`, name: '(not on the maps_index sheet)', purpose: '',
+      axes, dim: axes.length ? (axes.length > 1 ? 3 : 2) : null, detail: `table at ${id.slice(1)}h` };
+  })];
+}
+
+function TipBox({ active, payload, label, xRpm, cpu }) {
   if (!active || !payload?.length || (!xRpm && label == null)) return null;
   const p = payload[0].payload;
   return (
@@ -131,22 +186,23 @@ function TipBox({ active, payload, label, xRpm }) {
       <div style={{color:C.textBright}}>{xRpm ? `${p.r} rpm · first at t=${(+p.t).toFixed(3)} ms` : `t=${(+label).toFixed(3)} ms`}</div>
       <div style={{color:C.amber}}>result: 0x{hx(p.v)} ({p.v})</div>
       {(p.in ?? []).map(([k, v]) => (
-        <div key={k} style={{color:C.textDim}}>{inLabel(k)}: 0x{hx(v)} ({v})</div>
+        <div key={k} style={{color:C.textDim}}>{inLabel(k, cpu)}: 0x{hx(v)} ({v})</div>
       ))}
     </div>
   );
 }
 
 // One map's chart; memoized so a live tick only redraws charts whose data moved
-const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRpm }) {
+const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRpm, cpu }) {
   const ax = {fill:C.textDim,fontSize:9,fontFamily:"'Share Tech Mono',monospace"};
   const last = pts[pts.length - 1];
   let lo = 255, hi = 0;
   for (const p of pts) { if (p.v < lo) lo = p.v; if (p.v > hi) hi = p.v; }
-  const inputs = last?.in?.map(([k]) => inLabel(k)).join(', ');
+  const inputs = last?.in?.map(([k]) => inLabel(k, cpu)).join(', ');
   let zlo = 255, zhi = 0;
   for (const p of pts) if (p.z != null) { if (p.z < zlo) zlo = p.z; if (p.z > zhi) zhi = p.z; }
-  const zKey = xRpm && pts.find(p => p.z != null)?.in.find(([k]) => k !== RPM && k !== 'in')?.[0];
+  const isRpmKey = k => cpu === 'klr' ? KLR_RPM_KEYS.has(k) : k === RPM;
+  const zKey = xRpm ? pts.find(p => p.z != null)?.in.find(([k]) => !isRpmKey(k) && k !== 'in')?.[0] : null;
   return (
     <div style={{background:C.panelBg,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'6px 8px',minWidth:0,textAlign:'left'}}>
       <div style={{display:'flex',gap:'8px',alignItems:'baseline',flexWrap:'wrap'}}>
@@ -177,13 +233,13 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRp
                      tickFormatter={v => `${+v.toFixed(0)}`} stroke={C.textDim} />
               <YAxis dataKey="v" type="number" tick={ax} stroke={C.textDim} width={34} allowDecimals={false}
                      domain={[0, hi > 0 ? 'dataMax' : 1]} />
-              <Tooltip content={<TipBox xRpm={xRpm} />} isAnimationActive={false} />
+              <Tooltip content={<TipBox xRpm={xRpm} cpu={cpu} />} isAnimationActive={false} />
               {xRpm && <ZAxis range={[14, 14]} />}
               {!xRpm && <CursorLine stroke={C.textBright} strokeWidth={1} />}
               <DragArea zoom={zoom} fill={C.textBright} />
               {xRpm
                 ? <Scatter dataKey="v" isAnimationActive={false} shape="circle" fill={C.amber}
-                           line={def.dim !== 3 ? {stroke:C.amber, strokeWidth:1} : false}>
+                           line={def.dim !== 3 && cpu !== 'klr' ? {stroke:C.amber, strokeWidth:1} : false}>
                     {pts.map((p, i) => <Cell key={i} fill={p.z != null ? zColour(p.z, zlo, zhi) : C.amber} />)}
                   </Scatter>
                 : <Line dataKey="v" type="stepAfter" stroke={C.amber} strokeWidth={1.3} isAnimationActive={false}
@@ -193,7 +249,7 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRp
       <div style={{display:'flex',gap:'2px 10px',flexWrap:xRpm ? 'wrap' : 'nowrap',whiteSpace:'nowrap',color:C.textDim,fontSize:'8px',opacity:0.75}}>
         <span>{n} logged{xRpm ? ` · ${pts.length} distinct shown` : ''}</span>
         {zKey != null && <span title="colour of each point: the map's other input">
-          colour: {inLabel(zKey)} <span style={{color:zColour(zlo, zlo, zhi)}}>0x{hx(zlo)}</span>→<span style={{color:zColour(zhi, zlo, zhi)}}>0x{hx(zhi)}</span>
+          colour: {inLabel(zKey, cpu)} <span style={{color:zColour(zlo, zlo, zhi)}}>0x{hx(zlo)}</span>→<span style={{color:zColour(zhi, zlo, zhi)}}>0x{hx(zhi)}</span>
         </span>}
         {pts.length > 0 && <span>range 0x{hx(lo)}–0x{hx(hi)}</span>}
         {inputs && <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>in: {inputs}</span>}
@@ -208,7 +264,7 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRp
 // doesn't name one; null: live, where the sim's loaded image is the one.
 // Either way without a hash the bridge's loaded image is drawn.
 // Polls while the bridge is drawing.
-function RomGraph({ def, bridge, logRom, onClose }) {
+function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
   const [info, setInfo] = useState(null);     // { status, sha, rom, error, maps, tables } or { unreachable }
   const [img, setImg] = useState(null);       // object URL
   const [imgErr, setImgErr] = useState(null);
@@ -216,12 +272,12 @@ function RomGraph({ def, bridge, logRom, onClose }) {
   useEffect(() => {
     let stop = false, timer = null;
     const q = /^[0-9a-f]{16}$/.test(logRom?.sha ?? '') ? `?sha=${logRom.sha}` : '';
-    const poll = () => fetch(`${bridge}/maps/dme${q}`).then(r => r.json())
+    const poll = () => fetch(`${bridge}/maps/${cpu}${q}`).then(r => r.json())
       .then(j => { if (stop) return; setInfo(j); if (j.status === 'generating' || j.status === 'none') timer = setTimeout(poll, 2000); })
       .catch(() => { if (!stop) setInfo({ unreachable: true }); });
     poll();
     return () => { stop = true; clearTimeout(timer); };
-  }, [bridge, logRom?.sha]);
+  }, [bridge, logRom?.sha, cpu]);
 
   const entry = info?.status === 'ready'
     ? (def.id[0] === 'M' ? info.maps?.[def.id.slice(1)] : info.tables?.[def.id.slice(1).padStart(4, '0')])
@@ -230,12 +286,12 @@ function RomGraph({ def, bridge, logRom, onClose }) {
   useEffect(() => {
     if (!file || !info?.sha) return;
     let url = null, stop = false;
-    fetch(`${bridge}/maps/dme/${info.sha}/${file}`)
+    fetch(`${bridge}/maps/${cpu}/${info.sha}/${file}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
       .then(b => { if (stop) return; url = URL.createObjectURL(b); setImg(url); })
       .catch(e => { if (!stop) setImgErr(e.message); });
     return () => { stop = true; if (url) URL.revokeObjectURL(url); };
-  }, [bridge, info?.sha, file]);
+  }, [bridge, info?.sha, file, cpu]);
 
   useEffect(() => {
     const k = e => { if (e.key === 'Escape') onClose(); };
@@ -246,17 +302,17 @@ function RomGraph({ def, bridge, logRom, onClose }) {
   const note = s => <div style={{color:C.textDim,fontSize:'12px',padding:'40px 20px',textAlign:'center',lineHeight:1.6}}>{s}</div>;
   let body;
   if (!info) body = note('asking the simulator bridge…');
-  else if (info.unreachable) body = note(<>Can't reach the simulator bridge at {bridge}.<br />
+  else if (info.unreachable || info.error === 'not found') body = note(<>Can't reach the simulator bridge at {bridge}{info.error ? ' (or it is a version without KLR graphs)' : ''}.<br />
     The graphs are drawn on your machine from the loaded ROM: start it with
     <code style={{color:C.blue}}> node dme_klr/live/bridge.mjs</code> (needs python3 with matplotlib).</>);
   else if (info.status === 'unknown') body = note(<>This log ran on {logRom?.file} (sha {info.sha}), and the bridge
-    has no image with that content: it isn't in bin_images/dme or among the uploaded ROMs on this machine.<br />
+    has no image with that content: it isn't in bin_images/{cpu} or among the uploaded ROMs on this machine.<br />
     Copy the image into bin_images/dme, or load it with LIVE → LOAD .mem, and open the graph again.</>);
-  else if (info.status === 'none') body = note('The bridge has no DME image loaded yet. Waiting for the simulator…');
-  else if (info.status === 'generating') body = note(`Drawing the graphs for ${info.rom} (once per ROM image, about 20 s)…`);
+  else if (info.status === 'none') body = note(`The bridge has no ${cpu.toUpperCase()} image loaded yet. Waiting for the simulator…`);
+  else if (info.status === 'generating') body = note(`Drawing the graphs for ${info.rom} (once per ROM image, ${cpu === 'klr' ? 'a few' : 'about 20'} s)…`);
   else if (info.status === 'error') body = note(<>map_graphs.py failed for {info.rom}:<br />
     <pre style={{color:C.amber,textAlign:'left',whiteSpace:'pre-wrap',fontSize:'10px'}}>{info.error}</pre></>);
-  else if (!file) body = note(`${info.rom} has no ${def.id[0] === 'M' ? `map ${def.id.slice(1)}` : `table ${def.id.slice(1)}h`} (the map index entry is FFh).`);
+  else if (!file) body = note(`${info.rom} has no ${def.id[0] === 'M' ? `map ${def.id.slice(1)}` : `table ${def.id.slice(1)}h`}${cpu === 'klr' ? '' : ' (the map index entry is FFh)'}.`);
   else if (imgErr) body = note(`Couldn't load the graph: ${imgErr}`);
   else if (!img) body = note('loading…');
   else body = <img src={img} alt={`${def.title} graph`} style={{maxWidth:'100%',maxHeight:'calc(100vh - 140px)',display:'block',margin:'0 auto',background:'#fff'}} />;
@@ -289,7 +345,7 @@ function RomGraph({ def, bridge, logRom, onClose }) {
 
 // lookups: id -> [{ t, v, in }] (dmeLogParser); ver bumps when any grows
 // bridge: the simulator bridge's URL, where the ROM graphs come from
-const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge, logRom, byRpm = false }) {
+const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge, logRom, byRpm = false, cpu = 'dme', rpmRows }) {
   const [open, setOpen] = useState(null);   // def whose ROM graph is shown
   const [filter, setFilter] = useState('');
   const [showMaps, setShowMaps] = useState(true);
@@ -298,10 +354,12 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
   const [usedOnly, setUsedOnly] = useState(false);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const defs = useMemo(() => byRpm ? allDefs(lookups).filter(d => hasRpm(d, lookups)) : allDefs(lookups), [lookups, ver, byRpm]);
+  const defs = useMemo(() => byRpm ? allDefs(lookups, cpu).filter(d => hasRpm(d, lookups, cpu)) : allDefs(lookups, cpu), [lookups, ver, byRpm, cpu]);
   // byRpm: each map's distinct lookups against rpm
+  const rpmPts = useMemo(() => byRpm ? Object.fromEntries(defs.map(d =>
+    [d.id, rpmPoints(lookups?.[d.id] ?? [], cpu === 'klr' ? rpmAtFn(rpmRows) : null)])) : null,
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const rpmPts = useMemo(() => byRpm ? Object.fromEntries(defs.map(d => [d.id, rpmPoints(lookups?.[d.id] ?? [])])) : null, [defs, lookups, ver, byRpm]);
+  [defs, lookups, ver, byRpm, cpu, rpmRows]);
   const full = useMemo(() => {
     let a = Infinity, b = -Infinity;
     if (rpmPts) {
@@ -334,12 +392,13 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defs, lookups, ver, t0, t1, rpmPts]);
 
+  const klr = cpu === 'klr';
   const nLines = Object.values(lookups ?? {}).reduce((s, a) => s + a.length, 0);
   if (!nLines) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'13px',lineHeight:1.6}}>
-      No map lookups in this log.<br />
+      No {klr ? 'KLR ' : ''}map lookups in this log.<br />
       <span style={{fontSize:'11px'}}>
-        The lookup results come from <code style={{color:C.blue}}>DME: [LKUP]</code> lines, which
+        The lookup results come from <code style={{color:C.blue}}>{klr ? 'KLR' : 'DME'}: [LKUP]</code> lines, which
         dme_klr_dashboard_tb.v prints from the version that added this tab on. Re-run the test with
         run_dashboard_tests.sh, or press LIVE.
       </span>
@@ -372,7 +431,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
           ? <div style={{color:'#557755',fontSize:'10px',padding:'4px'}}>none match</div>
           : <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(380px, 1fr))',gap:'8px'}}>
               {list.map(d => <MapChart key={d.id} def={d} pts={series[d.id].pts} n={series[d.id].n}
-                                       t0={t0} t1={t1} zoom={zoom} onOpen={setOpen} xRpm={byRpm} />)}
+                                       t0={t0} t1={t1} zoom={zoom} onOpen={setOpen} xRpm={byRpm} cpu={cpu} />)}
             </div>}
       </div>
     );
@@ -380,24 +439,28 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
 
   return (
     <div style={{userSelect:'none',textAlign:'left'}}>
-      {open && <RomGraph def={open} bridge={bridge} logRom={logRom} onClose={() => setOpen(null)} />}
+      {open && <RomGraph def={open} bridge={bridge} logRom={logRom} cpu={cpu} onClose={() => setOpen(null)} />}
       <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap'}}>
         <ZoomBar zoom={zoom} range={range} full={full} btn={btn} color={C.textBright} dim={C.textDim} hint={false} unit={byRpm ? 'rpm' : 'ms'} />
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="filter: number, name, purpose"
                style={{...inp,width:'200px'}} />
-        {check(showMaps, setShowMaps, 'NUMBERED MAPS')}
-        {!byRpm && check(showTables, setShowTables, 'DIRECT TABLES')}
+        {check(showMaps, setShowMaps, klr ? 'MAPS' : 'NUMBERED MAPS')}
+        {(klr || !byRpm) && check(showTables, setShowTables, klr ? 'RPM TABLES' : 'DIRECT TABLES')}
         {check(showOther, setShowOther, 'OTHERS IN LOG')}
         {check(usedOnly, setUsedOnly, 'LOOKED UP ONLY')}
         <span style={{color:C.textDim,fontSize:'9px',marginLeft:'auto'}}>
-          click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · {byRpm ? 'x axis: rpm (37h × 40) · 3D maps coloured by their other input' : 'click to move scrubber'} · hover for the inputs
+          click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · {byRpm ? (klr ? 'x axis: the DME\'s rpm at each lookup · maps coloured by throttle (43h)' : 'x axis: rpm (37h × 40) · 3D maps coloured by their other input') : 'click to move scrubber'} · hover for the inputs
         </span>
       </div>
-      {showMaps && section('map', byRpm ? 'NUMBERED MAPS WITH RPM AS AN INPUT' : 'NUMBERED MAPS', byRpm
+      {klr && showMaps && section('map', 'KLR MAPS (THROTTLE × RPM)', byRpm
+        ? 'result against the DME\'s engine speed · each distinct lookup once · inputs 43h throttle index, 44h rpm index'
+        : 'result as the firmware returns it · inputs 43h throttle index (3Ah − 53), 44h rpm index (0 = highest rpm)')}
+      {klr && showTables && section('table', 'RPM TABLES', 'the rpm axis (24h → 44h) and the rpm-dependent constants at 925h (one entry each, by 44h/8)')}
+      {!klr && showMaps && section('map', byRpm ? 'NUMBERED MAPS WITH RPM AS AN INPUT' : 'NUMBERED MAPS', byRpm
         ? 'map_lookup result against rpm · each distinct lookup once · 3D maps, then 2D, then unknown ones'
         : 'map_lookup result (A on return) · 3D maps, then 2D, then unknown ones · each by input: rpm first, then the most used')}
-      {showTables && !byRpm && section('table', 'DIRECTLY ADDRESSED TABLES', 'byte read from the table; 1140h/1150h share one read (1150h = index 10h and up)')}
-      {showOther && section('other', 'OTHER MAPS AND TABLES IN THIS LOG', 'looked up by the firmware but not on either sheet')}
+      {!klr && showTables && !byRpm && section('table', 'DIRECTLY ADDRESSED TABLES', 'byte read from the table; 1140h/1150h share one read (1150h = index 10h and up)')}
+      {showOther && section('other', 'OTHER MAPS AND TABLES IN THIS LOG', klr ? 'logged but not on the maps_index sheet' : 'looked up by the firmware but not on either sheet')}
     </div>
   );
 });
