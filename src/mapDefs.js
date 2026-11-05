@@ -8,7 +8,13 @@
 
 // n: map number (R2 at map_lookup, decimal); addr: map address in the code ROM
 export const NUMBERED_MAPS = [
+  {"n": 1, "name": "MAP1_UNKNOWN", "r2": "01h", "addr": "12A6h", "axes": "04h", "purpose": "unknown", "covered": ""},
+  {"n": 2, "name": "MAP2_UNKNOWN", "r2": "02h", "addr": "12A6h", "axes": "04h", "purpose": "unknown", "covered": ""},
   {"n": 3, "name": "MAP3_CRANK_CLEAR_RPM", "r2": "03h", "addr": "1447h", "axes": "13h", "purpose": "rpm threshold for clearing the cranking flag 23h.2", "covered": ""},
+  {"n": 4, "name": "MAP4_UNKNOWN", "r2": "04h", "addr": "13BCh", "axes": "13h", "purpose": "unknown", "covered": ""},
+  {"n": 8, "name": "MAP8_UNKNOWN", "r2": "08h", "addr": "13ACh", "axes": "37h", "purpose": "unknown", "covered": ""},
+  {"n": 18, "name": "MAP18_UNKNOWN", "r2": "12h", "addr": "13C4h", "axes": "13h", "purpose": "unknown", "covered": ""},
+  {"n": 24, "name": "MAP24_UNKNOWN", "r2": "18h", "addr": "13DCh", "axes": "37h, 11h", "purpose": "unknown", "covered": ""},
   {"n": 25, "name": "MAP25_COAST_FUELCUT_RPM", "r2": "19h", "addr": "144Fh", "axes": "13h", "purpose": "coasting fuel cut rpm threshold", "covered": "fuel cut"},
   {"n": 26, "name": "MAP26_INJ_DEADTIME", "r2": "1Ah", "addr": "1598h", "axes": "11h", "purpose": "injector dead-time by system voltage", "covered": "fuel enrichments"},
   {"n": 27, "name": "MAP27_LOAD_LPF_COEF", "r2": "1Bh", "addr": "159Eh", "axes": "37h", "purpose": "load low-pass filter coefficient by rpm", "covered": "load"},
@@ -36,12 +42,15 @@ export const NUMBERED_MAPS = [
   {"n": 59, "name": "MAP59_ISV_PWM_COAST_ADJ", "r2": "3Bh", "addr": "161Fh", "axes": "37h", "purpose": "ISV PWM adjustment during coasting fuel cutoff", "covered": "ISV routine"},
   {"n": 60, "name": "MAP60_ISV_BASE_PWM", "r2": "3Ch", "addr": "1629h", "axes": "37h, 13h", "purpose": "base (feed-forward) ISV PWM", "covered": "ISV routine"},
   {"n": 62, "name": "MAP62_65_LAMBDA_STEP_UNCHANGED", "r2": "3Eh", "addr": "1659h", "axes": "37h, 49h", "purpose": "lambda correction step, condition unchanged", "covered": "lambda"},
-  {"n": 65, "name": "MAP62_65_LAMBDA_STEP_UNCHANGED", "r2": "41h", "addr": "1659h", "axes": "37h, 49h", "purpose": "lambda correction step, condition unchanged", "covered": "lambda"},
   {"n": 63, "name": "MAP63_66_LAMBDA_STEP_TO_LEAN", "r2": "3Fh", "addr": "1694h", "axes": "37h, 49h", "purpose": "lambda correction step, changed to lean", "covered": "lambda"},
-  {"n": 66, "name": "MAP63_66_LAMBDA_STEP_TO_LEAN", "r2": "42h", "addr": "1694h", "axes": "37h, 49h", "purpose": "lambda correction step, changed to lean", "covered": "lambda"},
   {"n": 64, "name": "MAP64_67_LAMBDA_STEP_TO_NOTLEAN", "r2": "40h", "addr": "16BAh", "axes": "37h, 49h", "purpose": "lambda correction step, changed to not-lean", "covered": "lambda"},
+  {"n": 65, "name": "MAP62_65_LAMBDA_STEP_UNCHANGED", "r2": "41h", "addr": "1659h", "axes": "37h, 49h", "purpose": "lambda correction step, condition unchanged", "covered": "lambda"},
+  {"n": 66, "name": "MAP63_66_LAMBDA_STEP_TO_LEAN", "r2": "42h", "addr": "1694h", "axes": "37h, 49h", "purpose": "lambda correction step, changed to lean", "covered": "lambda"},
   {"n": 67, "name": "MAP64_67_LAMBDA_STEP_TO_NOTLEAN", "r2": "43h", "addr": "18ECh", "axes": "37h, 49h", "purpose": "lambda correction step, changed to not-lean", "covered": "lambda"},
   {"n": 68, "name": "MAP68_OVERLOAD_LOAD_THRESH", "r2": "44h", "addr": "16E0h", "axes": "37h", "purpose": "overload load threshold by rpm", "covered": "fuel cut"},
+  {"n": 72, "name": "MAP72_UNKNOWN", "r2": "48h", "addr": "12C0h", "axes": "37h", "purpose": "unknown", "covered": ""},
+  {"n": 73, "name": "MAP73_UNKNOWN", "r2": "49h", "addr": "13CCh", "axes": "37h", "purpose": "unknown", "covered": ""},
+  {"n": 74, "name": "MAP74_UNKNOWN", "r2": "4Ah", "addr": "13D4h", "axes": "13h", "purpose": "unknown", "covered": ""},
   {"n": 75, "name": "MAP75_WOT_FUEL", "r2": "4Bh", "addr": "1544h", "axes": "37h", "purpose": "WOT fuel map", "covered": "fuel enrichments"},
   {"n": 79, "name": "MAP79_PART_THROTTLE_FUEL", "r2": "4Fh", "addr": "148Ch", "axes": "37h, 49h", "purpose": "part throttle fuel map", "covered": "fuel enrichments"},
   {"n": 83, "name": "MAP83_BASE_CRANK_ENR", "r2": "53h", "addr": "157Ah", "axes": "13h", "purpose": "base cranking enrichment", "covered": "fuel enrichments"},
@@ -52,6 +61,7 @@ export const NUMBERED_MAPS = [
   {"n": 88, "name": "MAP87_90_ISV_TARGET_LOAD", "r2": "58h", "addr": "18E2h", "axes": "13h", "purpose": "ISV target load by temperature, selected by code plug", "covered": "ISV routine"},
   {"n": 89, "name": "MAP87_90_ISV_TARGET_LOAD", "r2": "59h", "addr": "164Fh", "axes": "13h", "purpose": "ISV target load by temperature, selected by code plug", "covered": "ISV routine"},
   {"n": 90, "name": "MAP87_90_ISV_TARGET_LOAD", "r2": "5Ah", "addr": "1AFAh", "axes": "13h", "purpose": "ISV target load by temperature, selected by code plug", "covered": "ISV routine"},
+  {"n": 91, "name": "MAP91_UNKNOWN", "r2": "5Bh", "addr": "12CAh", "axes": "37h, 49h", "purpose": "unknown", "covered": ""},
 ];
 
 // addr: table address (hex, no h)
@@ -59,6 +69,7 @@ export const DIRECT_TABLES = [
   {"addr": "10F4", "name": "AFM_XFER_TABLE1", "purpose": "AFM transfer table 1, indexed by the raw value divided by 32", "covered": "load"},
   {"addr": "10FC", "name": "AFM_XFER_TABLE2_SHIFT", "purpose": "AFM transfer table 2, exponent for the left shift (2^n)", "covered": "load"},
   {"addr": "1104", "name": "AFM_XFER_TABLE3", "purpose": "AFM transfer table 3, indexed by the remainder of the division by 32", "covered": "load"},
+  {"addr": "1124", "name": "TABLE1124_UNKNOWN", "purpose": "unknown", "covered": ""},
   {"addr": "112E", "name": "FQS_SWITCH_MAP", "purpose": "FQS map, maps the ADC value in 17h to a switch position of 0-7", "covered": "fuel enrichments"},
   {"addr": "1140", "name": "REACT_IDLE_FUEL_TABLE", "purpose": "return-to-idle transient fuel correction, indexed by 4Dh", "covered": "post-ignition"},
   {"addr": "1150", "name": "REACT_THROTTLE_FUEL_TABLE", "purpose": "return-to-throttle transient fuel correction, indexed by 4Dh", "covered": "post-ignition"},
