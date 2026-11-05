@@ -10,6 +10,7 @@ import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 import { prpmToRpm, ntcLinToC, battRawToV, memName } from "./memDefs.js";
 import { MemSearch } from "./memSearch.jsx";
 import { rpmAtFn } from "./rpmAt.js";
+import { searchMaps, mapEntry } from "./mapSearch.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  TIMELINE TAB
@@ -58,8 +59,15 @@ const DEFAULT_RPM_PICKS = [{src:'dme', addr:0x7D, unit:'raw'}];
 // (21h goes 0x13 → 0x70 at ~1.6 s in warm_idle_5s) while prpm stays valid.
 const fwRpm = (ir, synced) => synced ? prpmToRpm(ir[0x37]) : null;
 const hx = v => v.toString(16).toUpperCase().padStart(2, '0');
-const pickKey = p => `${p.src}_${hx(p.addr)}${p.bit != null ? `_${p.bit}` : ''}`;
+// A pick is a memory byte or bit { src, addr, bit?, unit? } or a map /
+// table's lookup results { src, map: 'M27' | 'T10F4', unit? } (the
+// [LKUP] lines, as on the MAPS tabs)
+const pickKey = p => p.map ? `${p.src}_${p.map}` : `${p.src}_${hx(p.addr)}${p.bit != null ? `_${p.bit}` : ''}`;
 const pickLabel = p => {
+  if (p.map) {
+    const e = mapEntry(p.src, p.map);
+    return `${p.src.toUpperCase()} ${p.map[0] === 'T' && p.src === 'dme' ? 'table ' : ''}${e.tag}${e.name ? ` ${e.name}` : ''}`;
+  }
   const n = memName(p.src, p.addr, p.bit);
   return `${p.src === 'dme' ? 'DME iram' : 'KLR ram'}[${hx(p.addr)}h]${p.bit != null ? `.${p.bit}` : ''}${n ? ` ${n}` : ''}`;
 };
@@ -167,8 +175,8 @@ function savePicks(p, key = PICKS_KEY) {
 // A picker's chips (with unit selectors and remove buttons) and its
 // DME/KLR address search. picks/setPicks: that picker's list (setPicks
 // also saves it); chip: the legend chip that toggles a series.
-function PickBar({ title, picks, setPicks, hasKlr, chip, inp, btn }) {
-  const [src, setSrc] = useState('dme');
+function PickBar({ title, picks, setPicks, hasKlr, chip, inp, btn, lookups, klrLookups }) {
+  const [src, setSrc] = useState('dme');   // dme, klr, or dmeMap / klrMap: a map or table
   const [addr, setAddr] = useState('');     // search text: hex address or name
   const [bit, setBit] = useState('');
   const addAt = (a, b) => {
@@ -182,6 +190,17 @@ function PickBar({ title, picks, setPicks, hasKlr, chip, inp, btn }) {
   const bitIn = () => bit === '' ? null : parseInt(bit, 10);
   const add = () => addAt(parseInt(addr.replace(/^0x/i, '').replace(/h$/i, ''), 16), bitIn());
   const pickMatch = (m, byKey) => addAt(m.addr, (byKey ? bitIn() : null) ?? m.bit ?? null);
+  // Maps and tables
+  const mapSrc = src === 'dmeMap' ? 'dme' : src === 'klrMap' ? 'klr' : null;
+  const logged = mapSrc === 'klr' ? klrLookups : lookups;
+  // (not memoized: the lookups object gains maps in place while live)
+  const search = mapSrc ? q => searchMaps(mapSrc, q, Object.keys(logged ?? {})) : undefined;
+  const addMap = m => {
+    setAddr('');
+    if (!m) return;
+    const p = { src: mapSrc, map: m.id, unit: 'raw' };
+    if (!picks.some(q => pickKey(q) === pickKey(p))) setPicks([...picks, p]);
+  };
   const remove = k => setPicks(picks.filter(p => pickKey(p) !== k));
   const setUnit = (k, unit) => setPicks(picks.map(p => pickKey(p) === k ? { ...p, unit } : p));
   return (<>
@@ -202,19 +221,31 @@ function PickBar({ title, picks, setPicks, hasKlr, chip, inp, btn }) {
       <select value={src} onChange={e => setSrc(e.target.value)} style={inp}>
         <option value="dme">DME iram</option>
         <option value="klr" disabled={!hasKlr}>KLR ram</option>
+        <option value="dmeMap">DME map / table</option>
+        <option value="klrMap" disabled={!hasKlr}>KLR map / table</option>
       </select>
-      <MemSearch src={src} value={addr} onChange={setAddr} onPick={pickMatch} onEnter={add}
-                 style={{...inp,width:'170px'}} />
-      <input value={bit} onChange={e => setBit(e.target.value)} placeholder="bit"
-             onKeyDown={e => e.key === 'Enter' && add()} style={{...inp,width:'32px'}} />
-      <button style={btn} onClick={add}>ADD</button>
+      {mapSrc ? <>
+        <MemSearch key={src} src={mapSrc} value={addr} onChange={setAddr} search={search}
+                   onPick={addMap} onEnter={() => addMap(search(addr)[0])}
+                   placeholder="search map no., addr or name" style={{...inp,width:'202px'}} />
+        <button style={btn} onClick={() => addMap(search(addr)[0])}>ADD</button>
+      </> : <>
+        <MemSearch src={src} value={addr} onChange={setAddr} onPick={pickMatch} onEnter={add}
+                   style={{...inp,width:'170px'}} />
+        <input value={bit} onChange={e => setBit(e.target.value)} placeholder="bit"
+               onKeyDown={e => e.key === 'Enter' && add()} style={{...inp,width:'32px'}} />
+        <button style={btn} onClick={add}>ADD</button>
+      </>}
     </span>
   </>);
 }
 
 // Memoized: live mode re-renders the page on every sim tick
 // range/setRange: the zoom shared with the other chart tabs ([t0, t1] or null = whole log)
-const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrData, onSeek, range, setRange }) {
+// lookups / klrLookups: the DME's and KLR's map and table lookups (id -> [{ t, v, in }],
+// appended in place while live, so lookupsVer / klrLookupsVer key the memos)
+const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhases, klrData, onSeek, range, setRange,
+                                               lookups, lookupsVer, klrLookups, klrLookupsVer }) {
   const [showDmeMk, setShowDmeMk] = useState(true);
   const [showKlrMk, setShowKlrMk] = useState(true);
   const [hidden, setHidden] = useState({});     // series key → true when hidden
@@ -241,7 +272,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       for (const a of ADCS) r[`adc_${hx(a.addr)}`] = ir[a.addr] ?? null;
       // ADC channel inputs (channel = iram address - 10h), newer logs only
       if (s.adcIn) for (const a of ADCS) r[`in_${hx(a.addr)}`] = s.adcIn[a.addr - 0x10];
-      for (const p of picks) if (p.src === 'dme') {
+      for (const p of picks) if (p.src === 'dme' && !p.map) {
         const v = ir[p.addr];
         r[pickKey(p)] = v == null ? null : p.bit != null ? (v >> p.bit) & 1 : v;
       }
@@ -252,13 +283,18 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       r.klr33 = s.ram[0x33] ?? null;
       const bits = s.extra ?? '';
       r.fullLoad = /^[01]$/.test(bits[2] ?? '') ? +bits[2] : null;
-      for (const p of picks) if (p.src === 'klr') {
+      for (const p of picks) if (p.src === 'klr' && !p.map) {
         const v = s.ram[p.addr];
         r[pickKey(p)] = v == null ? null : p.bit != null ? (v >> p.bit) & 1 : v;
       }
     }
+    // Map / table picks: a row at each lookup
+    for (const p of picks) if (p.map)
+      for (const l of (p.src === 'klr' ? klrLookups : lookups)?.[p.map] ?? []) row(l.t)[pickKey(p)] = l.v;
     return [...byT.values()].sort((a, b) => a.t - b.t);
-  }, [chartData, dmeSnapshots, klrData.snapshots, picks]);
+    // lookupsVer / klrLookupsVer: the lookup arrays grow in place while live
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartData, dmeSnapshots, klrData.snapshots, picks, lookups, lookupsVer, klrLookups, klrLookupsVer]);
 
   const tMin = rows[0]?.t ?? 0, tMax = rows[rows.length - 1]?.t ?? 0;
   const [t0, t1] = range ?? [tMin, tMax];
@@ -311,7 +347,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
   const rpmRows = useMemo(() => {
     const out = [];
     const add = (t, ram, src) => {
-      const ps = rpmPicks.filter(p => p.src === src);
+      const ps = rpmPicks.filter(p => p.src === src && !p.map);
       if (!ps.length || !ram || t < t0 || t > t1) return;
       const r = rpmAt(t);
       if (!(r > 0)) return;
@@ -324,8 +360,16 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
     };
     for (const s of dmeSnapshots) if (!s.raw?.includes('[STATUS]')) add(s.t, s.iram, 'dme');
     for (const s of klrData.snapshots ?? []) add(s.t, s.ram, 'klr');
+    // Map / table picks: a dot per lookup, at the DME rpm at its time
+    for (const p of rpmPicks) if (p.map)
+      for (const l of (p.src === 'klr' ? klrLookups : lookups)?.[p.map] ?? []) {
+        if (l.t < t0 || l.t > t1) continue;
+        const r = rpmAt(l.t);
+        if (r > 0) out.push({ t: l.t, rpm: Math.round(r), [pickKey(p)]: l.v });
+      }
     return out.sort((a, b) => a.rpm - b.rpm || a.t - b.t);
-  }, [dmeSnapshots, klrData.snapshots, rpmPicks, rpmAt, t0, t1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dmeSnapshots, klrData.snapshots, rpmPicks, rpmAt, t0, t1, lookups, lookupsVer, klrLookups, klrLookupsVer]);
   const rpmLo = rpmRows[0]?.rpm, rpmHi = rpmRows[rpmRows.length - 1]?.rpm;
   const rpmFull = useMemo(() => rpmLo != null && rpmHi > rpmLo ? [rpmLo, rpmHi] : null, [rpmLo, rpmHi]);
   const rpmZoom = useZoom(rpmRange, setRpmRange, rpmFull);
@@ -483,10 +527,12 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       {/* ── Byte picker ──────────────────────────────────────── */}
       <div style={panel}>
         <div style={title}>
-          <PickBar title="MEMORY PICKER" picks={picks} setPicks={setPicks} hasKlr={hasKlr} chip={chip} inp={inp} btn={btn} />
+          <PickBar title="MEMORY PICKER" picks={picks} setPicks={setPicks} hasKlr={hasKlr} chip={chip} inp={inp} btn={btn}
+                   lookups={lookups} klrLookups={klrLookups} />
         </div>
         {picks.length > 0 && chart(shown.picks, 170, [
-          ...picks.filter(p => p.bit == null).map(p => line(pickKey(p), PICK_COLS[picks.indexOf(p) % PICK_COLS.length])),
+          ...picks.filter(p => p.bit == null).map(p => line(pickKey(p), PICK_COLS[picks.indexOf(p) % PICK_COLS.length], 'l',
+                                                            p.map ? {type:'stepAfter'} : {})),
           ...picks.filter(p => p.bit != null).map(p => line(pickKey(p), PICK_COLS[picks.indexOf(p) % PICK_COLS.length], 'r', {type:'stepAfter'})),
         ],
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} tickFormatter={v => `${hx(v)}h`} />,
@@ -496,7 +542,8 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       {/* ── Memory vs RPM ────────────────────────────────────── */}
       <div style={panel}>
         <div style={title}>
-          <PickBar title="MEMORY vs RPM" picks={rpmPicks} setPicks={setRpmPicks} hasKlr={hasKlr} chip={rpmChip} inp={inp} btn={btn} />
+          <PickBar title="MEMORY vs RPM" picks={rpmPicks} setPicks={setRpmPicks} hasKlr={hasKlr} chip={rpmChip} inp={inp} btn={btn}
+                   lookups={lookups} klrLookups={klrLookups} />
         </div>
         <div style={{display:'flex',gap:'12px',alignItems:'center',flexWrap:'wrap',marginBottom:'2px'}}>
           <ZoomBar zoom={rpmZoom} range={rpmRange} full={rpmFull} btn={btn} color={C.textBright} dim={C.textDim} unit="rpm" />
