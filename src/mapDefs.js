@@ -14,7 +14,7 @@ export const NUMBERED_MAPS = [
   {"n": 4, "name": "MAP4_UNKNOWN", "r2": "04h", "addr": "13BCh", "axes": "13h", "purpose": "unknown", "covered": ""},
   {"n": 8, "name": "MAP8_UNKNOWN", "r2": "08h", "addr": "13ACh", "axes": "37h", "purpose": "unknown", "covered": ""},
   {"n": 18, "name": "MAP18_UNKNOWN", "r2": "12h", "addr": "13C4h", "axes": "13h", "purpose": "unknown", "covered": ""},
-  {"n": 24, "name": "MAP24_UNKNOWN", "r2": "18h", "addr": "13DCh", "axes": "37h, 11h", "purpose": "unknown", "covered": ""},
+  {"n": 24, "name": "MAP24_DWELL_ANGLE", "r2": "18h", "addr": "13DCh", "axes": "37h, 11h", "purpose": "Dwell angle, stored in DWELL_ANGLE by dwell_angle_calc (07B7h)", "covered": ""},
   {"n": 25, "name": "MAP25_COAST_FUELCUT_RPM", "r2": "19h", "addr": "144Fh", "axes": "13h", "purpose": "coasting fuel cut rpm threshold", "covered": "fuel cut"},
   {"n": 26, "name": "MAP26_INJ_DEADTIME", "r2": "1Ah", "addr": "1598h", "axes": "11h", "purpose": "injector dead-time by system voltage", "covered": "fuel enrichments"},
   {"n": 27, "name": "MAP27_LOAD_LPF_COEF", "r2": "1Bh", "addr": "159Eh", "axes": "37h", "purpose": "load low-pass filter coefficient by rpm", "covered": "load"},
