@@ -1,14 +1,15 @@
-import { useState, useMemo, memo } from "react";
+import { useState, useMemo, memo, useContext } from "react";
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid,
+  ResponsiveContainer, CartesianGrid, ReferenceLine,
   useXAxisScale, usePlotArea
 } from "recharts";
 import { thin, syncNearest, inRange } from "./thin.js";
-import { CursorLine } from "./cursor.jsx";
+import { CursorLine, CursorContext } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 import { prpmToRpm, ntcLinToC, battRawToV, memName } from "./memDefs.js";
 import { MemSearch } from "./memSearch.jsx";
+import { rpmAtFn } from "./rpmAt.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  TIMELINE TAB
@@ -48,6 +49,8 @@ const MAX_MARKERS = 400;
 const MAX_IGN_POINTS = 1500;
 const DEFAULT_PICKS = [{src:'dme', addr:0x7D}, {src:'klr', addr:0x33}];
 const PICKS_KEY = 'dme951.timeline.picks';
+const RPM_PICKS_KEY = 'dme951.timeline.rpmPicks';
+const DEFAULT_RPM_PICKS = [{src:'dme', addr:0x7D, unit:'raw'}];
 
 // prpmToRpm (37h × 40 rpm),
 // valid for prpm >= 3 once EngineSync (iram[21h].0) has been seen. The bit
@@ -126,15 +129,87 @@ function TipBox({ active, payload, label, markers, picks = [] }) {
   );
 }
 
-function loadPicks() {
+// MEMORY vs RPM tooltip: the engine speed, the sample's time, and each
+// picked byte at that sample in its chosen unit
+function RpmTipBox({ active, payload, label, picks }) {
+  if (!active || label == null) return null;
+  const row = payload?.[0]?.payload;
+  return (
+    <div style={{background:'#060e06ee',border:`1px solid ${C.border}`,padding:'4px 7px',fontSize:'10px',lineHeight:1.35}}>
+      <div style={{color:C.textBright}}>{Math.round(label)} rpm{row?.t != null && <span style={{color:C.textDim}}> · t={row.t} ms</span>}</div>
+      {(payload ?? []).filter(e => e.value != null).map(e => {
+        const p = picks.find(q => pickKey(q) === e.dataKey);
+        return <div key={e.dataKey} style={{color:e.color ?? e.fill}}>{e.name}: {p ? fmtPick(p, e.value) : e.value}</div>;
+      })}
+    </div>
+  );
+}
+
+// The playback cursor on the MEMORY vs RPM chart: a line at the engine
+// speed at the scrubber time
+function RpmCursor({ rpmAt, ...props }) {
+  const t = useContext(CursorContext);
+  const r = t == null ? null : rpmAt(t);
+  return r > 0 ? <ReferenceLine yAxisId="l" x={r} {...props} /> : null;
+}
+
+function loadPicks(key = PICKS_KEY, dflt = DEFAULT_PICKS) {
   try {
-    const v = JSON.parse(localStorage.getItem(PICKS_KEY));
+    const v = JSON.parse(localStorage.getItem(key));
     if (Array.isArray(v)) return v;
   } catch { /* storage unavailable */ }
-  return DEFAULT_PICKS;
+  return dflt;
 }
-function savePicks(p) {
-  try { localStorage.setItem(PICKS_KEY, JSON.stringify(p)); } catch { /* storage unavailable */ }
+function savePicks(p, key = PICKS_KEY) {
+  try { localStorage.setItem(key, JSON.stringify(p)); } catch { /* storage unavailable */ }
+}
+
+// A picker's chips (with unit selectors and remove buttons) and its
+// DME/KLR address search. picks/setPicks: that picker's list (setPicks
+// also saves it); chip: the legend chip that toggles a series.
+function PickBar({ title, picks, setPicks, hasKlr, chip, inp, btn }) {
+  const [src, setSrc] = useState('dme');
+  const [addr, setAddr] = useState('');     // search text: hex address or name
+  const [bit, setBit] = useState('');
+  const addAt = (a, b) => {
+    if (isNaN(a) || a < 0 || a > 0x7F || (b != null && (isNaN(b) || b < 0 || b > 7))) return;
+    const p = { src, addr: a, ...(b != null ? { bit: b } : { unit: defaultUnit(src, a) }) };
+    setAddr(''); setBit('');
+    if (picks.some(q => pickKey(q) === pickKey(p))) return;
+    setPicks([...picks, p]);
+  };
+  // ADD / Enter: the text as a hex address (Enter on a highlighted search match picks that)
+  const bitIn = () => bit === '' ? null : parseInt(bit, 10);
+  const add = () => addAt(parseInt(addr.replace(/^0x/i, '').replace(/h$/i, ''), 16), bitIn());
+  const pickMatch = (m, byKey) => addAt(m.addr, (byKey ? bitIn() : null) ?? m.bit ?? null);
+  const remove = k => setPicks(picks.filter(p => pickKey(p) !== k));
+  const setUnit = (k, unit) => setPicks(picks.map(p => pickKey(p) === k ? { ...p, unit } : p));
+  return (<>
+    {title}
+    {picks.map((p, i) => (
+      <span key={pickKey(p)} style={{display:'inline-flex',gap:'4px',alignItems:'center'}}>
+        {chip(pickKey(p), pickLabel(p), PICK_COLS[i % PICK_COLS.length])}
+        {p.bit == null &&
+          <select value={p.unit ?? 'raw'} onChange={e => setUnit(pickKey(p), e.target.value)}
+                  title={`Tooltip unit${UNITS[p.unit]?.note ? ` — ${UNITS[p.unit].note}` : ''}`}
+                  style={{...inp,padding:'1px 2px',fontSize:'9px',textTransform:'none',letterSpacing:0}}>
+            {Object.entries(UNITS).map(([k, u]) => <option key={k} value={k}>{u.label}</option>)}
+          </select>}
+        <span onClick={() => remove(pickKey(p))} style={{cursor:'pointer',color:'#886666'}} title="Remove">✕</span>
+      </span>
+    ))}
+    <span style={{display:'inline-flex',gap:'4px',alignItems:'center',marginLeft:'auto',textTransform:'none',letterSpacing:0}}>
+      <select value={src} onChange={e => setSrc(e.target.value)} style={inp}>
+        <option value="dme">DME iram</option>
+        <option value="klr" disabled={!hasKlr}>KLR ram</option>
+      </select>
+      <MemSearch src={src} value={addr} onChange={setAddr} onPick={pickMatch} onEnter={add}
+                 style={{...inp,width:'170px'}} />
+      <input value={bit} onChange={e => setBit(e.target.value)} placeholder="bit"
+             onKeyDown={e => e.key === 'Enter' && add()} style={{...inp,width:'32px'}} />
+      <button style={btn} onClick={add}>ADD</button>
+    </span>
+  </>);
 }
 
 // Memoized: live mode re-renders the page on every sim tick
@@ -143,10 +218,12 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
   const [showDmeMk, setShowDmeMk] = useState(true);
   const [showKlrMk, setShowKlrMk] = useState(true);
   const [hidden, setHidden] = useState({});     // series key → true when hidden
-  const [picks, setPicks]   = useState(loadPicks);
-  const [pickSrc, setPickSrc]   = useState('dme');
-  const [pickAddr, setPickAddr] = useState('');   // search text: hex address or name
-  const [pickBit, setPickBit]   = useState('');
+  const [picks, setPicksRaw] = useState(() => loadPicks());
+  const setPicks = p => { setPicksRaw(p); savePicks(p); };
+  // MEMORY vs RPM: its own picks, plotted against engine speed
+  const [rpmPicks, setRpmPicksRaw] = useState(() => loadPicks(RPM_PICKS_KEY, DEFAULT_RPM_PICKS));
+  const setRpmPicks = p => { setRpmPicksRaw(p); savePicks(p, RPM_PICKS_KEY); };
+  const [rpmRange, setRpmRange] = useState(null);   // MEMORY vs RPM zoom: [rpm0, rpm1] or null
 
   // ── One row per timestamp, DME and KLR DS snapshots merged ────
   const rows = useMemo(() => {
@@ -224,23 +301,37 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
     return { total: all.length, pts: all.filter((_, i) => i % step === 0).map(p => ({ t: p.t, ignPulse: +p.pulse_ms.toFixed(3) })) };
   }, [klrData.phases, t0, t1]);
 
-  const addPickAt = (addr, bit) => {
-    if (isNaN(addr) || addr < 0 || addr > 0x7F || (bit != null && (isNaN(bit) || bit < 0 || bit > 7))) return;
-    const p = { src: pickSrc, addr, ...(bit != null ? { bit } : { unit: defaultUnit(pickSrc, addr) }) };
-    setPickAddr(''); setPickBit('');
-    if (picks.some(q => pickKey(q) === pickKey(p))) return;
-    const next = [...picks, p];
-    setPicks(next); savePicks(next);
-  };
-  // ADD / Enter: the text as a hex address (Enter on a highlighted search match picks that)
-  const bitIn = () => pickBit === '' ? null : parseInt(pickBit, 10);
-  const addPick = () => addPickAt(parseInt(pickAddr.replace(/^0x/i, '').replace(/h$/i, ''), 16), bitIn());
-  const pickMatch = (m, byKey) => addPickAt(m.addr, (byKey ? bitIn() : null) ?? m.bit ?? null);
-  const removePick = k => { const next = picks.filter(p => pickKey(p) !== k); setPicks(next); savePicks(next); };
-  const setPickUnit = (k, unit) => {
-    const next = picks.map(p => pickKey(p) === k ? { ...p, unit } : p);
-    setPicks(next); savePicks(next);
-  };
+  // ── MEMORY vs RPM ─────────────────────────────────────────────
+  // Engine speed at any time from the DME's rpm (as the KLR RPM MAPS tab
+  // does): a DME sample gets its own snapshot's rpm, a KLR sample the DME
+  // rpm at its time (linear between DME samples, none across a 500 ms gap).
+  // Only samples inside the Timeline's time zoom are plotted.
+  const rpmAt = useMemo(() => rpmAtFn(chartData.filter(d => d.rpm != null).map(d => ({ t: d.t, rpm: d.rpm }))), [chartData]);
+  const rpmPickSig = rpmPicks.map(pickKey).join(',');
+  const rpmRows = useMemo(() => {
+    const out = [];
+    const add = (t, ram, src) => {
+      const ps = rpmPicks.filter(p => p.src === src);
+      if (!ps.length || !ram || t < t0 || t > t1) return;
+      const r = rpmAt(t);
+      if (!(r > 0)) return;
+      const row = { t, rpm: Math.round(r) };
+      for (const p of ps) {
+        const v = ram[p.addr];
+        row[pickKey(p)] = v == null ? null : p.bit != null ? (v >> p.bit) & 1 : v;
+      }
+      out.push(row);
+    };
+    for (const s of dmeSnapshots) if (!s.raw?.includes('[STATUS]')) add(s.t, s.iram, 'dme');
+    for (const s of klrData.snapshots ?? []) add(s.t, s.ram, 'klr');
+    return out.sort((a, b) => a.rpm - b.rpm || a.t - b.t);
+  }, [dmeSnapshots, klrData.snapshots, rpmPicks, rpmAt, t0, t1]);
+  const rpmLo = rpmRows[0]?.rpm, rpmHi = rpmRows[rpmRows.length - 1]?.rpm;
+  const rpmFull = useMemo(() => rpmLo != null && rpmHi > rpmLo ? [rpmLo, rpmHi] : null, [rpmLo, rpmHi]);
+  const rpmZoom = useZoom(rpmRange, setRpmRange, rpmFull);
+  const rpmShown = useMemo(() => thin(inRange(rpmRows, rpmRange, 'rpm'), rpmPickSig ? rpmPickSig.split(',') : []),
+                           [rpmRows, rpmRange, rpmPickSig]);
+
   if (!rows.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
       No snapshot data loaded — use LOAD LOG to parse a log file
@@ -266,6 +357,9 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
       ■ {label}
     </span>
   );
+
+  // MEMORY vs RPM chips hide its own dots, not the same byte on the time chart
+  const rpmChip = (k, label, col) => chip(`rpm:${k}`, label, col);
 
   // Every chart gets a right axis of the same width so the plot areas,
   // and therefore the time axes, line up vertically.
@@ -388,30 +482,8 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
 
       {/* ── Byte picker ──────────────────────────────────────── */}
       <div style={panel}>
-        <div style={title}>MEMORY PICKER
-          {picks.map((p, i) => (
-            <span key={pickKey(p)} style={{display:'inline-flex',gap:'4px',alignItems:'center'}}>
-              {chip(pickKey(p), pickLabel(p), PICK_COLS[i % PICK_COLS.length])}
-              {p.bit == null &&
-                <select value={p.unit ?? 'raw'} onChange={e => setPickUnit(pickKey(p), e.target.value)}
-                        title={`Tooltip unit${UNITS[p.unit]?.note ? ` — ${UNITS[p.unit].note}` : ''}`}
-                        style={{...inp,padding:'1px 2px',fontSize:'9px',textTransform:'none',letterSpacing:0}}>
-                  {Object.entries(UNITS).map(([k, u]) => <option key={k} value={k}>{u.label}</option>)}
-                </select>}
-              <span onClick={() => removePick(pickKey(p))} style={{cursor:'pointer',color:'#886666'}} title="Remove">✕</span>
-            </span>
-          ))}
-          <span style={{display:'inline-flex',gap:'4px',alignItems:'center',marginLeft:'auto',textTransform:'none',letterSpacing:0}}>
-            <select value={pickSrc} onChange={e => setPickSrc(e.target.value)} style={inp}>
-              <option value="dme">DME iram</option>
-              <option value="klr" disabled={!hasKlr}>KLR ram</option>
-            </select>
-            <MemSearch src={pickSrc} value={pickAddr} onChange={setPickAddr} onPick={pickMatch} onEnter={addPick}
-                       style={{...inp,width:'170px'}} />
-            <input value={pickBit} onChange={e => setPickBit(e.target.value)} placeholder="bit"
-                   onKeyDown={e => e.key === 'Enter' && addPick()} style={{...inp,width:'32px'}} />
-            <button style={btn} onClick={addPick}>ADD</button>
-          </span>
+        <div style={title}>
+          <PickBar title="MEMORY PICKER" picks={picks} setPicks={setPicks} hasKlr={hasKlr} chip={chip} inp={inp} btn={btn} />
         </div>
         {picks.length > 0 && chart(shown.picks, 170, [
           ...picks.filter(p => p.bit == null).map(p => line(pickKey(p), PICK_COLS[picks.indexOf(p) % PICK_COLS.length])),
@@ -419,6 +491,43 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
         ],
           <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} tickFormatter={v => `${hx(v)}h`} />,
           <YAxis yAxisId="r" orientation="right" tick={hasBits && ax} axisLine={hasBits} stroke={C.textDim} domain={[0, 1]} ticks={[0, 1]} width={36} />)}
+      </div>
+
+      {/* ── Memory vs RPM ────────────────────────────────────── */}
+      <div style={panel}>
+        <div style={title}>
+          <PickBar title="MEMORY vs RPM" picks={rpmPicks} setPicks={setRpmPicks} hasKlr={hasKlr} chip={rpmChip} inp={inp} btn={btn} />
+        </div>
+        <div style={{display:'flex',gap:'12px',alignItems:'center',flexWrap:'wrap',marginBottom:'2px'}}>
+          <ZoomBar zoom={rpmZoom} range={rpmRange} full={rpmFull} btn={btn} color={C.textBright} dim={C.textDim} unit="rpm" />
+          <span style={{color:C.textDim,fontSize:'8px'}}>
+            One dot per snapshot in {range ? 'the zoomed time span' : 'the whole log'}. KLR bytes are placed at the DME's engine speed at the same time.
+          </span>
+        </div>
+        {rpmPicks.length > 0 && (rpmShown.length ? (
+          <ZoomBox zoom={rpmZoom}><ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={rpmShown} margin={{top:4,right:8,bottom:0,left:0}} {...zoomHandlers(rpmZoom)}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
+              <XAxis dataKey="rpm" type="number" domain={rpmRange ?? rpmFull ?? ['auto', 'auto']} allowDataOverflow tick={ax}
+                     tickFormatter={v => `${v}`} stroke={C.textDim} />
+              <YAxis yAxisId="l" tick={ax} stroke={C.textDim} domain={[0, 255]} width={44} tickFormatter={v => `${hx(v)}h`} />
+              <YAxis yAxisId="r" orientation="right" tick={rpmPicks.some(p => p.bit != null) && ax}
+                     axisLine={rpmPicks.some(p => p.bit != null)} stroke={C.textDim} domain={[0, 1]} ticks={[0, 1]} width={36} />
+              <Tooltip content={<RpmTipBox picks={rpmPicks} />} isAnimationActive={false} />
+              <RpmCursor rpmAt={rpmAt} stroke={C.textBright} strokeDasharray="3 3" />
+              <DragArea zoom={rpmZoom} fill={C.textBright} />
+              {rpmPicks.map((p, i) => !hidden[`rpm:${pickKey(p)}`] && (
+                <Line key={pickKey(p)} yAxisId={p.bit != null ? 'r' : 'l'} dataKey={pickKey(p)} name={pickLabel(p)}
+                      stroke="none" dot={{ r: 1.5, fill: PICK_COLS[i % PICK_COLS.length], stroke: 'none' }}
+                      activeDot={{ r: 3 }} isAnimationActive={false} />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer></ZoomBox>
+        ) : (
+          <div style={{color:C.textDim, fontSize:'10px', padding:'12px 4px'}}>
+            No samples with an engine speed {range ? 'in the zoomed time span' : 'in this log'} yet.
+          </div>
+        ))}
       </div>
     </div>
   );

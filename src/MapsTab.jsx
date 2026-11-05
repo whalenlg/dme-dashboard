@@ -8,6 +8,7 @@ import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 import { IRAM_MAP, KLR_KNOWN } from "./memDefs.js";
 import { NUMBERED_MAPS, DIRECT_TABLES } from "./mapDefs.js";
 import { KLR_MAPS } from "./klrMapDefs.js";
+import { rpmAtFn } from "./rpmAt.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  MAPS TAB
@@ -58,22 +59,6 @@ const MAX_RPM_POINTS = 1500;   // per chart: distinct (rpm, inputs, result) poin
 const hasRpm = (d, lookups, cpu) => cpu === 'klr'
   ? (d.axes ?? []).some(a => KLR_RPM_KEYS.has(a))
   : d.id[0] === 'M' && (d.axes?.includes(RPM) || (lookups?.[d.id]?.at(-1)?.in ?? []).some(([k]) => k === RPM));
-
-// Engine speed at time t from DME rows [{ t, rpm }] (time sorted), linear
-// between rows no more than 500 ms apart, else null
-function rpmAtFn(rows) {
-  let j = 0;
-  return t => {
-    if (!rows?.length) return null;
-    if (j >= rows.length || rows[j].t > t) j = 0;
-    while (j + 1 < rows.length && rows[j + 1].t <= t) j++;
-    const a = rows[j], b = rows[j + 1];
-    if (a.t > t) return null;
-    if (!b) return t - a.t <= 500 ? a.rpm : null;
-    if (b.t - a.t > 500) return t - a.t <= 500 ? a.rpm : null;
-    return a.rpm + (b.rpm - a.rpm) * (t - a.t) / (b.t - a.t);
-  };
-}
 
 // The distinct lookups of one map as points against rpm, sorted by rpm:
 // { r: rpm, v: result, z: the other input (3D) or null, in, t: first time seen }
