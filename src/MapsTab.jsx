@@ -40,14 +40,19 @@ const inLabel = k => k === 'in' ? 'index' : `${hx(k)}h${iramName(k) ? ` ${iramNa
 const parseAxes = s => (s ?? '').split(',').map(a => parseInt(a, 16)).filter(a => !Number.isNaN(a));
 const RPM = 0x37;
 
-// Maps sorted by their inputs: rpm (37h) first, then the other inputs from
-// most to least used; within a group 2D before 3D, then by map number
+// Maps sorted: known 3D maps first, then known 2D maps, then the maps whose
+// purpose is still unknown (same order among them). Within each group by
+// input: rpm (37h) first, then the other inputs from most to least used,
+// then by map number.
+const isUnknown = d => /unknown/i.test(d.name ?? '') || /^unknown$/i.test(d.purpose ?? '') || d.kind === 'other';
 function sortByInputs(maps) {
   const uses = new Map();
   for (const d of maps) for (const a of d.axes) uses.set(a, (uses.get(a) ?? 0) + 1);
   const rank = a => a === RPM ? -1e9 : -(uses.get(a) ?? 0) * 256 + a;   // ties: lower address first
   const key = d => d.axes.length ? d.axes.map(rank) : [Infinity];
+  const group = d => (isUnknown(d) ? 2 : 0) + (d.dim === 3 ? 0 : 1);
   return [...maps].sort((x, y) => {
+    if (group(x) !== group(y)) return group(x) - group(y);
     const kx = key(x), ky = key(y);
     for (let i = 0; i < Math.min(kx.length, ky.length); i++) if (kx[i] !== ky[i]) return kx[i] - ky[i];
     return kx.length - ky.length || +x.id.slice(1) - +y.id.slice(1);
@@ -318,7 +323,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
           click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · click to move scrubber · hover for the inputs
         </span>
       </div>
-      {showMaps && section('map', 'NUMBERED MAPS', 'map_lookup result (A on return), sorted by input: rpm first, then the most used inputs')}
+      {showMaps && section('map', 'NUMBERED MAPS', 'map_lookup result (A on return) · 3D maps, then 2D, then unknown ones · each by input: rpm first, then the most used')}
       {showTables && section('table', 'DIRECTLY ADDRESSED TABLES', 'byte read from the table; 1140h/1150h share one read (1150h = index 10h and up)')}
       {showOther && section('other', 'OTHER MAPS AND TABLES IN THIS LOG', 'looked up by the firmware but not on either sheet')}
     </div>
