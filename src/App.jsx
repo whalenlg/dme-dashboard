@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, ReferenceLine, DefaultTooltipContent
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
-import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
+import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, BIT_DESC, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
 import LivePanel from "./LivePanel.jsx";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
@@ -1983,7 +1983,7 @@ function IRAMTab({ iram, tooltip, setTooltip }) {
                             }}>{bitVal === null ? '?' : bitVal}</span>
                           </td>
                           <td style={{padding:'3px 8px',color:C.textDim,fontSize:'10px',lineHeight:'1.4'}}>
-                            {bitLabel ? entry.d : <span style={{color:'#224422'}}>—</span>}
+                            {BIT_DESC[bitAddr] || <span style={{color:'#224422'}}>—</span>}
                           </td>
                         </tr>
                       );
