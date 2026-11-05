@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo } from "react";
 import {
-  ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  ComposedChart, Line, Scatter, Cell, XAxis, ZAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
 import { thin, inRange } from "./thin.js";
 import { CursorLine } from "./cursor.jsx";
@@ -22,6 +22,10 @@ import { NUMBERED_MAPS, DIRECT_TABLES } from "./mapDefs.js";
 //  Clicking a chart's title shows the graph of that map or table as it is
 //  in the DME image the simulator bridge has loaded (map_graphs.py, served
 //  at <bridge>/maps/dme; drawn once per image contents).
+//  byRpm (DME RPM MAPS tab): only the maps with rpm (37h) as an input, each
+//  lookup drawn as a point against engine speed (37h x 40 rpm) instead of
+//  time; for a 3D map the point's colour is the other input (blue low,
+//  amber high). The zoom is an rpm range.
 // ─────────────────────────────────────────────────────────────────
 
 const C = {
@@ -39,6 +43,32 @@ const inLabel = k => k === 'in' ? 'index' : `${hx(k)}h${iramName(k) ? ` ${iramNa
 // A map's input iram addresses, from the workbook's Axes column ("37h, 49h")
 const parseAxes = s => (s ?? '').split(',').map(a => parseInt(a, 16)).filter(a => !Number.isNaN(a));
 const RPM = 0x37;
+const RPM_SCALE = 40;          // 37h counts 40 rpm
+const MAX_RPM_POINTS = 1500;   // per chart: distinct (rpm, inputs, result) points
+const hasRpm = (d, lookups) => d.id[0] === 'M' && (d.axes?.includes(RPM) ||
+  (lookups?.[d.id]?.at(-1)?.in ?? []).some(([k]) => k === RPM));
+
+// The distinct lookups of one map as points against rpm, sorted by rpm:
+// { r: rpm, v: result, z: the other input (3D) or null, in, t: first time seen }
+function rpmPoints(arr) {
+  const seen = new Map();
+  for (const p of arr) {
+    const ri = p.in?.find(([k]) => k === RPM);
+    if (!ri) continue;
+    const key = `${p.v}|${(p.in ?? []).map(([k, v]) => `${k}:${v}`).join(',')}`;
+    if (seen.has(key)) continue;
+    const oz = p.in.find(([k]) => k !== RPM && k !== 'in');
+    seen.set(key, { r: ri[1] * RPM_SCALE, v: p.v, z: oz ? oz[1] : null, in: p.in, t: p.t });
+  }
+  let pts = [...seen.values()].sort((a, b) => a.r - b.r || a.z - b.z);
+  if (pts.length > MAX_RPM_POINTS) {
+    const step = pts.length / MAX_RPM_POINTS;
+    pts = Array.from({ length: MAX_RPM_POINTS }, (_, i) => pts[Math.floor(i * step)]);
+  }
+  return pts;
+}
+// blue (low) -> amber (high)
+const zColour = (z, lo, hi) => `hsl(${210 - 170 * (hi > lo ? (z - lo) / (hi - lo) : 0.5)}, 100%, 58%)`;
 
 // Maps sorted: known 3D maps first, then known 2D maps, then the maps whose
 // purpose is still unknown (same order among them). Within each group by
@@ -93,12 +123,12 @@ function allDefs(lookups) {
   return [...defs, ...otherMaps, ...others.filter(d => d.id[0] !== 'M')];
 }
 
-function TipBox({ active, payload, label }) {
-  if (!active || label == null || !payload?.length) return null;
+function TipBox({ active, payload, label, xRpm }) {
+  if (!active || !payload?.length || (!xRpm && label == null)) return null;
   const p = payload[0].payload;
   return (
     <div style={{background:'#060e06ee',border:`1px solid ${C.border}`,padding:'4px 7px',fontSize:'10px',lineHeight:1.35}}>
-      <div style={{color:C.textBright}}>t={(+label).toFixed(3)} ms</div>
+      <div style={{color:C.textBright}}>{xRpm ? `${p.r} rpm · first at t=${(+p.t).toFixed(3)} ms` : `t=${(+label).toFixed(3)} ms`}</div>
       <div style={{color:C.amber}}>result: 0x{hx(p.v)} ({p.v})</div>
       {(p.in ?? []).map(([k, v]) => (
         <div key={k} style={{color:C.textDim}}>{inLabel(k)}: 0x{hx(v)} ({v})</div>
@@ -108,12 +138,15 @@ function TipBox({ active, payload, label }) {
 }
 
 // One map's chart; memoized so a live tick only redraws charts whose data moved
-const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
+const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRpm }) {
   const ax = {fill:C.textDim,fontSize:9,fontFamily:"'Share Tech Mono',monospace"};
   const last = pts[pts.length - 1];
   let lo = 255, hi = 0;
   for (const p of pts) { if (p.v < lo) lo = p.v; if (p.v > hi) hi = p.v; }
   const inputs = last?.in?.map(([k]) => inLabel(k)).join(', ');
+  let zlo = 255, zhi = 0;
+  for (const p of pts) if (p.z != null) { if (p.z < zlo) zlo = p.z; if (p.z > zhi) zhi = p.z; }
+  const zKey = xRpm && pts.find(p => p.z != null)?.in.find(([k]) => k !== RPM && k !== 'in')?.[0];
   return (
     <div style={{background:C.panelBg,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'6px 8px',minWidth:0,textAlign:'left'}}>
       <div style={{display:'flex',gap:'8px',alignItems:'baseline',flexWrap:'wrap'}}>
@@ -126,7 +159,7 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
               style={{color:def.dim === 3 ? C.amber : C.textDim,border:`1px solid ${def.dim === 3 ? C.amber : C.border}`,
                       fontSize:'9px',padding:'0 4px',borderRadius:'2px',letterSpacing:'0.05em'}}>{def.dim}D MAP</span>}
         <span style={{marginLeft:'auto',color:C.amber,fontSize:'10px'}}>
-          {last ? `0x${hx(last.v)} (${last.v})` : ''}
+          {last && !xRpm ? `0x${hx(last.v)} (${last.v})` : ''}
         </span>
       </div>
       <div style={{color:C.textDim,fontSize:'9px',opacity:0.8,minHeight:'12px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
@@ -135,24 +168,33 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
       </div>
       {pts.length === 0
         ? <div style={{height:n ? 110 : 36,display:'flex',alignItems:'center',justifyContent:'center',color:'#557755',fontSize:'10px'}}>
-            {n ? 'no lookups in the zoomed range' : 'not looked up in this log'}
+            {n ? `no lookups in the zoomed ${xRpm ? 'rpm' : 'time'} range` : 'not looked up in this log'}
           </div>
         : <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={110}>
             <ComposedChart data={pts} margin={{top:4,right:6,bottom:0,left:0}} {...zoomHandlers(zoom)}>
               <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
-              <XAxis dataKey="t" type="number" domain={[t0, t1]} allowDataOverflow tick={ax}
+              <XAxis dataKey={xRpm ? 'r' : 't'} type="number" domain={[t0, t1]} allowDataOverflow tick={ax}
                      tickFormatter={v => `${+v.toFixed(0)}`} stroke={C.textDim} />
-              <YAxis tick={ax} stroke={C.textDim} width={34} allowDecimals={false}
+              <YAxis dataKey="v" type="number" tick={ax} stroke={C.textDim} width={34} allowDecimals={false}
                      domain={[0, hi > 0 ? 'dataMax' : 1]} />
-              <Tooltip content={<TipBox />} isAnimationActive={false} />
-              <CursorLine stroke={C.textBright} strokeWidth={1} />
+              <Tooltip content={<TipBox xRpm={xRpm} />} isAnimationActive={false} />
+              {xRpm && <ZAxis range={[14, 14]} />}
+              {!xRpm && <CursorLine stroke={C.textBright} strokeWidth={1} />}
               <DragArea zoom={zoom} fill={C.textBright} />
-              <Line dataKey="v" type="stepAfter" stroke={C.amber} strokeWidth={1.3} isAnimationActive={false}
-                    dot={pts.length <= 40 ? {r:1.5, fill:C.amber, stroke:'none'} : false} />
+              {xRpm
+                ? <Scatter dataKey="v" isAnimationActive={false} shape="circle" fill={C.amber}
+                           line={def.dim !== 3 ? {stroke:C.amber, strokeWidth:1} : false}>
+                    {pts.map((p, i) => <Cell key={i} fill={p.z != null ? zColour(p.z, zlo, zhi) : C.amber} />)}
+                  </Scatter>
+                : <Line dataKey="v" type="stepAfter" stroke={C.amber} strokeWidth={1.3} isAnimationActive={false}
+                        dot={pts.length <= 40 ? {r:1.5, fill:C.amber, stroke:'none'} : false} />}
             </ComposedChart>
           </ResponsiveContainer></ZoomBox>}
-      <div style={{display:'flex',gap:'10px',color:C.textDim,fontSize:'8px',opacity:0.75}}>
-        <span>{n} logged</span>
+      <div style={{display:'flex',gap:'2px 10px',flexWrap:xRpm ? 'wrap' : 'nowrap',whiteSpace:'nowrap',color:C.textDim,fontSize:'8px',opacity:0.75}}>
+        <span>{n} logged{xRpm ? ` · ${pts.length} distinct shown` : ''}</span>
+        {zKey != null && <span title="colour of each point: the map's other input">
+          colour: {inLabel(zKey)} <span style={{color:zColour(zlo, zlo, zhi)}}>0x{hx(zlo)}</span>→<span style={{color:zColour(zhi, zlo, zhi)}}>0x{hx(zhi)}</span>
+        </span>}
         {pts.length > 0 && <span>range 0x{hx(lo)}–0x{hx(hi)}</span>}
         {inputs && <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>in: {inputs}</span>}
       </div>
@@ -247,7 +289,7 @@ function RomGraph({ def, bridge, logRom, onClose }) {
 
 // lookups: id -> [{ t, v, in }] (dmeLogParser); ver bumps when any grows
 // bridge: the simulator bridge's URL, where the ROM graphs come from
-const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge, logRom }) {
+const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge, logRom, byRpm = false }) {
   const [open, setOpen] = useState(null);   // def whose ROM graph is shown
   const [filter, setFilter] = useState('');
   const [showMaps, setShowMaps] = useState(true);
@@ -256,29 +298,41 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
   const [usedOnly, setUsedOnly] = useState(false);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const defs = useMemo(() => allDefs(lookups), [lookups, ver]);
+  const defs = useMemo(() => byRpm ? allDefs(lookups).filter(d => hasRpm(d, lookups)) : allDefs(lookups), [lookups, ver, byRpm]);
+  // byRpm: each map's distinct lookups against rpm
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rpmPts = useMemo(() => byRpm ? Object.fromEntries(defs.map(d => [d.id, rpmPoints(lookups?.[d.id] ?? [])])) : null, [defs, lookups, ver, byRpm]);
   const full = useMemo(() => {
     let a = Infinity, b = -Infinity;
+    if (rpmPts) {
+      for (const pts of Object.values(rpmPts)) if (pts.length) {
+        if (pts[0].r < a) a = pts[0].r;
+        if (pts[pts.length - 1].r > b) b = pts[pts.length - 1].r;
+      }
+      return a <= b ? [0, b] : [0, 0];
+    }
     for (const arr of Object.values(lookups ?? {})) if (arr.length) {
       if (arr[0].t < a) a = arr[0].t;
       if (arr[arr.length - 1].t > b) b = arr[arr.length - 1].t;
     }
     return a <= b ? [a, b] : [0, 0];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookups, ver]);
+  }, [lookups, ver, rpmPts]);
   const [t0, t1] = range ?? full;
-  const zoom = useZoom(range, setRange, full, onSeek);
+  const zoom = useZoom(range, setRange, full, byRpm ? undefined : onSeek);
 
   // Points per chart in the zoom range, thinned
   const series = useMemo(() => {
     const out = {};
     for (const d of defs) {
       const arr = lookups?.[d.id] ?? [];
-      out[d.id] = { n: arr.length, pts: thin(inRange(arr, [t0, t1]), ['v'], MAX_POINTS) };
+      out[d.id] = rpmPts
+        ? { n: arr.length, pts: rpmPts[d.id].filter(p => p.r >= t0 && p.r <= t1) }
+        : { n: arr.length, pts: thin(inRange(arr, [t0, t1]), ['v'], MAX_POINTS) };
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defs, lookups, ver, t0, t1]);
+  }, [defs, lookups, ver, t0, t1, rpmPts]);
 
   const nLines = Object.values(lookups ?? {}).reduce((s, a) => s + a.length, 0);
   if (!nLines) return (
@@ -318,7 +372,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
           ? <div style={{color:'#557755',fontSize:'10px',padding:'4px'}}>none match</div>
           : <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(380px, 1fr))',gap:'8px'}}>
               {list.map(d => <MapChart key={d.id} def={d} pts={series[d.id].pts} n={series[d.id].n}
-                                       t0={t0} t1={t1} zoom={zoom} onOpen={setOpen} />)}
+                                       t0={t0} t1={t1} zoom={zoom} onOpen={setOpen} xRpm={byRpm} />)}
             </div>}
       </div>
     );
@@ -328,19 +382,21 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, b
     <div style={{userSelect:'none',textAlign:'left'}}>
       {open && <RomGraph def={open} bridge={bridge} logRom={logRom} onClose={() => setOpen(null)} />}
       <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap'}}>
-        <ZoomBar zoom={zoom} range={range} full={full} btn={btn} color={C.textBright} dim={C.textDim} hint={false} />
+        <ZoomBar zoom={zoom} range={range} full={full} btn={btn} color={C.textBright} dim={C.textDim} hint={false} unit={byRpm ? 'rpm' : 'ms'} />
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="filter: number, name, purpose"
                style={{...inp,width:'200px'}} />
         {check(showMaps, setShowMaps, 'NUMBERED MAPS')}
-        {check(showTables, setShowTables, 'DIRECT TABLES')}
+        {!byRpm && check(showTables, setShowTables, 'DIRECT TABLES')}
         {check(showOther, setShowOther, 'OTHERS IN LOG')}
         {check(usedOnly, setUsedOnly, 'LOOKED UP ONLY')}
         <span style={{color:C.textDim,fontSize:'9px',marginLeft:'auto'}}>
-          click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · click to move scrubber · hover for the inputs
+          click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · {byRpm ? 'x axis: rpm (37h × 40) · 3D maps coloured by their other input' : 'click to move scrubber'} · hover for the inputs
         </span>
       </div>
-      {showMaps && section('map', 'NUMBERED MAPS', 'map_lookup result (A on return) · 3D maps, then 2D, then unknown ones · each by input: rpm first, then the most used')}
-      {showTables && section('table', 'DIRECTLY ADDRESSED TABLES', 'byte read from the table; 1140h/1150h share one read (1150h = index 10h and up)')}
+      {showMaps && section('map', byRpm ? 'NUMBERED MAPS WITH RPM AS AN INPUT' : 'NUMBERED MAPS', byRpm
+        ? 'map_lookup result against rpm · each distinct lookup once · 3D maps, then 2D, then unknown ones'
+        : 'map_lookup result (A on return) · 3D maps, then 2D, then unknown ones · each by input: rpm first, then the most used')}
+      {showTables && !byRpm && section('table', 'DIRECTLY ADDRESSED TABLES', 'byte read from the table; 1140h/1150h share one read (1150h = index 10h and up)')}
       {showOther && section('other', 'OTHER MAPS AND TABLES IN THIS LOG', 'looked up by the firmware but not on either sheet')}
     </div>
   );
