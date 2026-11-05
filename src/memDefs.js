@@ -265,3 +265,54 @@ const BIT_DEFS = {
 };
 export const BIT_LABELS = Object.fromEntries(Object.entries(BIT_DEFS).map(([b, [n]]) => [b, n]));
 export const BIT_DESC   = Object.fromEntries(Object.entries(BIT_DEFS).map(([b, [, d]]) => [b, d]));
+
+// ─────────────────────────────────────────────────────────────────
+//  Memory search (the Timeline picker and breakpoint conditions, memSearch.jsx)
+// ─────────────────────────────────────────────────────────────────
+const hx2 = v => v.toString(16).toUpperCase().padStart(2, '0');
+
+// Disassembly name for a byte (or a DME bit-addressable bit), '' if none
+export const memName = (src, addr, bit) => {
+  if (src === 'klr') return KLR_KNOWN[addr]?.n ?? '';
+  if (bit != null && addr >= 0x20 && addr <= 0x2F) {
+    const b = BIT_LABELS[(addr - 0x20) * 8 + bit];
+    if (b) return b;
+  }
+  const n = IRAM_MAP.find(e => e.a === addr)?.n ?? '';
+  return /^r[0-9A-F]{2}$/.test(n) ? '' : n;   // r00..r0F are placeholders
+};
+
+// Everything the search can offer for one CPU: named bytes, and for
+// the DME the named bits of the bit-addressable area 20h–2Fh
+const SEARCH_LIST = {
+  dme: [
+    ...IRAM_MAP.filter(e => !/^r[0-9A-F]{2}$/.test(e.n)).map(e => ({ addr: e.a, name: e.n, desc: e.d })),
+    ...Object.entries(BIT_LABELS).filter(([, n]) => n).map(([b, n]) => ({
+      addr: 0x20 + (b >> 3), bit: b & 7, name: n, desc: BIT_DESC[b] ? `bit ${hx2(+b)}h: ${BIT_DESC[b]}` : `bit ${hx2(+b)}h` })),
+  ].sort((x, y) => x.addr - y.addr || (x.bit ?? -1) - (y.bit ?? -1)),
+  klr: Object.entries(KLR_KNOWN).map(([a, e]) => ({ addr: +a, name: e.n, desc: e.d })),
+};
+const MAX_MATCHES = 14;
+
+export function searchMem(src, q) {
+  q = q.trim().toLowerCase();
+  if (!q) return [];
+  const list = SEARCH_LIST[src] ?? [];
+  // "7d", "7dh", "0x7d", "21h.0", "21.0" → address (and bit) match
+  const m = /^(?:0x)?([0-9a-f]{1,2})h?(?:\.([0-7]))?$/.exec(q);
+  const addr = m ? parseInt(m[1], 16) : null, bit = m?.[2] != null ? +m[2] : null;
+  const out = [];
+  if (addr != null && addr <= 0x7F) {
+    for (const e of list) if (e.addr === addr && (bit == null || e.bit === bit)) out.push(e);
+    if (!out.some(e => e.bit === (bit ?? undefined)))
+      out.unshift({ addr, ...(bit != null ? { bit } : {}), name: memName(src, addr, bit) || '(unnamed)', desc: '' });
+  }
+  const byName = [], byDesc = [];
+  for (const e of list) {
+    if (out.includes(e)) continue;
+    if (e.name.toLowerCase().includes(q)) byName.push(e);
+    else if (q.length >= 3 && e.desc?.toLowerCase().includes(q)) byDesc.push(e);
+  }
+  return [...out, ...byName, ...byDesc].slice(0, MAX_MATCHES);
+}
+

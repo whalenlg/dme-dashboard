@@ -4,6 +4,8 @@ import { thin, syncNearest, inRange } from "./thin.js";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { memName } from "./memDefs.js";
+import { MemSearch } from "./memSearch.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  LIVE PANEL — controls for a running simulator (see liveSim.js)
@@ -61,7 +63,7 @@ function savePanes(p) {
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
 export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
-  const { connected, sim, inputs, bps, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
+  const { connected, sim, inputs, bps, bpConds, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
@@ -137,10 +139,10 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         {/* Side by side when there is room for full operands, else stacked.
             A closed pane stays mounted (hidden) so it keeps its breakpoint list and GO pin. */}
         <div style={{display: anyPane ? 'grid' : 'none',gridTemplateColumns:'repeat(auto-fit,minmax(min(520px,100%),1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
-          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} trace={trace.dme} traceCtx={traceCtx?.dme}
+          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} conds={bpConds?.dme} trace={trace.dme} traceCtx={traceCtx?.dme}
                     ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send}
                     hidden={!panes.dme} onClose={() => showPane('dme', false)} />
-          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} trace={trace.klr} traceCtx={traceCtx?.klr}
+          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} conds={bpConds?.klr} trace={trace.klr} traceCtx={traceCtx?.klr}
                     ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send}
                     hidden={!panes.klr} onClose={() => showPane('klr', false)} />
         </div>
@@ -430,7 +432,68 @@ function StackView({ cpu, ram, regs, listing, running, onJump }) {
   );
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
+// A breakpoint's memory condition, {mem, bit, op, val}: as the sim command
+// takes it ("37 == 15", "21.0 != 1") and as shown ("37h PRPM == 15h")
+const condArg = k => `${hx(k.mem)}${k.bit != null ? `.${k.bit}` : ''} ${k.op} ${hx(k.val)}`;
+const condText = (cpu, k) => {
+  const n = memName(cpu, k.mem, k.bit);
+  return `${hx(k.mem)}h${k.bit != null ? `.${k.bit}` : ''}${n ? ` ${n}` : ''} ${k.op} ${k.bit != null ? k.val : `${hx(k.val)}h`}`;
+};
+const condNow = (k, ram) => {
+  const v = ram?.[k.mem];
+  if (v == null) return null;
+  const x = k.bit != null ? (v >> k.bit) & 1 : v;
+  return { x, ok: k.op === '==' ? x === k.val : k.op === '!=' ? x !== k.val : k.op === '<' ? x < k.val : x > k.val };
+};
+const CMP_OPS = ['==', '!=', '<', '>'];
+
+// Editor for one breakpoint's memory condition: a memory location (search by
+// name or hex address, as the Timeline tab's picker), a comparison and a value
+function CondEditor({ cpu, addr, cond, ram, onSet, onClear, onCancel }) {
+  const at = c => c ? `${hx(c.mem)}h${c.bit != null ? `.${c.bit}` : ''}${memName(cpu, c.mem, c.bit) ? ` ${memName(cpu, c.mem, c.bit)}` : ''}` : '';
+  const [memText, setMemText] = useState(at(cond));
+  const [op, setOp]   = useState(cond?.op ?? '==');
+  const [val, setVal] = useState(cond ? hx(cond.val) : '');
+  const [err, setErr] = useState('');
+  // The location is the text's leading hex address ("37", "37h", "0x21.3")
+  const loc = (() => {
+    const m = /^(?:0x)?([0-9a-f]{1,2})h?(?:\.([0-7]))?(?:\s|$)/i.exec(memText.trim());
+    return m ? { mem: parseInt(m[1], 16), bit: m[2] != null ? +m[2] : null } : null;
+  })();
+  const v = /^(?:0x)?([0-9a-f]{1,2})h?$/i.exec(val.trim());
+  const value = v ? parseInt(v[1], 16) : null;
+  const apply = () => {
+    if (!loc || loc.mem > 0x7F) return setErr('pick a memory location (search by name, or type a hex address 00-7F, bit as 21.3)');
+    if (value == null) return setErr('value must be a hex byte (00-FF)');
+    if (loc.bit != null && value > 1) return setErr('a bit compares with 0 or 1');
+    onSet({ ...loc, op, val: value });
+  };
+  const now = loc && ram?.[loc.mem] != null ? (loc.bit != null ? (ram[loc.mem] >> loc.bit) & 1 : ram[loc.mem]) : null;
+  return (
+    <div style={{display:'flex',gap:'4px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',marginBottom:'4px',
+                 padding:'4px',border:`1px solid ${C.border2}`,background:C.panelBg2}}>
+      <span style={{color:C.red}}>● {hx(addr, cpu === 'dme' ? 4 : 3)}</span>
+      <span style={{color:C.textDim}}>stops only if {cpu === 'dme' ? 'iram' : 'ram'}</span>
+      <MemSearch src={cpu} value={memText} align="left" autoFocus
+                 onChange={t => { setMemText(t); setErr(''); }}
+                 onPick={m => { setMemText(at({ mem: m.addr, bit: m.bit ?? null })); setErr(''); }}
+                 onEnter={apply} style={{...inp,width:'170px'}} />
+      <select value={op} onChange={e => setOp(e.target.value)} style={inp} title="Unsigned comparison">
+        {CMP_OPS.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+      <input value={val} onChange={e => { setVal(e.target.value); setErr(''); }} onKeyDown={e => e.key === 'Enter' && apply()}
+             placeholder={loc?.bit != null ? '0/1' : 'hex'} style={{...inp,width:'36px'}} />
+      {value != null && loc?.bit == null && <span style={{color:C.textDim}}>({value})</span>}
+      <button style={btn(false, C.red)} onClick={apply}>SET</button>
+      {cond && <button style={btn(false)} onClick={onClear} title="Stop every time this address runs">NO CONDITION</button>}
+      <button style={btn(false)} onClick={onCancel}>CANCEL</button>
+      {now != null && <span style={{color:C.blue}} title="From the latest snapshot">now {loc.bit != null ? now : `${hx(now)}h (${now})`}</span>}
+      {err && <span style={{color:C.amber,width:'100%'}}>{err}</span>}
+    </div>
+  );
+}
+
+function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
@@ -444,19 +507,32 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
     return '';
   }, [pc, listing]);
 
-  // Disabled breakpoints are removed from the sim but stay listed here
+  // Disabled breakpoints are removed from the sim but stay listed here,
+  // with their memory condition (offConds) for when they are enabled again
   const [disabled, setDisabled] = useState([]);
+  const [offConds, setOffConds] = useState({});
+  const [editing, setEditing] = useState(null);   // breakpoint whose condition is being edited
   const bpSet = useMemo(() => new Set(bps), [bps]);
   const offSet = useMemo(() => new Set(disabled.filter(a => !bpSet.has(a))), [disabled, bpSet]);
   const allBps = useMemo(() => [...new Set([...bps, ...offSet])].sort((x, y) => x - y), [bps, offSet]);
-  const bpCmd = (op, a) => `bp ${op} ${cpu} ${hx(a, 4)}`;
+  const condOf = a => bpSet.has(a) ? conds[a] : offConds[a];
+  const bpCmd = (op, a, k) => `bp ${op} ${cpu} ${hx(a, 4)}${op === 'add' && k ? ` if ${condArg(k)}` : ''}`;
   const setEnabled = (a, on) => {
-    send(bpCmd(on ? 'add' : 'del', a));
+    if (on) send(bpCmd('add', a, offConds[a]));
+    else { send(bpCmd('del', a)); setOffConds(o => ({ ...o, [a]: conds[a] })); }
     setDisabled(d => on ? d.filter(x => x !== a) : [...d.filter(x => x !== a), a]);
   };
   const removeBp = a => {
     if (bpSet.has(a)) send(bpCmd('del', a));
     setDisabled(d => d.filter(x => x !== a));
+    setOffConds(o => { const n = { ...o }; delete n[a]; return n; });
+    if (editing === a) setEditing(null);
+  };
+  // Set (k) or clear (null) a breakpoint's condition
+  const setCond = (a, k) => {
+    if (bpSet.has(a)) send(bpCmd('add', a, k));
+    else setOffConds(o => ({ ...o, [a]: k }));
+    setEditing(null);
   };
   const recent = useMemo(() => new Set(trace.slice(-16)), [trace]);
   // Label / operand columns sized to the longest entry so nothing is cut off
@@ -511,7 +587,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
           <span style={{color:C.textDim}}>BREAKPOINTS</span>
           {allBps.map(a => {
             const lbl = listing.length ? listing[rowFor(listing, a)] : null;
-            const on = bpSet.has(a);
+            const on = bpSet.has(a), k = condOf(a);
+            const now = k && !running ? condNow(k, ram) : null;
             return (
               <span key={a} style={{display:'inline-flex',alignItems:'center',border:`1px solid ${C.border}`,background:C.panelBg2}}>
                 <input type="checkbox" checked={on} title={on ? 'Disable breakpoint' : 'Enable breakpoint'}
@@ -521,17 +598,28 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
                       onClick={() => { setCenter(a); setJump(hx(a, 4)); }}>
                   {on ? '●' : '○'} {hx(a, cpu === 'dme' ? 4 : 3)}{lbl?.a === a && lbl.label ? ` ${lbl.label}` : ''}
                 </span>
+                <span style={{color: k ? (on ? C.amber : C.textDim) : '#557755',padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`,
+                              textTransform:'none'}}
+                      title={k ? `Stops only when ${condText(cpu, k)}${now ? ` (now ${k.bit != null ? now.x : `${hx(now.x)}h`}: ${now.ok ? 'true' : 'false'})` : ''}. Click to edit`
+                               : 'Add a memory condition: stop here only when a RAM byte or bit compares true'}
+                      onClick={() => setEditing(editing === a ? null : a)}>
+                  {k ? `if ${condText(cpu, k)}` : '+if'}
+                </span>
                 <span style={{color:C.textDim,padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`}}
                       title="Remove breakpoint" onClick={() => removeBp(a)}>✕</span>
               </span>
             );
           })}
           {allBps.length > 1 && (
-            <button style={btn(false, C.red)} onClick={() => { send(bps.map(a => bpCmd('del', a)).join('\n')); setDisabled([]); }}>
+            <button style={btn(false, C.red)} onClick={() => { send(bps.map(a => bpCmd('del', a)).join('\n')); setDisabled([]); setOffConds({}); setEditing(null); }}>
               CLEAR ALL
             </button>
           )}
         </div>
+      )}
+      {editing != null && allBps.includes(editing) && (
+        <CondEditor key={editing} cpu={cpu} addr={editing} cond={condOf(editing)} ram={running ? null : ram}
+                    onSet={k => setCond(editing, k)} onClear={() => setCond(editing, null)} onCancel={() => setEditing(null)} />
       )}
       <CameFrom cpu={cpu} trace={running ? [] : trace} listing={listing}
                 onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />
@@ -549,13 +637,13 @@ function AsmPanel({ cpu, name, listing, pc, bps, trace, traceCtx, ram, regs, run
             const st = running ? null : traceState(cpu, lastCtx.get(r.a), r);
             const val = st ? (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, st.ram, st.regs) : '';
             return (
-              <div key={r.a} title={`${r.desc ? `${r.desc}\n\n` : ''}Click to toggle a breakpoint`}
+              <div key={r.a} title={`${r.desc ? `${r.desc}\n\n` : ''}${condOf(r.a) ? `Breakpoint if ${condText(cpu, condOf(r.a))}\n\n` : ''}Click to toggle a breakpoint`}
                    onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
                    style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',height:`${ROW_H}px`,
                            width:'max-content',minWidth:'100%',boxSizing:'border-box',
                            background: isPc ? '#1a4a1a' : wasRecent ? '#0c1d0c' : 'transparent',
                            borderLeft: `2px solid ${isPc ? C.textBright : 'transparent'}`}}>
-                <span style={{width:'10px',color: hasBp ? C.red : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
+                <span style={{width:'10px',color: hasBp ? (conds[r.a] ? C.amber : C.red) : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
                 <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>

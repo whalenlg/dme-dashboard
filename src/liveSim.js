@@ -41,12 +41,24 @@ function parseKV(s) {
   return out;
 }
 const splitHex = s => (s ? s.split(',').filter(Boolean).map(h => parseInt(h, 16)) : []);
+// Breakpoint conditions in a [BP] list: 024E@37==15, 0ABC@21.0!=1
+// → { 0x24E: {mem:0x37, bit:null, op:'==', val:0x15}, ... }
+const BP_COND = /^([0-9A-Fa-f]+)@([0-9A-Fa-f]{1,2})(?:\.([0-7]))?(==|!=|<|>)([0-9A-Fa-f]{1,2})$/;
+const splitConds = s => {
+  const out = {};
+  for (const t of (s ?? '').split(',')) {
+    const m = BP_COND.exec(t);
+    if (m) out[parseInt(m[1], 16)] = { mem: parseInt(m[2], 16), bit: m[3] != null ? +m[3] : null, op: m[4], val: parseInt(m[5], 16) };
+  }
+  return out;
+};
 
 export function useLiveSim(url, onLogLines) {
   const [connected, setConnected] = useState(false);
   const [sim, setSim]       = useState(EMPTY_SIM);
   const [inputs, setInputs] = useState({});
   const [bps, setBps]       = useState({ dme: [], klr: [] });
+  const [bpConds, setBpConds] = useState({ dme: {}, klr: {} });   // pc → memory condition, see splitConds
   const [trace, setTrace]   = useState({ dme: [], klr: [] });
   const [traceCtx, setTraceCtx] = useState({ dme: [], klr: [] });   // per trace entry
   const [error, setError]   = useState(null);
@@ -132,6 +144,7 @@ export function useLiveSim(url, onLogLines) {
       } else if (kind === 'BP') {
         const kv = parseKV(rest);
         setBps({ dme: splitHex(kv.dme), klr: splitHex(kv.klr) });
+        setBpConds({ dme: splitConds(kv.dme), klr: splitConds(kv.klr) });
       } else if (kind === 'TRACE') {
         const [cpu, list] = rest.split(' ');
         // Entries are pc/ctx0/ctx1/ctx2 (register context per instruction)
@@ -275,6 +288,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom,
+  return { connected, sim, inputs, bps, bpConds, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom,
            snapshots, snapCfg, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
