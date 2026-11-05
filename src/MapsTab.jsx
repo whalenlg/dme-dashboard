@@ -286,12 +286,13 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
   useEffect(() => {
     if (!file || !info?.sha) return;
     let url = null, stop = false;
-    fetch(`${bridge}/maps/${cpu}/${info.sha}/${file}`)
+    fetch(`${bridge}/maps/${cpu}/${info.sha}/${file}${info.version != null ? `?v=${info.version}` : ''}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
       .then(b => { if (stop) return; url = URL.createObjectURL(b); setImg(url); })
       .catch(e => { if (!stop) setImgErr(e.message); });
     return () => { stop = true; if (url) URL.revokeObjectURL(url); };
-  }, [bridge, info?.sha, file, cpu]);
+  // ?v=: the graph generator's version, so a redrawn graph isn't the browser's cached copy
+  }, [bridge, info?.sha, file, cpu, info?.version]);
 
   useEffect(() => {
     const k = e => { if (e.key === 'Escape') onClose(); };
