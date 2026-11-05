@@ -1,0 +1,239 @@
+// Memory labels and unit conversions shared by App.jsx and TimelineTab.jsx.
+
+// PRPM → RPM  (empirical: prpm=21 @ 840 RPM → K=17640)
+// prpm=3 → ~5880 RPM (near redline).  prpm < 3 is a pre-sync
+// garbage value — return null so it is excluded from display and charts.
+export const PRPM_MIN_VALID = 3;
+export const prpmToRpm = prpm => (prpm >= PRPM_MIN_VALID) ? Math.round(17640 / prpm) : null;
+
+// NTC linearised byte → °C. The DME's NTC map (maps 1/2) outputs
+// iram[12h]/[13h] on a linear −40…+125 °C scale, which puts the ROM's own
+// thresholds where the disassembly notes have them (55h ≈ 14.7 °C,
+// 8Ch ≈ 50 °C, A2h ≈ 65 °C). Same scale as the sim's ntc_celsius().
+export const ntcLinToC = v => Math.round(v * 165 / 255 - 40);
+
+// DME iram[11h] battery ADC byte → volts (as on the Overview BATTERY tile)
+export const battRawToV = v => v * 0.05263 + 2.132;
+
+// ─────────────────────────────────────────────────────────────────
+//  FULL 8051 IRAM MEMORY MAP  (0x00–0x7F)
+// ─────────────────────────────────────────────────────────────────
+export const IRAM_MAP = [
+  {a:0x00,n:'r00',g:'reg',d:'undefined/unknown'},
+  {a:0x01,n:'r01',g:'reg',d:'undefined/unknown'},
+  {a:0x02,n:'r02',g:'reg',d:'undefined/unknown'},
+  {a:0x03,n:'r03',g:'reg',d:'undefined/unknown'},
+  {a:0x04,n:'r04',g:'reg',d:'undefined/unknown'},
+  {a:0x05,n:'r05',g:'reg',d:'undefined/unknown'},
+  {a:0x06,n:'r06',g:'reg',d:'undefined/unknown'},
+  {a:0x07,n:'r07',g:'reg',d:'undefined/unknown'},
+  {a:0x08,n:'r08',g:'reg',d:'undefined/unknown'},
+  {a:0x09,n:'r09',g:'reg',d:'undefined/unknown'},
+  {a:0x0A,n:'r0A',g:'reg',d:'undefined/unknown'},
+  {a:0x0B,n:'r0B',g:'reg',d:'undefined/unknown'},
+  {a:0x0C,n:'r0C',g:'reg',d:'undefined/unknown'},
+  {a:0x0D,n:'r0D',g:'reg',d:'undefined/unknown'},
+  {a:0x0E,n:'r0E',g:'reg',d:'undefined/unknown'},
+  {a:0x0F,n:'r0F',g:'reg',d:'undefined/unknown'},
+  {a:0x10,n:'AFM_RAW',g:'adc',d:'raw AFM wiper value, from the ADC'},
+  {a:0x11,n:'SYS_VOLTAGE',g:'adc',d:'system voltage, from the ADC'},
+  {a:0x12,n:'AIRTEMP_NTC1',g:'adc',d:'intake air temperature (NTC I), from the ADC'},
+  {a:0x13,n:'COOLANT_NTC2',g:'adc',d:'coolant temperature (NTC II), from the ADC'},
+  {a:0x14,n:'ALT_REGION_ADC',g:'adc',d:'altitude sensor / region coding input, from the ADC'},
+  {a:0x15,n:'RESERVED_15H',g:'adc',d:'undefined/unknown'},
+  {a:0x16,n:'ADC_TPS',g:'adc',d:'undefined/unknown'},
+  {a:0x17,n:'FQS_POSITION',g:'adc',d:'FQS switch position, from the ADC'},
+  {a:0x18,n:'LAMBDA_STEP_UNCHANGED',g:'lambda',d:'lambda correction step, condition unchanged (Map 62 or 65)'},
+  {a:0x19,n:'LAMBDA_STEP_TO_LEAN',g:'lambda',d:'lambda correction step, changed to lean (Map 63 or 66)'},
+  {a:0x1A,n:'LAMBDA_STEP_TO_NOTLEAN',g:'lambda',d:'lambda correction step, changed to not-lean (Map 64 or 67)'},
+  {a:0x1B,n:'LAMBDA_CORR_HI',g:'lambda',d:'lambda correction factor, high byte. Notes: bit 7 is written to diag plug output'},
+  {a:0x1C,n:'LAMBDA_CORR_LO',g:'lambda',d:'lambda correction factor, low byte'},
+  {a:0x1D,n:'RESERVED_1DH',g:'reg',d:'undefined/unknown. Notes: used in extint1_handler'},
+  {a:0x1E,n:'RESERVED_1EH',g:'reg',d:'undefined/unknown. Notes: -"-'},
+  {a:0x1F,n:'RESERVED_1FH',g:'reg',d:'undefined/unknown. Notes: -"-'},
+  {a:0x20,n:'FLAGS_20',g:'flags',d:'Bit-addressable flags register: b0=ISV_FLARE_VARIANT; b1=init_flag; b2=ISV_RPM_ERR_SIGN_LAMBDA_COND_CURRENT; b3=ISV_INT_BLOCK_POS; b4=ISV_INT_BLOCK_NEG; b5=ISV_PWM_OVF_SIGN; b6=ISV_FLARE_NEEDED; b7=LAMBDA_ENABLE'},
+  {a:0x21,n:'FLAGS_21',g:'flags',d:'Bit-addressable flags register: b0=OVERLOAD_PRETIMER_RUN; b1=OVERLOAD_LOCKOUT_RUN; b2=INJECTORS_ON; b3=RESERVED_21H_3; b4=CRANK_ENR_PHASEOUT_LATCH; b5=FUEL_REACT_TRANS_ACTIVE; b6=FUELCUT_REACT_MODE; b7=ACCEL_PUMP_SHOT_LATCH'},
+  {a:0x22,n:'FLAGS_22',g:'flags',d:'Bit-addressable flags register: b0=IGN_HALFTOOTH_CORR; b1=IGN_HALFTOOTH_ROUND_ERR; b2=Unreferenced; b3=COIL_STATE_REF; b4=TIMING_RATE_SEL_LOW; b5=TIMING_RATE_SEL_MED; b6=TIMING_RATE_SEL_HIGH; b7=Time1FlagLowIdle'},
+  {a:0x23,n:'FLAGS_23',g:'flags',d:'Bit-addressable flags register: b0=TPS_AT_IDLE; b1=WOT_FLAG; b2=CRANKING_FLAG; b3=ISV_ALT_PATH; b4=STARTUP_FLAG; b5=FUEL_CUT_FLAG; b6=TRG_IDLE_FLARE; b7=TXDLambdaDiag'},
+  {a:0x24,n:'FLAGS_24',g:'flags',d:'Bit-addressable flags register: b0=LAMBDA_WATCHDOG_EN; b1=LAMBDA_LOAD_TIMER_RUN; b2=LAMBDA_WATCHDOG_ACTIVE; b3=LAMBDA_NEUTRAL_PHASE; b4=LAMBDA_RICHLEAN_PHASE; b5=LAMBDA_COND_MET; b6=LAMBDA_COND_PREV; b7=LAMBDA_COND_PERSISTED'},
+  {a:0x25,n:'FLAGS_25',g:'flags',d:'Bit-addressable flags register: b0=Unused; b1=Unused; b2=MapLookFail; b3=DiagNotSet; b4=COLD_CRANK_LAMBDA_SEL; b5=COLD_CRANK_WARMUP_SEL; b6=REGION_CODE; b7=ALTITUDE_HIGH_FLAG'},
+  {a:0x26,n:'RESERVED_26H',g:'flags',d:'undefined/unknown. Notes: Only referenced in unused parts of the ROM'},
+  {a:0x27,n:'RESERVED_27H',g:'flags',d:'undefined/unknown'},
+  {a:0x28,n:'RESERVED_28H',g:'flags',d:'undefined/unknown'},
+  {a:0x29,n:'ram_diag_addr',g:'flags',d:'Used for indexing table of RAM addresses to send from and receive to during diagnostics. Notes: Used for indexing table of RAM addresses to send from and receive to during diagnostics'},
+  {a:0x2A,n:'RESERVED_2AH',g:'sys',d:'undefined/unknown. Notes: Software watchdog timer'},
+  {a:0x2B,n:'IGN_EVENT_CNT',g:'ign',d:'ignition event counter to the next dwell or spark, in whole teeth. Notes: Tooth count until next extint1_handler event'},
+  {a:0x2C,n:'IGN_EVENT_CNT_REF',g:'ign',d:'pre-calculated replacement for 2Bh, relative to the ref sensor. Notes: Tooth count until first ignition event after reference mark. Loaded into 2B when at reference mark.'},
+  {a:0x2D,n:'KLR_TRIGGER_CNT',g:'ign',d:'KLR trigger counter, in whole teeth. Notes: Tooth count until next extint1_handler high ROM hook event. Reloaded from I2E (value 252) when at reference mark. Added to in steps of 65. Tooth count of first hook event is thus 61 since it wraps. The hook is empty in this version of the ROM and thus do nothing.'},
+  {a:0x2E,n:'KLR_TRIGGER_CNT_REF',g:'ign',d:'pre-calculated replacement for 2Dh, relative to the ref sensor. Notes: Loaded with value from address 1162, value is 252.'},
+  {a:0x2F,n:'DWELL_ANGLE',g:'ign',d:'dwell angle, in half-teeth. Notes: Dwell angle, number of half-teeth for primary current through the ignition coil. Loaded from map 24, rpm and battery voltage dependent.'},
+  {a:0x30,n:'DWELL_DURATION_SPD',g:'ign',d:'dwell duration used by the speed sensor routine, in half-teeth. Notes: Duration of ignition pulse, number of half-teeth needed for dwell. This is the dwell angle with correction for offset between reference mark and flywheel tooth.'},
+  {a:0x31,n:'IGN_ADVANCE_CUR',g:'ign',d:'current ignition advance, in half-teeth. Notes: Spark timing advance, half-teeth before TDC'},
+  {a:0x32,n:'IGN_ADVANCE_TARGET',g:'ign',d:'target ignition advance. Notes: Next spark timing advance'},
+  {a:0x33,n:'TDC_COUNTDOWN',g:'ign',d:'half-tooth count to the next TDC. Notes: Half-tooth count for next TDC counted from the point of the spark. i.e. timing advance + 180 degrees'},
+  {a:0x34,n:'IGN_STEP_COUNTDOWN',g:'ign',d:'countdown to the next permitted ignition timing step. Notes: Timing advance update interval. The interval between updating I31 from I32.'},
+  {a:0x35,n:'CYL_FIRE_INDEX',g:'ign',d:'cylinder firing index (0 or 1). Notes: This can have values 0 or 1. Two fire events in our four cylinder engine. It is used as index into arrays with flywheel tooth/half-tooth counts.'},
+  {a:0x36,n:'SPD_PULSE_CNT',g:'rpm',d:'speed sensor pulse counter, used for rpm measurement'},
+  {a:0x37,n:'ENGINE_RPM_RAW',g:'rpm',d:'engine speed, in units of 40rpm'},
+  {a:0x38,n:'RESERVED_38H',g:'timer',d:'undefined/unknown'},
+  {a:0x39,n:'RESERVED_39H',g:'timer',d:'undefined/unknown'},
+  {a:0x3A,n:'RESERVED_3AH',g:'timer',d:'undefined/unknown'},
+  {a:0x3B,n:'RESERVED_3BH',g:'rpm',d:'undefined/unknown'},
+  {a:0x3C,n:'POST_START_ENR_TIMER',g:'timer',d:'post-start enrichment (software counter, 414ms units). Notes: After start enrichment'},
+  {a:0x3D,n:'ACCEL_ENR_TIMER',g:'rpm',d:'all-rpm acceleration enrichment (software counter, 58ms units)'},
+  {a:0x3E,n:'LAMBDA_TIMER',g:'lambda',d:'lambda timer (software counter, 11.5ms units)'},
+  {a:0x3F,n:'LAMBDA_LOAD_TIMER',g:'sys',d:'lambda load threshold timer (software counter, 345ms units)'},
+  {a:0x40,n:'RESERVED_40H',g:'fuel',d:'undefined/unknown'},
+  {a:0x41,n:'ISV_ON_TIME_HI',g:'fuel',d:'timer1 ISV on-time, high byte'},
+  {a:0x42,n:'ISV_ON_TIME_LO',g:'fuel',d:'timer1 ISV on-time, low byte'},
+  {a:0x43,n:'RESERVED_43H',g:'fuel',d:'undefined/unknown'},
+  {a:0x44,n:'ISV_OFF_TIME_LO',g:'fuel',d:'timer1 ISV off-time, low byte'},
+  {a:0x45,n:'ISV_OFF_TIME_HI',g:'fuel',d:'timer1 ISV off-time, high byte'},
+  {a:0x46,n:'LOAD_SMOOTHED_HI',g:'fuel',d:'smoothed 24-bit load value, high byte'},
+  {a:0x47,n:'LOAD_SMOOTHED_MID',g:'fuel',d:'smoothed 24-bit load value, middle byte'},
+  {a:0x48,n:'LOAD_SMOOTHED_LO',g:'fuel',d:'smoothed 24-bit load value, low byte'},
+  {a:0x49,n:'LOAD_VALUE',g:'fuel',d:'load, i.e. the high byte of the scaled base fuel pulse'},
+  {a:0x4A,n:'FUEL_PULSE_LO',g:'fuel',d:'final fuel pulse, low byte (timer0 ticks of 2us)'},
+  {a:0x4B,n:'FUEL_PULSE_HI',g:'fuel',d:'final fuel pulse, high byte'},
+  {a:0x4C,n:'ACCEL_ENR_LOWRPM',g:'fuel',d:'low-rpm acceleration enrichment, added directly to the pulse'},
+  {a:0x4D,n:'INJ_EVENT_CNT',g:'fuel',d:'injection event counter, capped at 128'},
+  {a:0x4E,n:'FUEL_ADJ_ACCUM_LO',g:'fuel',d:'accumulated fuel adjustment, low byte'},
+  {a:0x4F,n:'FUEL_ADJ_ACCUM_HI',g:'fuel',d:'accumulated fuel adjustment, high byte'},
+  {a:0x50,n:'FUEL_ADJ_SHIFT_CNT',g:'misc',d:'count of outstanding left shifts (pending multiplications by 2)'},
+  {a:0x51,n:'AFM_HIST_1',g:'misc',d:'AFM history queue, most recent previous reading'},
+  {a:0x52,n:'AFM_HIST_2',g:'misc',d:'AFM history queue, second previous reading'},
+  {a:0x53,n:'AFM_HIST_3',g:'adc',d:'AFM history queue, third previous reading (~35ms old)'},
+  {a:0x54,n:'INJ_DEADTIME',g:'misc',d:'injector dead-time. Notes: Number of ticks/5 to add to injection signal to compensate for injector opening time.'},
+  {a:0x55,n:'RPM_LAG_REF',g:'misc',d:'lagging rpm reference that chases 37h'},
+  {a:0x56,n:'RPM_LAG_ACCUM',g:'misc',d:'fractional accumulator controlling how fast 55h chases 37h'},
+  {a:0x57,n:'IGN_ACCEL_ADJ',g:'misc',d:'acceleration/deceleration ignition timing adjustment. Notes: half-tooth spark timing adjustment for acceleration or deceleration. can have values 0, 1 or -1'},
+  {a:0x58,n:'OVERLOAD_TIMER',g:'enrich',d:'overload timer'},
+  {a:0x59,n:'OVERLOAD_PRESCALE',g:'enrich',d:'prescale counter for 58h'},
+  {a:0x5A,n:'RESERVED_5AH',g:'misc',d:'undefined/unknown'},
+  {a:0x5B,n:'RESERVED_5BH',g:'misc',d:'undefined/unknown'},
+  {a:0x5C,n:'RESERVED_5CH',g:'misc',d:'undefined/unknown'},
+  {a:0x5D,n:'RESERVED_5DH',g:'misc',d:'undefined/unknown'},
+  {a:0x5E,n:'RESERVED_5EH',g:'misc',d:'undefined/unknown'},
+  {a:0x5F,n:'RESERVED_5FH',g:'misc',d:'undefined/unknown'},
+  {a:0x60,n:'RESERVED_60H',g:'misc',d:'undefined/unknown'},
+  {a:0x61,n:'RESERVED_61H',g:'misc',d:'undefined/unknown'},
+  {a:0x62,n:'RESERVED_62H',g:'misc',d:'undefined/unknown'},
+  {a:0x63,n:'stack_0',g:'misc',d:'stack'},
+  {a:0x64,n:'stack_1',g:'misc',d:'stack'},
+  {a:0x65,n:'stack_2',g:'misc',d:'stack'},
+  {a:0x66,n:'stack_3',g:'misc',d:'stack'},
+  {a:0x67,n:'stack_4',g:'misc',d:'stack'},
+  {a:0x68,n:'stack_5',g:'misc',d:'stack'},
+  {a:0x69,n:'stack_6',g:'misc',d:'stack'},
+  {a:0x6A,n:'stack_7',g:'misc',d:'stack'},
+  {a:0x6B,n:'stack_8',g:'misc',d:'stack'},
+  {a:0x6C,n:'stack_9',g:'misc',d:'stack'},
+  {a:0x6D,n:'stack_A',g:'misc',d:'stack'},
+  {a:0x6E,n:'stack_B',g:'misc',d:'stack'},
+  {a:0x6F,n:'stack_C',g:'misc',d:'stack'},
+  {a:0x70,n:'stack_D',g:'misc',d:'stack'},
+  {a:0x71,n:'stack_E',g:'misc',d:'stack'},
+  {a:0x72,n:'stack_F',g:'misc',d:'stack'},
+  {a:0x73,n:'stack_G',g:'misc',d:'stack'},
+  {a:0x74,n:'stack_H',g:'misc',d:'stack'},
+  {a:0x75,n:'stack_I',g:'misc',d:'stack'},
+  {a:0x76,n:'stack_J',g:'misc',d:'stack'},
+  {a:0x77,n:'stack_K',g:'misc',d:'stack'},
+  {a:0x78,n:'stack_L',g:'misc',d:'stack'},
+  {a:0x79,n:'stack_M',g:'misc',d:'stack'},
+  {a:0x7A,n:'RESERVED_7AH',g:'misc',d:'undefined/unknown. Notes: probably used as sequence number, written and read during diagnostics'},
+  {a:0x7B,n:'ISV_CORR_DBL_HI',g:'misc',d:'high byte of the doubled ISV correction'},
+  {a:0x7C,n:'ISV_FLARE_HOLD_CNT',g:'misc',d:'ISV flare hold counter'},
+  {a:0x7D,n:'ISV_INTEGRAL_LO',g:'misc',d:'ISV integral term, low byte'},
+  {a:0x7E,n:'ISV_INTEGRAL_HI',g:'misc',d:'ISV integral term, high byte'},
+  {a:0x7F,n:'ISV_TARGET_RPM',g:'isv',d:'ISV target idle rpm'},
+];
+
+// KLR 8048 RAM labels — from 87KLR951.xlsx byte_mem sheet (disassembly), variable_name column
+export const KLR_KNOWN = {
+  0x00: {n:'interrupt_info', d:'Register bank 0 - Used for interrupt context/ r0 - Holds 24h at start of interrupt. 24h is scratch space to store the normal-context\'s accumulator'},
+  0x02: {n:'num_timer_ints', d:'r2 - A count of number of times timer interrupt fired.'},
+  0x03: {n:'mult_in', d:'r3 - used as an input to the 8-bit multiply function'},
+  0x05: {n:'dec_interrupts', d:'r5 - Decremented every interrupt. When reaches 0'},
+  0x06: {n:'speed_count', d:'r6 - engine speed represented as the number of timer interrupts since the last reset. Actually it is a count that is initialized to 0 at reset and counts _down_ each interrupt.'},
+  0x07: {n:'timer_period', d:'r7 - the current timer period. Actually it is the value the timer/event-counter register. is re-initialized to every time the timer interrupt happens. r7 is initialized to 0xfc. in the boot code, and then left/right shifted occasionally depending on the RPM. In practice it has a value of 0xfe when the RPM is above 1500 RPM and 0xfc otherwise.'},
+  0x22: {n:'ADC_INIT_ANGLE', d:'angle to begin ADC initialization routine (in timer ticks)'},
+  0x23: {n:'ADC_READ_ANGLE', d:'angle to read ADC (after 22h, in timer ticks)'},
+  0x24: {n:'ENGINE_SPEED_TICKS', d:'engine speed (in timer ticks)'},
+  0x2E: {n:'BATTERY_VOLTAGE', d:'battery voltage'},
+  0x2F: {n:'KNOCK_SENSOR_DIAG', d:'knock sensor (diagnostics)'},
+  0x30: {n:'BLINK_ERR_KNOCK_MAP', d:'knock/MAP'},
+  0x31: {n:'knock_test_out', d:''},
+  0x33: {n:'BLINK_CODE_CURRENT', d:'current blink code'},
+  0x35: {n:'BLINK_ERR_BOOST_HILO', d:'boost high/low'},
+  0x36: {n:'BLINK_ERR_TPS', d:'TPS/TPS power supply'},
+  0x38: {n:'UNKNOWN_38', d:'38h - scratch space for interrupt routines to stash the non-interrupt context\'s accumulator'},
+  0x39: {n:'TPS_POWER_SUPPLY', d:'throttle position (power supply)'},
+  0x3A: {n:'TPS_DEGREES', d:'throttle position (degrees)'},
+  0x3B: {n:'TPS_Scaling', d:'3bh - The scaling numerator 3B is initialized to 119 in the trigger/reset routine. So the nominal scaling factor is 119/256, or about 0.46'},
+  0x3C: {n:'TPS_RAW', d:'throttle position (raw)'},
+  0x3E: {n:'WOT_angle', d:'angle for WOT (set to 66 decimal for all rpm)'},
+  0x41: {n:'CV_DUTY_FINAL', d:'final CV duty cycle'},
+  0x43: {n:'TPS_MAP_AXIS', d:'throttle position (map axis)'},
+  0x44: {n:'RPM_MAP_AXIS', d:'rpm range (map axis)'},
+  0x45: {n:'mac_knock_thresh', d:'45h - current maximum knock threshold (looked-up from map based on current RPM. But map is all the same value of 10). minimum knock threshold value (10 decimal for all rpm)'},
+  0x46: {n:'integrated_knock_val', d:'46h - integrated knock value read by ADC'},
+  0x47: {n:'knock_det_threshold', d:'coefficient for knock threshold (makes knock detection less sensitive at higher rpm)'},
+  0x48: {n:'throttle_position_threshold', d:'throttle position threshold for knock control'},
+  0x4A: {n:'cycle_count_before_restore', d:'cycle count before restoring 0.3 deg. timing (this value is used to initialize the counter 49h)'},
+  0x4B: {n:'max_timing_retart', d:'max timing retard (set to 18 decimal for all rpm, which corresponds to ~6 degrees)'},
+  0x4C: {n:'boost_threshold', d:'threshold for pulling boost'},
+  0x4E: {n:'cycle_count_before_pulling_boost', d:'cycle count before pulling boost'},
+  0x50: {n:'cycle_count_before_restore_boost', d:'cycle count before restoring boost'},
+  0x51: {n:'MAP compare?', d:''},
+  0x52: {n:'MAP_PRESSURE', d:'MAP pressure'},
+  0x57: {n:'BOOST_REDUCTION_KNOCK', d:'total boost reduction for knock control'},
+  0x60: {n:'BOOST_PID_ERROR', d:'boost control PID error (target boost - actual boost)'},
+  0x61: {n:'BOOST_PID_ITERM', d:'boost control PID I term (integral)'},
+  0x62: {n:'BOOST_PID_DTERM', d:'boost control PID D term (derivative)'},
+  0x68: {n:'BOOST_FEEDFORWARD_CV', d:'boost control feedforward value (CV duty cycle)'},
+  0x70: {n:'CYL_TIMING_DELAY_C1', d:'per-cylinder timing delay cylinder 1'},
+  0x71: {n:'CYL_TIMING_DELAY_C2', d:'per-cylinder timing delay cylinder 2'},
+  0x72: {n:'CYL_TIMING_DELAY_C3', d:'per-cylinder timing delay cylinder 3'},
+  0x73: {n:'CYL_TIMING_DELAY_C4', d:'per-cylinder timing delay cylinder 4'},
+  0x74: {n:'CYL_KNOCK_THRESH_C1', d:'per-cylinder knock threshold cyinder 1'},
+  0x75: {n:'CYL_KNOCK_THRESH_C2', d:'per-cylinder knock threshold cyinder 2'},
+  0x76: {n:'CYL_KNOCK_THRESH_C3', d:'per-cylinder knock threshold cyinder 3'},
+  0x77: {n:'CYL_KNOCK_THRESH_C4', d:'per-cylinder knock threshold cyinder 4'},
+  0x7A: {n:'knk_thres', d:'7ah - current knock threshold msb value for the cylinder that fired in the previous cycle'},
+};
+
+// 8051 bit address labels (bit 0x00–0x7F = iram[20h..2Fh] bits)
+// bit_addr = (byte - 0x20) * 8 + bit_position
+export const BIT_LABELS = {
+  // iram[20h] = bits 00h..07h
+  0x00:'',0x01:'',0x02:'',0x03:'',
+  0x05:'ISVPWMOverflow', // 20h.5
+  0x06:'',0x07:'',
+  // iram[21h] = bits 08h..0Fh
+  0x08:'EngineSync',   // 21h.0
+  0x09:'Phase2Lambda', // 21h.1
+  0x0A:'',0x0B:'',0x0C:'',
+  0x0D:'UseMap1140',   // 21h.5
+  0x0E:'',0x0F:'',
+  // iram[22h] = bits 10h..17h
+  0x10:'',0x11:'',0x12:'',0x13:'',0x14:'',0x15:'',0x16:'',0x17:'',
+  // iram[23h] = bits 18h..1Fh
+  0x18:'',0x19:'',0x1A:'',0x1B:'',0x1C:'',
+  0x1D:'FuelOffCoast', // 23h.5
+  0x1E:'',0x1F:'TXDLambdaDiag',
+  // iram[24h] = bits 20h..27h
+  0x20:'LambdaFlag20', // 24h.0
+  0x21:'LambdaFlag21',
+  0x22:'LambdaFlag22',
+  0x23:'O2Lean/LambdaOK', // 24h.3
+  0x24:'',0x25:'',0x26:'',0x27:'',
+  // iram[25h] = bits 28h..2Fh
+  0x28:'',0x29:'',0x2A:'',0x2B:'',
+  0x2C:'ColdStartTiming', // 25h.4
+  0x2D:'ColdStartEnrich',  // 25h.5
+  0x2E:'',0x2F:'',
+  // iram[26h] = bits 30h..37h
+  0x30:'',0x31:'',0x32:'',0x33:'',0x34:'',0x35:'',0x36:'',0x37:'DataPlug',
+  // iram[27h..2Fh] = bits 38h..7Fh (mostly unnamed)
+};

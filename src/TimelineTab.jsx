@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from "react";
+import { useState, useMemo, memo, useRef } from "react";
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
@@ -7,6 +7,7 @@ import {
 import { thin, syncNearest, inRange } from "./thin.js";
 import { CursorLine } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
+import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  TIMELINE TAB
@@ -54,7 +55,80 @@ const PICKS_KEY = 'dme951.timeline.picks';
 const fwRpm = (ir, synced) => synced && ir[0x37] >= 3 ? Math.round(17640 / ir[0x37]) : null;
 const hx = v => v.toString(16).toUpperCase().padStart(2, '0');
 const pickKey = p => `${p.src}_${hx(p.addr)}${p.bit != null ? `_${p.bit}` : ''}`;
-const pickLabel = p => `${p.src === 'dme' ? 'DME iram' : 'KLR ram'}[${hx(p.addr)}h]${p.bit != null ? `.${p.bit}` : ''}`;
+// Disassembly name for a byte (or a DME bit-addressable bit), '' if none
+const memName = (src, addr, bit) => {
+  if (src === 'klr') return KLR_KNOWN[addr]?.n ?? '';
+  if (bit != null && addr >= 0x20 && addr <= 0x2F) {
+    const b = BIT_LABELS[(addr - 0x20) * 8 + bit];
+    if (b) return b;
+  }
+  const n = IRAM_MAP.find(e => e.a === addr)?.n ?? '';
+  return /^r[0-9A-F]{2}$/.test(n) ? '' : n;   // r00..r0F are placeholders
+};
+const pickLabel = p => {
+  const n = memName(p.src, p.addr, p.bit);
+  return `${p.src === 'dme' ? 'DME iram' : 'KLR ram'}[${hx(p.addr)}h]${p.bit != null ? `.${p.bit}` : ''}${n ? ` ${n}` : ''}`;
+};
+
+// Display units for a picked byte: the chart still plots the raw byte, the
+// tooltip shows the converted value (and the raw byte beside it). Each
+// conversion returns null where the byte has no meaning in that unit.
+const UNITS = {
+  raw:   { label: 'raw',             conv: null },
+  adcV:  { label: 'V (ADC 0-5 V)',   conv: v => (v * 5 / 255).toFixed(2), unit: 'V',
+           note: 'raw × 5/255: the voltage at the ADC input' },
+  battV: { label: 'V (battery)',     conv: v => battRawToV(v).toFixed(1), unit: 'V',
+           note: 'raw × 0.05263 + 2.132: the DME battery scale (iram 11h), as on the Overview tile' },
+  degC:  { label: '°C (NTC)',        conv: v => ntcLinToC(v), unit: '°C',
+           note: 'raw × 165/255 − 40: the DME NTC linearised scale (iram 12h/13h after linearisation)' },
+  rpm:   { label: 'RPM (prpm)',      conv: v => prpmToRpm(v), unit: 'rpm',
+           note: '17640 / raw: the DME period byte prpm (iram 37h); blank below 3' },
+};
+// Unit a newly added pick starts with, by what the byte is known to hold
+const defaultUnit = (src, addr) =>
+  src === 'dme' ? ({ 0x11: 'battV', 0x12: 'degC', 0x13: 'degC', 0x37: 'rpm' }[addr] ?? 'raw') : 'raw';
+
+const fmtPick = (p, v) => {
+  if (p.bit != null) return `${v}`;
+  const u = UNITS[p.unit ?? 'raw'] ?? UNITS.raw;
+  if (!u.conv) return `0x${hx(v)} (${v})`;
+  const c = u.conv(v);
+  return `${c ?? '--'} ${u.unit}  (0x${hx(v)})`;
+};
+
+// Everything the picker search can offer for one CPU: named bytes, and for
+// the DME the named bits of the bit-addressable area 20h–2Fh
+const SEARCH_LIST = {
+  dme: [
+    ...IRAM_MAP.filter(e => !/^r[0-9A-F]{2}$/.test(e.n)).map(e => ({ addr: e.a, name: e.n, desc: e.d })),
+    ...Object.entries(BIT_LABELS).filter(([, n]) => n).map(([b, n]) => ({
+      addr: 0x20 + (b >> 3), bit: b & 7, name: n, desc: `bit ${hx(+b)}h` })),
+  ].sort((x, y) => x.addr - y.addr || (x.bit ?? -1) - (y.bit ?? -1)),
+  klr: Object.entries(KLR_KNOWN).map(([a, e]) => ({ addr: +a, name: e.n, desc: e.d })),
+};
+const MAX_MATCHES = 14;
+
+function searchMem(src, q) {
+  q = q.trim().toLowerCase();
+  if (!q) return [];
+  const list = SEARCH_LIST[src] ?? [];
+  // "7d", "7dh", "0x7d", "21h.0", "21.0" → address (and bit) match
+  const m = /^(?:0x)?([0-9a-f]{1,2})h?(?:\.([0-7]))?$/.exec(q);
+  const addr = m ? parseInt(m[1], 16) : null, bit = m?.[2] != null ? +m[2] : null;
+  const out = [];
+  if (addr != null && addr <= 0x7F) {
+    for (const e of list) if (e.addr === addr && (bit == null || e.bit === bit)) out.push(e);
+    if (!out.some(e => e.bit === (bit ?? undefined)))
+      out.unshift({ addr, ...(bit != null ? { bit } : {}), name: memName(src, addr, bit) || '(unnamed)', desc: '' });
+  }
+  const byName = [], byDesc = [];
+  for (const e of list) {
+    if (out.includes(e)) continue;
+    if (e.name.toLowerCase().includes(q)) byName.push(e);
+    else if (q.length >= 3 && e.desc?.toLowerCase().includes(q)) byDesc.push(e);
+  }
+  return [...out, ...byName, ...byDesc].slice(0, MAX_MATCHES);
+}
 
 const LABELS = {
   rpm:'RPM stimulus', fwRpm:'RPM firmware', timingAdv:'advance °BTDC', dwell:'dwell ms',
@@ -75,7 +149,7 @@ function seriesLabel(k, picks = []) {
 }
 
 // Compact synced tooltip; also lists any PHASE markers within ±60 ms
-function TipBox({ active, payload, label, markers }) {
+function TipBox({ active, payload, label, markers, picks = [] }) {
   if (!active || label == null) return null;
   const near = markers.filter(m => Math.abs(m.t - label) <= 60);
   return (
@@ -83,7 +157,11 @@ function TipBox({ active, payload, label, markers }) {
       <div style={{color:C.textBright}}>t={label} ms</div>
       {(payload ?? []).filter(e => e.dataKey !== 't' && e.value != null).map(e => (
         <div key={e.dataKey} style={{color:e.color ?? e.stroke}}>
-          {e.name}: {HEX_SERIES.test(e.dataKey) ? `0x${hx(e.value)} (${e.value})` : e.value}
+          {e.name}: {(() => {
+            const p = picks.find(q => pickKey(q) === e.dataKey);
+            if (p) return fmtPick(p, e.value);
+            return HEX_SERIES.test(e.dataKey) ? `0x${hx(e.value)} (${e.value})` : e.value;
+          })()}
         </div>
       ))}
       {near.map((m, i) => <div key={i} style={{color:m.col}}>▸ {m.t} ms {m.msg}</div>)}
@@ -110,8 +188,12 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
   const [hidden, setHidden] = useState({});     // series key → true when hidden
   const [picks, setPicks]   = useState(loadPicks);
   const [pickSrc, setPickSrc]   = useState('dme');
-  const [pickAddr, setPickAddr] = useState('');
+  const [pickAddr, setPickAddr] = useState('');   // search text: hex address or name
   const [pickBit, setPickBit]   = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [hl, setHl] = useState(0);                // highlighted search match
+  const searchRef = useRef(null);
+  const matches = useMemo(() => searchMem(pickSrc, pickAddr), [pickSrc, pickAddr]);
 
   // ── One row per timestamp, DME and KLR DS snapshots merged ────
   const rows = useMemo(() => {
@@ -189,16 +271,32 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
     return { total: all.length, pts: all.filter((_, i) => i % step === 0).map(p => ({ t: p.t, ignPulse: +p.pulse_ms.toFixed(3) })) };
   }, [klrData.phases, t0, t1]);
 
-  const addPick = () => {
-    const addr = parseInt(pickAddr, 16);
-    const bit = pickBit === '' ? null : parseInt(pickBit, 10);
+  const addPickAt = (addr, bit) => {
     if (isNaN(addr) || addr < 0 || addr > 0x7F || (bit != null && (isNaN(bit) || bit < 0 || bit > 7))) return;
-    const p = { src: pickSrc, addr, ...(bit != null ? { bit } : {}) };
+    const p = { src: pickSrc, addr, ...(bit != null ? { bit } : { unit: defaultUnit(pickSrc, addr) }) };
+    setPickAddr(''); setPickBit(''); setSearchOpen(false); setHl(0);
     if (picks.some(q => pickKey(q) === pickKey(p))) return;
     const next = [...picks, p];
-    setPicks(next); savePicks(next); setPickAddr(''); setPickBit('');
+    setPicks(next); savePicks(next);
+  };
+  // ADD / Enter: the highlighted search match, else the text as a hex address
+  const addPick = () => {
+    const bitIn = pickBit === '' ? null : parseInt(pickBit, 10);
+    const m = searchOpen ? matches[hl] : null;
+    if (m) return addPickAt(m.addr, bitIn ?? m.bit ?? null);
+    addPickAt(parseInt(pickAddr.replace(/^0x/i, '').replace(/h$/i, ''), 16), bitIn);
   };
   const removePick = k => { const next = picks.filter(p => pickKey(p) !== k); setPicks(next); savePicks(next); };
+  const setPickUnit = (k, unit) => {
+    const next = picks.map(p => pickKey(p) === k ? { ...p, unit } : p);
+    setPicks(next); savePicks(next);
+  };
+  const onSearchKey = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSearchOpen(true); setHl(h => Math.min(h + 1, matches.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHl(h => Math.max(h - 1, 0)); }
+    else if (e.key === 'Escape') setSearchOpen(false);
+    else if (e.key === 'Enter') addPick();
+  };
 
   if (!rows.length) return (
     <div style={{textAlign:'center',color:C.textDim,padding:'60px',fontSize:'14px'}}>
@@ -237,7 +335,7 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
                tickFormatter={v => `${v}ms`} stroke={C.textDim} />
         {yAxes}
         {rightAxis ?? <YAxis yAxisId="r" orientation="right" width={36} tick={false} axisLine={false} />}
-        <Tooltip content={<TipBox markers={markers} />} isAnimationActive={false} />
+        <Tooltip content={<TipBox markers={markers} picks={picks} />} isAnimationActive={false} />
         <MarkerLines markers={shownMarkers} />
         <CursorLine stroke={C.textBright} strokeWidth={1.5} />
         <DragArea zoom={zoom} fill={C.textBright} />
@@ -351,16 +449,44 @@ const TimelineTab = memo(function TimelineTab({ chartData, dmeSnapshots, dmePhas
           {picks.map((p, i) => (
             <span key={pickKey(p)} style={{display:'inline-flex',gap:'4px',alignItems:'center'}}>
               {chip(pickKey(p), pickLabel(p), PICK_COLS[i % PICK_COLS.length])}
+              {p.bit == null &&
+                <select value={p.unit ?? 'raw'} onChange={e => setPickUnit(pickKey(p), e.target.value)}
+                        title={`Tooltip unit${UNITS[p.unit]?.note ? ` — ${UNITS[p.unit].note}` : ''}`}
+                        style={{...inp,padding:'1px 2px',fontSize:'9px',textTransform:'none',letterSpacing:0}}>
+                  {Object.entries(UNITS).map(([k, u]) => <option key={k} value={k}>{u.label}</option>)}
+                </select>}
               <span onClick={() => removePick(pickKey(p))} style={{cursor:'pointer',color:'#886666'}} title="Remove">✕</span>
             </span>
           ))}
           <span style={{display:'inline-flex',gap:'4px',alignItems:'center',marginLeft:'auto',textTransform:'none',letterSpacing:0}}>
-            <select value={pickSrc} onChange={e => setPickSrc(e.target.value)} style={inp}>
+            <select value={pickSrc} onChange={e => { setPickSrc(e.target.value); setHl(0); }} style={inp}>
               <option value="dme">DME iram</option>
               <option value="klr" disabled={!hasKlr}>KLR ram</option>
             </select>
-            <input value={pickAddr} onChange={e => setPickAddr(e.target.value)} placeholder="addr hex"
-                   onKeyDown={e => e.key === 'Enter' && addPick()} style={{...inp,width:'60px'}} />
+            <span style={{position:'relative'}}>
+              <input ref={searchRef} value={pickAddr} placeholder="search name or hex addr"
+                     onChange={e => { setPickAddr(e.target.value); setSearchOpen(true); setHl(0); }}
+                     onFocus={() => setSearchOpen(true)}
+                     onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+                     onKeyDown={onSearchKey} style={{...inp,width:'170px'}} />
+              {searchOpen && matches.length > 0 && (
+                <div style={{position:'absolute',top:'100%',right:0,zIndex:20,minWidth:'320px',maxWidth:'460px',
+                             background:'#030803',border:`1px solid ${C.border}`,boxShadow:'0 4px 12px #000a'}}>
+                  {matches.map((m, i) => (
+                    <div key={`${m.addr}_${m.bit ?? ''}`}
+                         onMouseDown={e => { e.preventDefault(); addPickAt(m.addr, m.bit ?? null); }}
+                         onMouseEnter={() => setHl(i)}
+                         title={m.desc}
+                         style={{padding:'3px 6px',cursor:'pointer',fontSize:'10px',display:'flex',gap:'8px',
+                                 background:i === hl ? '#0d2e0d' : 'transparent'}}>
+                      <span style={{color:C.blue,minWidth:'42px'}}>{hx(m.addr)}h{m.bit != null ? `.${m.bit}` : ''}</span>
+                      <span style={{color:C.textBright}}>{m.name}</span>
+                      <span style={{color:C.textDim,opacity:0.7,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.desc}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </span>
             <input value={pickBit} onChange={e => setPickBit(e.target.value)} placeholder="bit"
                    onKeyDown={e => e.key === 'Enter' && addPick()} style={{...inp,width:'32px'}} />
             <button style={btn} onClick={addPick}>ADD</button>
