@@ -1245,8 +1245,9 @@ export default function DMEDashboard() {
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','ports','iram','charts','rpm_charts','phase','diag'].map(t=>(
-            <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}>
+          {['overview','ports','iram','charts','rpm_charts','phase','diag','maps'].map(t=>(
+            <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}
+              title={t==='maps' ? 'DME map and table lookup results over time' : undefined}>
               {t==='overview'?'DME OVERVIEW':
                t==='ports'   ?'DME PORTS'  :
                t==='iram'    ?'DME IRAM'   :
@@ -1254,6 +1255,7 @@ export default function DMEDashboard() {
                t==='rpm_charts'?'DME RPM CHARTS':
                t==='phase'   ?'DME PHASE'  :
                t==='diag'    ?'DME DIAG'   :
+               t==='maps'    ?'DME MAPS'   :
                t.toUpperCase()}
             </button>
           ))}
@@ -1276,8 +1278,6 @@ export default function DMEDashboard() {
         {/* Row 3 — DME + KLR together */}
         <div style={S.tabRowKlr}>
           <button style={S.tab(tab==='timeline')} onClick={()=>setTab('timeline')}>TIMELINE</button>
-          <button style={S.tab(tab==='maps')} onClick={()=>setTab('maps')}
-            title="DME map and table lookup results over time">DME MAPS</button>
         </div>
       </div>
 
