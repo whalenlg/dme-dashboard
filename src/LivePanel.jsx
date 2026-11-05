@@ -88,7 +88,16 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'13px'}}>t={tMs} ms</span>
         {running && sim.rate != null &&
           <span style={{color:C.textDim,fontSize:'9px'}}>{sim.rate.toFixed(1)} sim ms/s ({(1000 / sim.rate).toFixed(0)}× slower than real)</span>}
-        {!running && sim.reason && <span style={{color:C.amber,fontSize:'10px'}}>stopped: {sim.reason}</span>}
+        {!running && sim.reason && (() => {
+          const h = bpHitOf(sim.reason);
+          if (!h) return <span style={{color:C.amber,fontSize:'10px'}}>stopped: {sim.reason}</span>;
+          return (
+            <span style={{color:C.amber,fontSize:'10px'}}>
+              stopped: bp {h.cpu} {h.pc} · <span style={{color:C.blue}}>{hitText(h)}</span>
+              <span style={{color:C.textDim}}> (condition {h.op} {h.bit != null ? h.val : `${hx(h.val)}h`})</span>
+            </span>
+          );
+        })()}
         <span style={{flex:1}} />
         <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
         <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
@@ -139,10 +148,10 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         {/* Side by side when there is room for full operands, else stacked.
             A closed pane stays mounted (hidden) so it keeps its breakpoint list and GO pin. */}
         <div style={{display: anyPane ? 'grid' : 'none',gridTemplateColumns:'repeat(auto-fit,minmax(min(520px,100%),1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
-          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} conds={bpConds?.dme} trace={trace.dme} traceCtx={traceCtx?.dme}
+          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} conds={bpConds?.dme} reason={sim.reason} trace={trace.dme} traceCtx={traceCtx?.dme}
                     ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send}
                     hidden={!panes.dme} onClose={() => showPane('dme', false)} />
-          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} conds={bpConds?.klr} trace={trace.klr} traceCtx={traceCtx?.klr}
+          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} conds={bpConds?.klr} reason={sim.reason} trace={trace.klr} traceCtx={traceCtx?.klr}
                     ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send}
                     hidden={!panes.klr} onClose={() => showPane('klr', false)} />
         </div>
@@ -446,6 +455,18 @@ const condNow = (k, ram) => {
   return { x, ok: k.op === '==' ? x === k.val : k.op === '!=' ? x !== k.val : k.op === '<' ? x < k.val : x > k.val };
 };
 const CMP_OPS = ['==', '!=', '<', '>'];
+// A conditional breakpoint's stop reason, "bp dme 024E if 37>14 (37=16)":
+// the breakpoint, its condition and the value the sim compared
+const bpHitOf = reason => {
+  const m = /^bp (dme|klr) ([0-9A-F]+) if ([0-9A-F]{2})(?:\.([0-7]))?(==|!=|<|>)([0-9A-F]{1,2}) \(\S+=([0-9A-F]{1,2})\)/.exec(reason ?? '');
+  return m && { cpu: m[1], pc: m[2], a: parseInt(m[2], 16), mem: parseInt(m[3], 16), bit: m[4] != null ? +m[4] : null,
+                op: m[5], val: parseInt(m[6], 16), now: parseInt(m[7], 16) };
+};
+const hitText = h => {
+  const n = memName(h.cpu, h.mem, h.bit);
+  return `${h.cpu === 'dme' ? 'iram' : 'ram'}[${hx(h.mem)}h]${h.bit != null ? `.${h.bit}` : ''}${n ? ` ${n}` : ''} = ${
+    h.bit != null ? h.now : `${hx(h.now)}h (${h.now})`}`;
+};
 
 // Editor for one breakpoint's memory condition: a memory location (search by
 // name or hex address, as the Timeline tab's picker), a comparison and a value
@@ -493,7 +514,7 @@ function CondEditor({ cpu, addr, cond, ram, onSet, onClear, onCancel }) {
   );
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
+function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
   const [jump, setJump]   = useState('');
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
@@ -589,6 +610,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, trace, traceCtx, ra
             const lbl = listing.length ? listing[rowFor(listing, a)] : null;
             const on = bpSet.has(a), k = condOf(a);
             const now = k && !running ? condNow(k, ram) : null;
+            const hit = !running ? bpHitOf(reason) : null;
+            const hitHere = hit && hit.cpu === cpu && hit.a === a;
             return (
               <span key={a} style={{display:'inline-flex',alignItems:'center',border:`1px solid ${C.border}`,background:C.panelBg2}}>
                 <input type="checkbox" checked={on} title={on ? 'Disable breakpoint' : 'Enable breakpoint'}
@@ -605,6 +628,12 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, trace, traceCtx, ra
                       onClick={() => setEditing(editing === a ? null : a)}>
                   {k ? `if ${condText(cpu, k)}` : '+if'}
                 </span>
+                {hitHere && (
+                  <span style={{color:C.blue,padding:'1px 5px',borderLeft:`1px solid ${C.border}`,textTransform:'none'}}
+                        title="The value the condition compared when this breakpoint stopped">
+                    hit: {hit.bit != null ? hit.now : `${hx(hit.now)}h (${hit.now})`}
+                  </span>
+                )}
                 <span style={{color:C.textDim,padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`}}
                       title="Remove breakpoint" onClick={() => removeBp(a)}>✕</span>
               </span>
