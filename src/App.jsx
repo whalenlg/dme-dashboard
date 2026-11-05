@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, ReferenceLine, DefaultTooltipContent
 } from "recharts";
 import TimelineTab from "./TimelineTab.jsx";
+import MapsTab from "./MapsTab.jsx";
 import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, BIT_DESC, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
 import LivePanel from "./LivePanel.jsx";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
@@ -302,7 +303,7 @@ function trimFront(arr, max) {
 
 // What live mode keeps: about the last 10 simulated minutes (DS + STATUS
 // every 100 ms per CPU, ~100 KLR [PHASE] lines per second at idle)
-const LIVE_MAX = { snapshots: 12000, status: 6000, phases: 60000 };
+const LIVE_MAX = { snapshots: 12000, status: 6000, phases: 60000, lookups: 8000 };   // lookups: points per map
 
 // Incremental DME log parser: push() lines as they arrive (live sim) and
 // read result() whenever needed, instead of re-parsing the whole log text.
@@ -317,8 +318,28 @@ function parseExpectLine(line) {
   return e.t == null || Number.isNaN(e.t) ? null : e;
 }
 
+// Map / table lookups from dme_klr_dashboard_tb.v (MAPS tab):
+//   DME: [LKUP] <ms>,M<map>,<result>,<xa>=<xv>[,<ya>=<yv>]   numbered map
+//   DME: [LKUP] <ms>,T<addr>,<result>,<xa>=<xv> | in=<index> directly addressed table
+// -> { id: 'M27' | 'T112E', p: { t, v, in: [[addr|'in', value], ...] } }, all but t hex
+function parseLookupLine(line) {
+  const f = line.slice(line.indexOf(']') + 1).trim().split(',');
+  const t = parseFloat(f[0]), v = parseInt(f[2], 16);
+  if (f.length < 3 || Number.isNaN(t) || Number.isNaN(v) || !/^[MT][0-9A-Fa-f]+$/.test(f[1])) return null;
+  const inputs = f.slice(3).map(kv => {
+    const [k, x] = kv.split('=');
+    return [k === 'in' ? 'in' : parseInt(k, 16), parseInt(x, 16)];
+  }).filter(([k, x]) => k != null && !Number.isNaN(k) && !Number.isNaN(x));
+  const id = f[1][0] === 'T' ? `T${f[1].slice(1).toUpperCase()}` : `M${parseInt(f[1].slice(1), 10)}`;
+  return { id, p: { t, v, in: inputs } };
+}
+
 function dmeLogParser(max = {}) {
   const snapshots = [], phases = [], expect = [];
+  // lookups: id -> points, appended in place; lookupsVer counts changes so
+  // memos can key on it without copying every series on each live tick
+  const lookups = {};
+  let lookupsVer = 0;
   let dropped = 0, out = null;   // out: last result's arrays, reused while nothing changes
   // Annotate each snapshot with last valid raw temp bytes so Overview
   // can carry-forward across mid-scan raw ADC artifacts.
@@ -363,6 +384,15 @@ function dmeLogParser(max = {}) {
         else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t); if (p) { insertByT(phases, p); out = null; } }
         else if (t.startsWith('DME: [STATUS]'))                            addSnap(parseStatusLine(t.replace(/^DME: /,'')));
         else if (t.startsWith('REPLAY: [EXPECT]'))                         { const e = parseExpectLine(t); if (e) { insertByT(expect, e); out = null; } }
+        else if (t.startsWith('DME: [LKUP]')) {
+          const l = parseLookupLine(t);
+          if (l) {
+            const arr = (lookups[l.id] ??= []);
+            arr.push(l.p);
+            trimFront(arr, max.lookups);
+            lookupsVer++;
+          }
+        }
       }
       const n = trimFront(snapshots, max.snapshots);
       if (n || trimFront(phases, max.phases)) out = null;
@@ -372,7 +402,7 @@ function dmeLogParser(max = {}) {
     // same arrays otherwise. dropped: snapshots trimmed since the last call.
     result() {
       out ??= { snapshots: snapshots.slice(), phases: phases.slice(), expect: expect.slice() };
-      const r = { ...out, dropped };
+      const r = { ...out, lookups, lookupsVer, dropped };
       dropped = 0;
       return r;
     },
@@ -382,8 +412,8 @@ function dmeLogParser(max = {}) {
 function parseLog(text) {
   const p = dmeLogParser();
   p.push(text.split('\n'));
-  const { snapshots, phases, expect } = p.result();
-  return { snapshots, phases, expect };
+  const { snapshots, phases, expect, lookups, lookupsVer } = p.result();
+  return { snapshots, phases, expect, lookups, lookupsVer };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -827,7 +857,7 @@ export default function DMEDashboard() {
     // browser can interrupt, instead of one long frame per update
     startTransition(() => {
       if (fresh) { setZoom(null); setRpmZoom(null); }
-      setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases ? d : dme);
+      setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases && d.lookupsVer === dme.lookupsVer ? d : dme);
       setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status && k.sparks === klr.sparks ? k : klr);
       // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
       if (followRef.current) {
@@ -1014,7 +1044,8 @@ export default function DMEDashboard() {
 
   // Only the chart tabs read these, and on long runs they cost a pass
   // over every snapshot per update, so they are skipped on other tabs
-  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline';
+  // maps: no chart rows of its own, but this throttles its live feed too
+  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline' || tab === 'maps';
   const chartData = useMemo(() => {
     if (!needCharts) return NO_ROWS;
     // Merge DS + STATUS snapshots at same timestamp.
@@ -1168,7 +1199,7 @@ export default function DMEDashboard() {
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
 
   const KLR_TABS = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'];
-  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','timeline'];
+  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','timeline','maps'];
 
   return (
     <div style={S.root}>
@@ -1234,6 +1265,8 @@ export default function DMEDashboard() {
         {/* Row 3 — DME + KLR together */}
         <div style={S.tabRowKlr}>
           <button style={S.tab(tab==='timeline')} onClick={()=>setTab('timeline')}>TIMELINE</button>
+          <button style={S.tab(tab==='maps')} onClick={()=>setTab('maps')}
+            title="DME map and table lookup results over time">DME MAPS</button>
         </div>
       </div>
 
@@ -1256,6 +1289,8 @@ export default function DMEDashboard() {
               xRpm range={rpmZoom} setRange={setRpmZoom} />}
           {tab==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
               dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
+              range={zoom} setRange={setZoom} />}
+          {tab==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
               range={zoom} setRange={setZoom} />}
         </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
