@@ -1291,7 +1291,7 @@ export default function DMEDashboard() {
               dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
               range={zoom} setRange={setZoom} />}
           {tab==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
-              range={zoom} setRange={setZoom} />}
+              range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL} />}
         </CursorContext.Provider>
         {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
         {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
