@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from "react";
+import { useState, useMemo, useEffect, memo } from "react";
 import {
   ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
@@ -19,6 +19,9 @@ import { NUMBERED_MAPS, DIRECT_TABLES } from "./mapDefs.js";
 //  A map is logged when its result changes, and otherwise once per
 //  DS interval while the firmware keeps looking it up, so each line is
 //  drawn as a step: the value holds until the next point.
+//  Clicking a chart's title shows the graph of that map or table as it is
+//  in the DME image the simulator bridge has loaded (map_graphs.py, served
+//  at <bridge>/maps/dme; drawn once per image contents).
 // ─────────────────────────────────────────────────────────────────
 
 const C = {
@@ -68,7 +71,7 @@ function TipBox({ active, payload, label }) {
 }
 
 // One map's chart; memoized so a live tick only redraws charts whose data moved
-const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom }) {
+const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen }) {
   const ax = {fill:C.textDim,fontSize:9,fontFamily:"'Share Tech Mono',monospace"};
   const last = pts[pts.length - 1];
   let lo = 255, hi = 0;
@@ -77,8 +80,11 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom }) {
   return (
     <div style={{background:C.panelBg,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'6px 8px',minWidth:0,textAlign:'left'}}>
       <div style={{display:'flex',gap:'8px',alignItems:'baseline',flexWrap:'wrap'}}>
-        <span style={{color:C.textBright,fontSize:'11px',letterSpacing:'0.1em'}}>{def.title}</span>
-        <span style={{color:C.blue,fontSize:'10px'}}>{def.name}</span>
+        <span onClick={() => onOpen(def)} title="show this map's graph from the loaded ROM"
+              style={{display:'flex',gap:'8px',alignItems:'baseline',cursor:'pointer',textDecoration:'underline dotted',textUnderlineOffset:'3px'}}>
+          <span style={{color:C.textBright,fontSize:'11px',letterSpacing:'0.1em'}}>{def.title}</span>
+          <span style={{color:C.blue,fontSize:'10px'}}>{def.name}</span>
+        </span>
         <span style={{marginLeft:'auto',color:C.amber,fontSize:'10px'}}>
           {last ? `0x${hx(last.v)} (${last.v})` : ''}
         </span>
@@ -114,8 +120,79 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom }) {
   );
 });
 
+// The graph of one map or table, from the bridge's map_graphs.py output for
+// the DME image the sim has loaded. Polls while the bridge is drawing.
+function RomGraph({ def, bridge, onClose }) {
+  const [info, setInfo] = useState(null);     // { status, sha, rom, error, maps, tables } or { unreachable }
+  const [img, setImg] = useState(null);       // object URL
+  const [imgErr, setImgErr] = useState(null);
+
+  useEffect(() => {
+    let stop = false, timer = null;
+    const poll = () => fetch(`${bridge}/maps/dme`).then(r => r.json())
+      .then(j => { if (stop) return; setInfo(j); if (j.status === 'generating' || j.status === 'none') timer = setTimeout(poll, 2000); })
+      .catch(() => { if (!stop) setInfo({ unreachable: true }); });
+    poll();
+    return () => { stop = true; clearTimeout(timer); };
+  }, [bridge]);
+
+  const entry = info?.status === 'ready'
+    ? (def.id[0] === 'M' ? info.maps?.[def.id.slice(1)] : info.tables?.[def.id.slice(1).padStart(4, '0')])
+    : null;
+  const file = entry?.file;
+  useEffect(() => {
+    if (!file || !info?.sha) return;
+    let url = null, stop = false;
+    fetch(`${bridge}/maps/dme/${info.sha}/${file}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
+      .then(b => { if (stop) return; url = URL.createObjectURL(b); setImg(url); })
+      .catch(e => { if (!stop) setImgErr(e.message); });
+    return () => { stop = true; if (url) URL.revokeObjectURL(url); };
+  }, [bridge, info?.sha, file]);
+
+  useEffect(() => {
+    const k = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+
+  const note = s => <div style={{color:C.textDim,fontSize:'12px',padding:'40px 20px',textAlign:'center',lineHeight:1.6}}>{s}</div>;
+  let body;
+  if (!info) body = note('asking the simulator bridge…');
+  else if (info.unreachable) body = note(<>Can't reach the simulator bridge at {bridge}.<br />
+    The graphs are drawn on your machine from the loaded ROM: start it with
+    <code style={{color:C.blue}}> node dme_klr/live/bridge.mjs</code> (needs python3 with matplotlib).</>);
+  else if (info.status === 'none') body = note('The bridge has no DME image loaded yet. Waiting for the simulator…');
+  else if (info.status === 'generating') body = note(`Drawing the graphs for ${info.rom} (once per ROM image, about 20 s)…`);
+  else if (info.status === 'error') body = note(<>map_graphs.py failed for {info.rom}:<br />
+    <pre style={{color:C.amber,textAlign:'left',whiteSpace:'pre-wrap',fontSize:'10px'}}>{info.error}</pre></>);
+  else if (!file) body = note(`${info.rom} has no ${def.id[0] === 'M' ? `map ${def.id.slice(1)}` : `table ${def.id.slice(1)}h`} (the map index entry is FFh).`);
+  else if (imgErr) body = note(`Couldn't load the graph: ${imgErr}`);
+  else if (!img) body = note('loading…');
+  else body = <img src={img} alt={`${def.title} graph`} style={{maxWidth:'100%',maxHeight:'calc(100vh - 140px)',display:'block',margin:'0 auto',background:'#fff'}} />;
+
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'#000c',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:'16px'}}>
+      <div onClick={e => e.stopPropagation()}
+           style={{background:C.panelBg,border:`1px solid ${C.border}`,padding:'10px 12px',maxWidth:'min(1650px, 100%)',width:'100%',textAlign:'left'}}>
+        <div style={{display:'flex',gap:'10px',alignItems:'baseline',marginBottom:'8px',flexWrap:'wrap'}}>
+          <span style={{color:C.textBright,fontSize:'13px',letterSpacing:'0.1em'}}>{def.title}</span>
+          <span style={{color:C.blue,fontSize:'12px'}}>{def.name}</span>
+          {info?.rom && <span style={{color:C.textDim,fontSize:'10px'}}>
+            ROM {info.rom}{info.sha ? ` · ${info.sha}` : ''}{entry ? ` · ${entry.addr ? `${entry.addr}h · ` : ''}${entry.bytes} bytes` : ''}</span>}
+          <button onClick={onClose} style={{marginLeft:'auto',background:C.panelBg2,border:`1px solid ${C.border}`,color:C.textDim,
+                                            fontFamily:'inherit',fontSize:'11px',cursor:'pointer',padding:'2px 10px'}}>CLOSE ✕</button>
+        </div>
+        {body}
+      </div>
+    </div>
+  );
+}
+
 // lookups: id -> [{ t, v, in }] (dmeLogParser); ver bumps when any grows
-const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange }) {
+// bridge: the simulator bridge's URL, where the ROM graphs come from
+const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange, bridge }) {
+  const [open, setOpen] = useState(null);   // def whose ROM graph is shown
   const [filter, setFilter] = useState('');
   const [showMaps, setShowMaps] = useState(true);
   const [showTables, setShowTables] = useState(true);
@@ -185,7 +262,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange })
           ? <div style={{color:'#557755',fontSize:'10px',padding:'4px'}}>none match</div>
           : <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(380px, 1fr))',gap:'8px'}}>
               {list.map(d => <MapChart key={d.id} def={d} pts={series[d.id].pts} n={series[d.id].n}
-                                       t0={t0} t1={t1} zoom={zoom} />)}
+                                       t0={t0} t1={t1} zoom={zoom} onOpen={setOpen} />)}
             </div>}
       </div>
     );
@@ -193,6 +270,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange })
 
   return (
     <div style={{userSelect:'none',textAlign:'left'}}>
+      {open && <RomGraph def={open} bridge={bridge} onClose={() => setOpen(null)} />}
       <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap'}}>
         <ZoomBar zoom={zoom} range={range} full={full} btn={btn} color={C.textBright} dim={C.textDim} hint={false} />
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="filter: number, name, purpose"
@@ -202,7 +280,7 @@ const MapsTab = memo(function MapsTab({ lookups, ver, onSeek, range, setRange })
         {check(showOther, setShowOther, 'OTHERS IN LOG')}
         {check(usedOnly, setUsedOnly, 'LOOKED UP ONLY')}
         <span style={{color:C.textDim,fontSize:'9px',marginLeft:'auto'}}>
-          drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · click to move scrubber · hover for the inputs
+          click a title for the ROM's graph · drag to zoom · ctrl+wheel zoom · shift+wheel pan · double-click reset · click to move scrubber · hover for the inputs
         </span>
       </div>
       {showMaps && section('map', 'NUMBERED MAPS', 'map_lookup result (A on return), axes from the map header')}
