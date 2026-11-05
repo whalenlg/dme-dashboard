@@ -8,8 +8,8 @@
 
 // n: map number (R2 at map_lookup, decimal); addr: map address in the code ROM
 export const NUMBERED_MAPS = [
-  {"n": 1, "name": "MAP1_UNKNOWN", "r2": "01h", "addr": "12A6h", "axes": "04h", "purpose": "unknown", "covered": ""},
-  {"n": 2, "name": "MAP2_UNKNOWN", "r2": "02h", "addr": "12A6h", "axes": "04h", "purpose": "unknown", "covered": ""},
+  {"n": 1, "name": "read_air_temp", "r2": "01h", "addr": "12A6h", "axes": "04h", "purpose": "Air temp NTC linearization, result to 12h (AIRTEMP_NTC1)", "covered": ""},
+  {"n": 2, "name": "read_water_temp", "r2": "02h", "addr": "12A6h", "axes": "04h", "purpose": "Coolant temp NTC linearization, result to 13h (COOLANT_NTC2)", "covered": ""},
   {"n": 3, "name": "MAP3_CRANK_CLEAR_RPM", "r2": "03h", "addr": "1447h", "axes": "13h", "purpose": "rpm threshold for clearing the cranking flag 23h.2", "covered": ""},
   {"n": 4, "name": "MAP4_UNKNOWN", "r2": "04h", "addr": "13BCh", "axes": "13h", "purpose": "unknown", "covered": ""},
   {"n": 8, "name": "MAP8_UNKNOWN", "r2": "08h", "addr": "13ACh", "axes": "37h", "purpose": "unknown", "covered": ""},
