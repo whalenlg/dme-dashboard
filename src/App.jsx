@@ -703,10 +703,21 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
     if (done) { out.push(done); continue; }
     const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
     const cut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
+    const revMs = snapRpm(s) > 0 ? 60000 / snapRpm(s) : null;
     // No injector edge for 2+ revs while fuelling means P1.0 is held low
-    const held = ii >= 0 && snapRpm(s) > 0 && !cut && s.t - ign.inj[ii].t > 2 * 60000 / snapRpm(s);
-    // Held open: the injector is on for the whole rev, so plot a full rev
-    const injMs = held ? +(60000 / snapRpm(s)).toFixed(3) : ii >= 0 ? +ign.inj[ii].w.toFixed(3) : null;
+    // (a command longer than a rev: fire_inj reloads T0 before it overflows)
+    const held = ii >= 0 && revMs != null && !cut && s.t - ign.inj[ii].t > 2 * revMs;
+    // The pulse that ends a held-open stretch reports the whole stretch
+    // (hundreds of ms). It is not a per-rev pulse, so plot it as held (one
+    // rev) too; otherwise it shows as a huge spike and stays on the chart
+    // through a fuel cut, since no new pulse replaces it.
+    const lastW = ii >= 0 ? ign.inj[ii].w : null;
+    const endHeld = lastW != null && revMs != null && !cut && lastW > 2 * revMs;
+    // Fuel cut (coast or overload): the firmware skips fire_inj, so the
+    // injector is closed. Plot 0, as FUEL CMD does, not the last pulse.
+    const injMs = cut ? 0
+      : held || endHeld ? +revMs.toFixed(3)
+      : lastW != null ? +lastW.toFixed(3) : null;
     const pt = {
       t:       s.t,
       rpm:     snapRpm(s),
@@ -714,9 +725,10 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       // 4A:4B + 5 x iram[54h] dead time, 2 us/count). fuel: the firmware's
       // commanded FUEL_PULSE word 4A:4B alone, which is not clamped to a rev.
       inj:     injMs,
-      injHeld: held,
-      injHeldMs: held ? injMs : null,
-      injDuty: held ? 100 : ii >= 0 && snapRpm(s) ? Math.min(100, +(ign.inj[ii].w * snapRpm(s) / 600).toFixed(1)) : null,
+      injHeld: held || endHeld,
+      injHeldMs: held || endHeld ? injMs : null,
+      injDuty: cut ? 0 : held || endHeld ? 100
+        : lastW != null && revMs != null ? Math.min(100, +(lastW / revMs * 100).toFixed(1)) : null,
       injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
                fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
       fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
