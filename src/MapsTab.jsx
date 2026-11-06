@@ -245,9 +245,10 @@ const MapChart = memo(function MapChart({ def, pts, n, t0, t1, zoom, onOpen, xRp
 
 // The graph of one map or table, from the bridge's map_graphs.py output.
 // logRom: the DME image a loaded log names ({ file, sha }, from its
-// DME: [ROM] line): its graphs are asked for by hash. false: a log that
-// doesn't name one; null: live, where the sim's loaded image is the one.
-// Either way without a hash the bridge's loaded image is drawn.
+// DME: [ROM] line): its graphs are asked for by hash, or by file name when
+// the log has no hash (sha null: a full sim log's "ROM loaded from" line).
+// false: a log that doesn't name one; null: live, where the sim's loaded
+// image is the one. Either way the bridge's loaded image is drawn.
 // Polls while the bridge is drawing.
 function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
   const [info, setInfo] = useState(null);     // { status, sha, rom, error, maps, tables } or { unreachable }
@@ -256,13 +257,14 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
 
   useEffect(() => {
     let stop = false, timer = null;
-    const q = /^[0-9a-f]{16}$/.test(logRom?.sha ?? '') ? `?sha=${logRom.sha}` : '';
+    const q = /^[0-9a-f]{16}$/.test(logRom?.sha ?? '') ? `?sha=${logRom.sha}`
+            : logRom?.file && !logRom.sha ? `?name=${encodeURIComponent(logRom.file)}` : '';
     const poll = () => fetch(`${bridge}/maps/${cpu}${q}`).then(r => r.json())
       .then(j => { if (stop) return; setInfo(j); if (j.status === 'generating' || j.status === 'none') timer = setTimeout(poll, 2000); })
       .catch(() => { if (!stop) setInfo({ unreachable: true }); });
     poll();
     return () => { stop = true; clearTimeout(timer); };
-  }, [bridge, logRom?.sha, cpu]);
+  }, [bridge, logRom?.sha, logRom?.file, cpu]);
 
   const entry = info?.status === 'ready'
     ? (def.id[0] === 'M' ? info.maps?.[def.id.slice(1)] : info.tables?.[def.id.slice(1).padStart(4, '0')])
@@ -291,8 +293,8 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
   else if (info.unreachable || info.error === 'not found') body = note(<>Can't reach the simulator bridge at {bridge}{info.error ? ' (or it is a version without KLR graphs)' : ''}.<br />
     The graphs are drawn on your machine from the loaded ROM: start it with
     <code style={{color:C.blue}}> node dme_klr/live/bridge.mjs</code> (needs python3 with matplotlib).</>);
-  else if (info.status === 'unknown') body = note(<>This log ran on {logRom?.file} (sha {info.sha}), and the bridge
-    has no image with that content: it isn't in bin_images/{cpu} or among the uploaded ROMs on this machine.<br />
+  else if (info.status === 'unknown') body = note(<>This log ran on {logRom?.file}{info.sha ? ` (sha ${info.sha})` : ''}, and the bridge
+    has no image {info.sha ? 'with that content' : 'by that name'}: it isn't in bin_images/{cpu} or among the uploaded ROMs on this machine.<br />
     Copy the image into bin_images/dme, or load it with LIVE → LOAD .mem, and open the graph again.</>);
   else if (info.status === 'none') body = note(`The bridge has no ${cpu.toUpperCase()} image loaded yet. Waiting for the simulator…`);
   else if (info.status === 'generating') body = note(`Drawing the graphs for ${info.rom} (once per ROM image, ${cpu === 'klr' ? 'a few' : 'about 20'} s)…`);
@@ -304,10 +306,16 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
   else body = <img src={img} alt={`${def.title} graph`} style={{maxWidth:'100%',maxHeight:'calc(100vh - 140px)',display:'block',margin:'0 auto',background:'#fff'}} />;
 
   // Graphs that may not be the log's ROM: say so above them
+  // (named by file only: fine when the bridge found that file, which an
+  // older bridge that ignores ?name= doesn't)
+  const byName = logRom && !logRom.sha;
   const caution = info?.status === 'ready' && logRom !== null && !(logRom?.sha && logRom.sha === info.sha)
+    && !(byName && info.rom === logRom.file)
     ? (logRom === false
         ? "This log doesn't say which ROM it ran on (it's from before the run scripts recorded it), so this is the bridge's loaded ROM."
-        : `The log's ROM ${logRom.file} couldn't be identified when it ran (sha=${logRom.sha}), so this is the bridge's loaded ROM.`)
+        : byName
+          ? `This log ran on ${logRom.file}, but the bridge sent its loaded ROM: restart the bridge after a git pull so it can find images by name.`
+          : `The log's ROM ${logRom.file} couldn't be identified when it ran (sha=${logRom.sha}), so this is the bridge's loaded ROM.`)
     : null;
 
   return (
