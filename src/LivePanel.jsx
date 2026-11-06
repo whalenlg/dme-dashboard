@@ -199,8 +199,8 @@ const METRICS = [
   { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true, overlay:'injHeldMs', warn: p => p?.injHeld || p?.injDuty >= 100,
     fmt: (v, p) => p?.fuelCut ? 'CUT' : p?.injHeld ? 'HELD OPEN' : v == null ? '--'
       : `${v.toFixed(2)} ms${p?.injDuty >= 100 ? ' HELD OPEN' : p?.injDuty != null ? ` ${p.injDuty}%` : ''}` },
-  { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', warn: p => p?.injOver,
-    fmt: (v, p) => v == null ? '--' : `${v.toFixed(3)} ms${p?.injOver ? ' > 1 REV' : ''}` },
+  { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', overlay:'fuelCutMs', warn: p => p?.injOver || p?.fuelCut,
+    fmt: (v, p) => v == null ? '--' : `${v.toFixed(3)} ms${p?.fuelCut ? ' CUT (not injected)' : p?.injOver ? ' > 1 REV' : ''}` },
   { k:'afm',    label:'AFM RAW',      col:'#44cccc', hex:true, fmt: hexv },
   { k:'tps',    label:'TPS',          col:'#88ccff', hex:true, fmt: hexv },
   { k:'load',   label:'LOAD',         col:'#ffcc66', hex:true, fmt: hexv },

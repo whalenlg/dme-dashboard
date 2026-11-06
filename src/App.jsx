@@ -731,7 +731,10 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
         : lastW != null && revMs != null ? Math.min(100, +(lastW / revMs * 100).toFixed(1)) : null,
       injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
                fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
-      fuel:    ((s.iram?.[0x23] ?? 0) >> 5) & 1 ? 0 : +fuelMs(s).toFixed(3),
+      // fuel is the word itself, also during a cut (the firmware keeps
+      // computing it but skips fire_inj); fuelCutMs draws those points red
+      fuel:    +fuelMs(s).toFixed(3),
+      fuelCutMs: cut ? +fuelMs(s).toFixed(3) : null,
       fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
       afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,
       tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
