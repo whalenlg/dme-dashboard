@@ -688,6 +688,8 @@ const timerTile = (n, regs) => {
 
 // A point is final once a later DME snapshot exists (the KLR snapshot and
 // pulses at its time are logged before that), so it is built only once
+// ROM 1171h: rev limit on ENGINE_RPM_RAW (37h), 0xA2 = 6480 rpm in every image here
+const REV_LIMIT_RAW = 0xA2;
 const livePoints = new WeakMap();   // DME snapshot → its series point
 const liveSeries = (dmeSnaps, klrSnaps, ign) => {
   const out = [];
@@ -702,20 +704,31 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
     const done = s.t < lastT ? livePoints.get(s) : null;
     if (done) { out.push(done); continue; }
     const b = k >= 0 ? klrSnaps[k].ram?.[0x52] : null;
-    const cut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
+    const fuelCut = ((s.iram?.[0x23] ?? 0) >> 5) & 1;
+    // Rev limiter: fire_inj is also skipped while ENGINE_RPM_RAW (37h, 40
+    // rpm/count) is above ROM 1171h (0xA2 = 6480 rpm in the 86, 89 and
+    // performance images): ROM 0166h does subb #limit - 37h, then
+    // orl C,23h.5; jc. 23h.5 is not set, so 4A:4B still reads ~11 ms.
+    const revCut = !fuelCut && (s.iram?.[0x37] ?? 0) > REV_LIMIT_RAW;
+    const cut = fuelCut || revCut;
     const revMs = snapRpm(s) > 0 ? 60000 / snapRpm(s) : null;
-    // No injector edge for 2+ revs while fuelling means P1.0 is held low
-    // (a command longer than a rev: fire_inj reloads T0 before it overflows)
-    const held = ii >= 0 && revMs != null && !cut && s.t - ign.inj[ii].t > 2 * revMs;
+    // No injector edge for 2+ revs while fuelling: P1.0 (injector, low =
+    // on) is either held low (a command longer than a rev: fire_inj
+    // reloads T0 before it overflows) or idle high (no fire_inj at all).
+    // The snapshot's P1 tells which; without it, assume held.
+    const stale = ii >= 0 && revMs != null && !cut && s.t - ign.inj[ii].t > 2 * revMs;
+    const pinHigh = s.p1 != null && (s.p1 & 1) === 1;
+    const held = stale && !pinHigh;
+    const idle = stale && pinHigh;
     // The pulse that ends a held-open stretch reports the whole stretch
     // (hundreds of ms). It is not a per-rev pulse, so plot it as held (one
     // rev) too; otherwise it shows as a huge spike and stays on the chart
     // through a fuel cut, since no new pulse replaces it.
     const lastW = ii >= 0 ? ign.inj[ii].w : null;
-    const endHeld = lastW != null && revMs != null && !cut && lastW > 2 * revMs;
-    // Fuel cut (coast or overload): the firmware skips fire_inj, so the
-    // injector is closed. Plot 0, as FUEL CMD does, not the last pulse.
-    const injMs = cut ? 0
+    const endHeld = lastW != null && revMs != null && !cut && !idle && lastW > 2 * revMs;
+    // Fuel cut (coast or overload) or rev limit: the firmware skips
+    // fire_inj, so the injector is closed. Plot 0, not the last pulse.
+    const injMs = cut || idle ? 0
       : held || endHeld ? +revMs.toFixed(3)
       : lastW != null ? +lastW.toFixed(3) : null;
     const pt = {
@@ -727,15 +740,16 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       inj:     injMs,
       injHeld: held || endHeld,
       injHeldMs: held || endHeld ? injMs : null,
-      injDuty: cut ? 0 : held || endHeld ? 100
+      injDuty: cut || idle ? 0 : held || endHeld ? 100
         : lastW != null && revMs != null ? Math.min(100, +(lastW / revMs * 100).toFixed(1)) : null,
-      injOver: !(((s.iram?.[0x23] ?? 0) >> 5) & 1) && snapRpm(s) > 0 &&
+      injOver: !cut && snapRpm(s) > 0 &&
                fuelMs(s) + 5 * (s.iram?.[0x54] ?? 0) * 0.002 > 60000 / snapRpm(s),
       // fuel is the word itself, also during a cut (the firmware keeps
       // computing it but skips fire_inj); fuelCutMs draws those points red
       fuel:    +fuelMs(s).toFixed(3),
       fuelCutMs: cut ? +fuelMs(s).toFixed(3) : null,
-      fuelCut: ((s.iram?.[0x23] ?? 0) >> 5) & 1,
+      fuelCut: cut ? 1 : 0,
+      revCut,
       afm:     s._prevAfm ?? s.iram?.[0x10] ?? null,
       tps:     s._prevTps ?? s.iram?.[0x16] ?? null,
       load:    s.iram?.[0x49] ?? null,
@@ -1538,13 +1552,15 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
   const mm      = minmax || {};
 
   // FuelOffCoast (bit1Dh = iram[23h].5) — fuel injection physically cut
-  const fuelCut = ((iram[0x23] ?? 0) >> 5) & 1;
+  // Rev limiter (ROM 0166h): fire_inj is skipped too while 37h > 1171h
+  const revCut  = !(((iram[0x23] ?? 0) >> 5) & 1) && (iram[0x37] ?? 0) > REV_LIMIT_RAW;
+  const fuelCut = (((iram[0x23] ?? 0) >> 5) & 1) || revCut;
   // Show computed value in parens when cut, 0.000 as primary
   const fuelDisplay = fuelCut
     ? `0.000`
     : fuelMsV.toFixed(3);
   const fuelUnit = fuelCut
-    ? `ms  (CUT — computed: ${fuelMsV.toFixed(3)}ms)`
+    ? `ms  (${revCut ? 'REV LIMIT' : 'CUT'} — computed: ${fuelMsV.toFixed(3)}ms)`
     : 'ms';
 
   const battRaw = iram[0x11] ?? null;
@@ -1581,7 +1597,7 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
               : '#66ffaa';                  // stoich — green
     afrLabel  = `λ${estLambda}`;
   } else if (fuelCut) {
-    afrLabel = 'FUEL CUT';
+    afrLabel = revCut ? 'REV LIMIT' : 'FUEL CUT';
     afrCol   = C.red;
   } else if (!clActive) {
     // Determine why open-loop: high load, warmup, or sensor fault
