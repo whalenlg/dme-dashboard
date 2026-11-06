@@ -197,7 +197,7 @@ const hexv = v => v == null ? '--' : `0x${hx(v)}`;
 const METRICS = [
   { k:'rpm',    label:'RPM',          col:'#66ffaa', fmt: v => v ?? '--' },
   { k:'inj',    label:'INJ PULSE',    col:'#aaffaa', unit:'ms', step:true, overlay:'injHeldMs', warn: p => p?.injHeld || p?.injDuty >= 100,
-    fmt: (v, p) => p?.fuelCut ? 'CUT' : p?.injHeld ? 'HELD OPEN' : v == null ? '--'
+    fmt: (v, p) => p?.fuelCut ? 'CUT' : p?.injHeld ? (v == null ? 'HELD OPEN' : `HELD OPEN ${v.toFixed(2)} ms (1 rev)`) : v == null ? '--'
       : `${v.toFixed(2)} ms${p?.injDuty >= 100 ? ' HELD OPEN' : p?.injDuty != null ? ` ${p.injDuty}%` : ''}` },
   { k:'fuel',   label:'FUEL CMD 4A:4B', col:'#77bb77', unit:'ms', overlay:'fuelCutMs', warn: p => p?.injOver || p?.fuelCut,
     fmt: (v, p) => v == null ? '--' : `${v.toFixed(3)} ms${p?.fuelCut ? ' CUT (not injected)' : p?.injOver ? ' > 1 REV' : ''}` },
@@ -225,7 +225,7 @@ const MetricChart = memo(function MetricChart({ m, series, t0, t1, range, zoom }
           <YAxis width={40} domain={['auto','auto']} tick={{fill:'#557755',fontSize:8}}
                  tickFormatter={v => m.hex ? hx(v) : v} />
           <Tooltip contentStyle={{background:'#030803',border:`1px solid ${C.border}`,fontSize:10}}
-                   labelFormatter={v => `${v} ms`} formatter={v => [m.fmt(v), m.label]} />
+                   labelFormatter={v => `${v} ms`} formatter={(v, _n, item) => [m.fmt(v, item?.payload), m.label]} />
           <Line dataKey={m.k} stroke={m.col} dot={false} isAnimationActive={false}
                 type={m.step ? 'stepAfter' : 'linear'} connectNulls />
           {m.overlay && (
