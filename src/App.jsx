@@ -344,7 +344,8 @@ function dmeLogParser(max = {}) {
   const klrLookups = {};
   let klrLookupsVer = 0;
   // rom: { dme, klr: { file, sha } } from the DME:/KLR: [ROM] lines the run
-  // scripts put at the top of a dash.log (rom_stamp.py); null in older logs
+  // scripts put at the top of a dash.log (rom_stamp.py), or { file, sha: null }
+  // from a full sim log's "DME: ROM loaded from <path>" lines; null in older logs
   let rom = null;
   let dropped = 0, out = null;   // out: last result's arrays, reused while nothing changes
   // Annotate each snapshot with last valid raw temp bytes so Overview
@@ -393,6 +394,12 @@ function dmeLogParser(max = {}) {
         else if (t.startsWith('DME: [ROM]') || t.startsWith('KLR: [ROM]')) {
           const m = t.match(/^(DME|KLR): \[ROM\] (\S+) sha=(\S+)/);
           if (m) rom = { ...rom, [m[1].toLowerCase()]: { file: m[2], sha: m[3] } };
+        }
+        else if (/^(DME|KLR): ROM loaded from /.test(t)) {
+          // The file name only (a [ROM] line, with the hash, wins)
+          const m = t.match(/^(DME|KLR): ROM loaded from (.+?)\s*$/);
+          const cpu = m?.[1].toLowerCase();
+          if (m && !rom?.[cpu]) rom = { ...rom, [cpu]: { file: m[2].split(/[\\/]/).pop(), sha: null } };
         }
         else if (t.startsWith('DME: [LKUP]')) {
           const l = parseLookupLine(t);
