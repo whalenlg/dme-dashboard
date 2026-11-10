@@ -19,13 +19,14 @@ export const POPOUT_BG = '#040a04';
 // Copy this page's stylesheets (index.css, the Google fonts) into a popup
 function setUpDoc(win, title) {
   const doc = win.document;
-  // A window left over under this name (e.g. from before a reload) still
-  // shows the old page's DOM: start it over
-  doc.head.innerHTML = '';
-  doc.body.innerHTML = '';
-  const meta = doc.createElement('meta');
-  meta.setAttribute('charset', 'utf-8');
-  doc.head.appendChild(meta);
+  // Write a whole document rather than adding to the popup's initial
+  // about:blank one: some browsers (Safari, Firefox) replace that one once
+  // it "finishes loading", or don't give it a head and body yet, which left
+  // the window blank. This also starts over a window left under this name
+  // (e.g. from before a reload).
+  doc.open();
+  doc.write('<!doctype html><html><head><meta charset="utf-8"><title></title></head><body></body></html>');
+  doc.close();
   doc.title = title;
   for (const n of document.querySelectorAll('style, link[rel="stylesheet"]')) {
     const c = doc.importNode(n, true);
@@ -47,7 +48,9 @@ const NativeRO = window.ResizeObserver;
 class AnyDocResizeObserver {
   constructor(cb) { this.cb = cb; this.obs = new Map(); }
   observe(el, opts) {
-    const RO = el?.ownerDocument?.defaultView?.ResizeObserver ?? NativeRO;
+    // (this window's own global is this class once patched: use the real one)
+    const own = el?.ownerDocument?.defaultView?.ResizeObserver;
+    const RO = !own || own === AnyDocResizeObserver ? NativeRO : own;
     let o = this.obs.get(RO);
     if (!o) { o = new RO(entries => this.cb(entries, this)); this.obs.set(RO, o); }
     o.observe(el, opts);
@@ -73,6 +76,16 @@ export function usePopouts() {
     return n;
   }), []);
 
+  // (Re)build a popup's document and render into it
+  const attach = useCallback((name, win, title) => {
+    const el = setUpDoc(win, title);
+    // pagehide also fires when a document is replaced: only a closed window is gone
+    win.addEventListener('pagehide', () => setTimeout(() => { if (win.closed) drop(name, win); }, 100));
+    const entry = { win, el, title };
+    ref.current = { ...ref.current, [name]: entry };
+    setWins(ws => ({ ...ws, [name]: entry }));
+  }, [drop]);
+
   const open = useCallback((name, title, w = 1180, h = 900) => {
     const cur = ref.current[name];
     if (cur && !cur.win.closed) { cur.win.focus(); return true; }
@@ -82,26 +95,35 @@ export function usePopouts() {
       return false;
     }
     patchResizeObserver();
-    const el = setUpDoc(win, title);
-    win.addEventListener('pagehide', () => drop(name, win));
-    const entry = { win, el };
-    ref.current = { ...ref.current, [name]: entry };
-    setWins(ws => ({ ...ws, [name]: entry }));
+    try {
+      attach(name, win, title);
+    } catch (e) {
+      alert(`Couldn't set up the ${title} window: ${e.message}`);
+      win.close();
+      return false;
+    }
     win.focus();
     return true;
-  }, [drop]);
+  }, [attach]);
 
   const close = useCallback(name => { ref.current[name]?.win.close(); }, []);
   const closeAll = useCallback(() => { for (const w of Object.values(ref.current)) w.win.close(); }, []);
 
-  // pagehide doesn't fire in every browser when a popup is closed: check too
+  // pagehide doesn't fire in every browser when a popup is closed: check
+  // too, and set a window up again if the browser swapped its document out
+  // from under the content
   useEffect(() => {
     const id = setInterval(() => {
-      for (const [name, w] of Object.entries(ref.current)) if (w.win.closed) drop(name, w.win);
-    }, 1000);
+      for (const [name, w] of Object.entries(ref.current)) {
+        if (w.win.closed) drop(name, w.win);
+        else if (!w.el.isConnected || w.el.ownerDocument !== w.win.document) {
+          try { attach(name, w.win, w.title); } catch { /* try again next tick */ }
+        }
+      }
+    }, 250);
     window.addEventListener('pagehide', closeAll);
     return () => { clearInterval(id); window.removeEventListener('pagehide', closeAll); };
-  }, [drop, closeAll]);
+  }, [drop, closeAll, attach]);
 
   return { wins, open, close, closeAll };
 }
