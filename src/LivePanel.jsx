@@ -1,11 +1,12 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, memo } from "react";
-import { fmtBoost } from "./boost.js";
+import { fmtBoost, boostParts } from "./boost.js";
 import { thin, syncNearest, inRange } from "./thin.js";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 import { dmeOperandValues, klrOperandValues, decodeStack, cameFrom, traceState, STACK } from "./asmValues.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { memName } from "./memDefs.js";
 import { MemSearch } from "./memSearch.jsx";
+import { Popout } from "./popout.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  LIVE PANEL — controls for a running simulator (see liveSim.js)
@@ -47,29 +48,15 @@ const btn = (on, col = C.textBright) => ({
 const inp = { background:'#030803', border:`1px solid ${C.border}`, color:C.textBright, fontFamily:'inherit',
               fontSize:'10px', padding:'3px 5px' };
 const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadius:'2px', padding:'8px 10px' };
-// Which code debuggers (DME / KLR) are open; remembered across reloads
-const PANES_KEY = 'dme-dashboard.live.codePanes';
-function loadPanes() {
-  try {
-    const v = JSON.parse(localStorage.getItem(PANES_KEY));
-    if (v && typeof v === 'object') return { dme: v.dme !== false, klr: v.klr !== false };
-  } catch { /* storage unavailable */ }
-  return { dme: true, klr: true };
-}
-function savePanes(p) {
-  try { localStorage.setItem(PANES_KEY, JSON.stringify(p)); } catch { /* storage unavailable */ }
-}
-
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
-export default function LivePanel({ live, url, follow, setFollow, series, mem, onClose }) {
+export default function LivePanel({ live, url, follow, setFollow, series, mem, popouts, onClose }) {
   const { connected, sim, inputs, bps, bpConds, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
-  const [panes, setPanes] = useState(loadPanes);
-  const showPane = (cpu, on) => setPanes(p => { const n = { ...p, [cpu]: on }; savePanes(n); return n; });
-  const anyPane = panes.dme || panes.klr;
+  // The DME and KLR code debuggers each open in a window of their own
+  const codeWin = { dme: popouts.wins.code_dme, klr: popouts.wins.code_klr };
   const stopKey = running ? null : `${sim.tNs}:${sim.reason}`;
 
   // Ask for the instruction trace whenever the sim stops
@@ -109,10 +96,6 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
                onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
         <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}>RUN TO</button>
         <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
-        <button style={btn(panes.dme)} onClick={() => showPane('dme', !panes.dme)}
-                title={panes.dme ? 'Close the DME code debugger' : 'Open the DME code debugger'}>DME CODE</button>
-        <button style={btn(panes.klr)} onClick={() => showPane('klr', !panes.klr)}
-                title={panes.klr ? 'Close the KLR code debugger' : 'Open the KLR code debugger'}>KLR CODE</button>
         <label style={{color:C.textDim,fontSize:'10px',cursor:'pointer'}}>
           <input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> FOLLOW
         </label>
@@ -124,13 +107,12 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
 
-      {/* Sim inputs | live engine stats | DME + KLR debuggers */}
-      <div className={anyPane ? 'live-cols' : 'live-cols no-code'}>
+      {/* Sim inputs | live engine stats */}
+      <div className="live-cols">
         <InputsPanel inputs={inputs} send={send} />
         <div style={{display:'flex',flexDirection:'column',gap:'8px',minWidth:0}}>
-          <EngineRow series={series} />
           {live.warnings.length > 0 && (
-            <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto'}}>
+            <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto',textAlign:'left'}}>
               <div style={{...title,color:C.red,marginBottom:'3px'}}>SIM WARNINGS ({live.warnings.length})</div>
               {live.warnings.slice().reverse().map((w, i) => {
                 const snap = live.snapshots?.find(s => s.trigger === w);
@@ -144,18 +126,22 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, o
               })}
             </div>
           )}
-        </div>
-        {/* Side by side when there is room for full operands, else stacked.
-            A closed pane stays mounted (hidden) so it keeps its breakpoint list and GO pin. */}
-        <div style={{display: anyPane ? 'grid' : 'none',gridTemplateColumns:'repeat(auto-fit,minmax(min(520px,100%),1fr))',gap:'8px',alignItems:'start',minWidth:0}}>
-          <AsmPanel cpu="dme" name="DME 8051" listing={asm.dme} pc={sim.dmePc} bps={bps.dme} conds={bpConds?.dme} reason={sim.reason} trace={trace.dme} traceCtx={traceCtx?.dme}
-                    ram={mem?.dme} regs={regs?.dme} running={running} stopKey={stopKey} send={send}
-                    hidden={!panes.dme} onClose={() => showPane('dme', false)} />
-          <AsmPanel cpu="klr" name="KLR 8048" listing={asm.klr} pc={sim.klrPc} bps={bps.klr} conds={bpConds?.klr} reason={sim.reason} trace={trace.klr} traceCtx={traceCtx?.klr}
-                    ram={mem?.klr} regs={regs?.klr} running={running} stopKey={stopKey} send={send}
-                    hidden={!panes.klr} onClose={() => showPane('klr', false)} />
+          <EngineRow series={series} />
         </div>
       </div>
+
+      {/* The code debuggers, each in its own window */}
+      {['dme', 'klr'].map(cpu => (
+        <Popout key={cpu} entry={codeWin[cpu]} title={`${cpu.toUpperCase()} CODE`}
+                sub={`live simulation · ${!connected ? 'OFFLINE' : sim.state} · t=${tMs} ms`}>
+          <div style={{textAlign:'left'}}>
+            <AsmPanel cpu={cpu} name={cpu === 'dme' ? 'DME 8051' : 'KLR 8048'} listing={asm[cpu]} pc={cpu === 'dme' ? sim.dmePc : sim.klrPc}
+                      bps={bps[cpu]} conds={bpConds?.[cpu]} reason={sim.reason} trace={trace[cpu]} traceCtx={traceCtx?.[cpu]}
+                      ram={mem?.[cpu]} regs={regs?.[cpu]} running={running} stopKey={stopKey} send={send}
+                      onClose={() => popouts.close(`code_${cpu}`)} />
+          </div>
+        </Popout>
+      ))}
     </div>
   );
 }
@@ -209,6 +195,46 @@ const METRICS = [
   { k:'klrIgn', label:'KLR IGN PULSE', col:'#ff66cc', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
 ];
 
+// A metric as a tile (as on the log's DME OVERVIEW): the value, its unit
+// or state under it, and the run's min / max
+const ms = (v, n) => v == null ? '--' : v.toFixed(n);
+const hexTile = v => ({ val: hx(v), unit: v == null ? 'hex' : `hex · ${v}d` });
+const TILE = {
+  rpm:   v => ({ val: v ?? '--', unit: 'RPM' }),
+  inj:   (v, p) => ({
+    val: p?.revCut ? 'REV LIMIT' : p?.fuelCut ? 'CUT' : v == null ? (p?.injHeld ? 'HELD' : '--') : v.toFixed(2),
+    unit: p?.injHeld ? (v == null ? 'held open' : 'ms · HELD OPEN (1 rev)') : p?.injDuty >= 100 ? 'ms · HELD OPEN'
+        : p?.injDuty != null ? `ms · ${p.injDuty}% duty` : 'ms' }),
+  fuel:  (v, p) => ({ val: ms(v, 3),
+    unit: `ms${p?.revCut ? ' · REV LIMIT (not injected)' : p?.fuelCut ? ' · CUT (not injected)' : p?.injOver ? ' · > 1 REV' : ''}` }),
+  afm:   hexTile, tps: hexTile, load: hexTile,
+  boost: v => { const [val, unit] = boostParts(v); return { val, unit: unit || 'psi / inHg' }; },
+  dmeIgn: v => ({ val: ms(v, 2), unit: 'ms' }),
+  klrIgn: v => ({ val: ms(v, 2), unit: 'ms' }),
+};
+const MM_FMT = { rpm: v => v, afm: hx, tps: hx, load: hx, boost: v => boostParts(v)[0], fuel: v => v.toFixed(3) };
+
+function StatTile({ m, last, mm }) {
+  const { val, unit } = TILE[m.k](last?.[m.k], last);
+  const warn = m.warn?.(last);
+  const f = MM_FMT[m.k] ?? (v => v.toFixed(2));
+  return (
+    <div style={{background:C.panelBg2,border:`1px solid ${warn ? C.red : C.border}`,borderRadius:'2px',padding:'8px 6px',textAlign:'center',minWidth:0}}>
+      <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.12em',textTransform:'uppercase'}}>{m.label}</div>
+      <div style={{color: warn ? C.red : m.col,fontFamily:"'Orbitron','Courier New',monospace",fontSize:'17px',lineHeight:'1.2',margin:'4px 0',
+                   textShadow:`0 0 6px ${warn ? C.red : m.col}44`,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{val}</div>
+      <div style={{color: warn ? C.red : C.textDim,fontSize:'9px'}}>{unit}</div>
+      {mm && (
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:'5px',paddingTop:'4px',borderTop:`1px solid ${C.border}`,fontSize:'9px'}}>
+          <span style={{color:'#33aaff'}}>▼{f(mm[0])}</span>
+          <span style={{color:C.textDim,fontSize:'8px'}}>min/max</span>
+          <span style={{color:'#ff8844'}}>▲{f(mm[1])}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Memoized: the live view re-renders on every sim tick, but a chart only
 // needs redrawing when its series changes (recharts is the costly part).
 const MetricChart = memo(function MetricChart({ m, series, t0, t1, range, zoom }) {
@@ -247,6 +273,21 @@ function EngineRow({ series }) {
   const t0 = series[0]?.t ?? 0, t1 = last?.t ?? 1;
   const full = useMemo(() => [t0, t1], [t0, t1]);
   const zoom = useZoom(range, setRange, full);
+  // Each metric's min / max over the run (as the log's overview tiles show)
+  const minmax = useMemo(() => {
+    const out = {};
+    for (const m of METRICS) {
+      let lo = Infinity, hi = -Infinity;
+      for (const p of series) {
+        const v = p[m.k];
+        if (v == null || isNaN(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      out[m.k] = lo === Infinity ? null : [lo, hi];
+    }
+    return out;
+  }, [series]);
   return (
     <div style={{...panel,display:'flex',flexDirection:'column',gap:'6px'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:'8px'}}>
@@ -258,13 +299,8 @@ function EngineRow({ series }) {
           <button style={btn(charts)} onClick={() => setCharts(c => !c)}>CHARTS</button>
         </span>
       </div>
-      <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
-        {METRICS.map(m => (
-          <span key={m.k} style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:'12px'}}>
-            <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.15em'}}>{m.label}</span>
-            <span style={{color: m.warn?.(last) ? C.red : m.col,fontFamily:"'Orbitron',monospace",fontSize:'14px'}}>{m.fmt(last?.[m.k], last)}</span>
-          </span>
-        ))}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:'6px'}}>
+        {METRICS.map(m => <StatTile key={m.k} m={m} last={last} mm={minmax[m.k]} />)}
       </div>
       {charts && series.length > 1 && (
         <ZoomBar zoom={zoom} range={range} full={full} btn={btn(false)} color={C.textBright} dim='#779977' />

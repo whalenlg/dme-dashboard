@@ -101,7 +101,14 @@ export function useLiveSim(url, onLogLines) {
     const fetchSnaps = () => fetch(`${url}/snapshots`).then(r => r.ok ? r.json() : null).catch(() => null)
       .then(list => { if (list) setSnapshots(list); });
     es.onmessage = ev => {
-      if (!URGENT.test(ev.data)) { queue.push(ev.data); return; }
+      if (!URGENT.test(ev.data)) {
+        queue.push(ev.data);
+        // Also tick from here: with the tabs and code debuggers in windows of
+        // their own, this page may be covered, and a hidden page's timers
+        // are slowed to once a second (or once a minute) by the browser
+        if (performance.now() - lastTick > 4 * FLUSH_MS) tick();
+        return;
+      }
       for (const line of queue.splice(0)) handle(line);
       handle(ev.data);
     };
@@ -194,11 +201,13 @@ export function useLiveSim(url, onLogLines) {
     };
     // Adaptive pacing: after each update, wait ~3x what it cost (handling
     // plus React's render) so the page stays responsive on slow machines.
-    let nextAt = 0;
-    const flush = setInterval(() => {
+    let nextAt = 0, lastTick = 0;
+    const tick = () => {
       const t0 = performance.now();
       if (t0 < nextAt) return;
-      setTimeout(() => { nextAt = performance.now() + 3 * (performance.now() - t0); }, 0);
+      lastTick = t0;
+      // (capped: a hidden page's setTimeout runs late, which isn't work done)
+      setTimeout(() => { nextAt = performance.now() + Math.min(1000, 3 * (performance.now() - t0)); }, 0);
       if (queue.length) for (const line of queue.splice(0)) handle(line);
       // Parsing and the re-render it causes are the costly part, so less often.
       // Pulses go out with the log lines, so both land in one render.
@@ -213,7 +222,8 @@ export function useLiveSim(url, onLogLines) {
       const batch = lines.current, fresh = reset.current;
       lines.current = []; reset.current = false;
       onLogRef.current?.(batch, fresh);
-    }, FLUSH_MS);
+    };
+    const flush = setInterval(tick, FLUSH_MS);
 
     Promise.all(['dme', 'klr'].map(c => fetch(`${url}/asm/${c}`).then(r => r.ok ? r.json() : []).catch(() => [])))
       .then(([dme, klr]) => setAsm({ dme, klr }));

@@ -7,6 +7,8 @@ import TimelineTab from "./TimelineTab.jsx";
 import MapsTab from "./MapsTab.jsx";
 import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, BIT_DESC, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
 import LivePanel from "./LivePanel.jsx";
+import { Popout } from "./popout.jsx";
+import { usePopouts } from "./popouts.js";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 import { thin, extent, inRange } from "./thin.js";
@@ -864,6 +866,24 @@ function useThrottled(value, ms) {
   return ms ? shown : value;
 }
 const LIVE_CHART_MS = 2000;
+
+// Tab rows: DME, KLR, then DME + KLR together
+const DME_TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','maps','rpm_maps'];
+const KLR_ROW  = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','klr_maps','klr_rpm_maps'];
+// (KLR MAPS keep the DME scrubber: their cursor and click-to-seek follow the DME snapshots)
+const KLR_TABS = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'];
+const ALL_TABS = [...DME_TABS, ...KLR_ROW, 'timeline'];
+const CHART_TABS = ['charts','rpm_charts','timeline','maps','rpm_maps','klr_maps','klr_rpm_maps'];
+const TAB_LABEL = {
+  overview:'DME OVERVIEW', ports:'DME PORTS', iram:'DME IRAM', charts:'DME CHARTS', rpm_charts:'DME RPM CHARTS',
+  phase:'DME PHASE', diag:'DME DIAG', maps:'DME MAPS', rpm_maps:'DME RPM MAPS',
+  klr:'KLR OVERVIEW', klr_ports:'KLR PORTS', klr_iram:'KLR IRAM', klr_charts:'KLR CHARTS', klr_rpm_charts:'KLR RPM CHARTS',
+  klr_phase:'KLR PHASE', klr_diag:'KLR DIAG', klr_maps:'KLR MAPS', klr_rpm_maps:'KLR RPM MAPS', timeline:'TIMELINE',
+};
+const TAB_TITLE = {
+  maps:'DME map and table lookup results over time', rpm_maps:'DME maps that take rpm as an input, against rpm',
+  klr_maps:'KLR map and table lookup results over time', klr_rpm_maps:'KLR maps and tables against the engine speed',
+};
 const NO_ROWS = [];
 
 export default function DMEDashboard() {
@@ -897,6 +917,12 @@ export default function DMEDashboard() {
   const [klrRpmMapZoom, setKlrRpmMapZoom] = useState(null);   // KLR RPM MAPS: rpm range
   const followRef = useRef(follow);
   useEffect(() => { followRef.current = follow; }, [follow]);
+  // Live mode: each tab (and each code debugger) opens in a window of its own
+  const popouts = usePopouts();
+  const liveTabs = liveUrl ? ALL_TABS.filter(t => popouts.wins[t]) : [];
+  const shown = liveUrl ? liveTabs : [tab];
+  const { closeAll: closePopouts } = popouts;
+  useEffect(() => { if (!liveUrl) closePopouts(); }, [liveUrl, closePopouts]);
   const liveRef = useRef(liveUrl);
   useEffect(() => { liveRef.current = liveUrl; }, [liveUrl]);
   // New sim lines go through incremental parsers (re-parsing the whole run
@@ -1102,7 +1128,7 @@ export default function DMEDashboard() {
   // Only the chart tabs read these, and on long runs they cost a pass
   // over every snapshot per update, so they are skipped on other tabs
   // maps: no chart rows of its own, but this throttles its live feed too
-  const needCharts = tab === 'charts' || tab === 'rpm_charts' || tab === 'timeline' || tab === 'maps' || tab === 'rpm_maps' || tab === 'klr_maps' || tab === 'klr_rpm_maps';
+  const needCharts = shown.some(t => CHART_TABS.includes(t));
   const chartData = useMemo(() => {
     if (!needCharts) return NO_ROWS;
     // Merge DS + STATUS snapshots at same timestamp.
@@ -1211,7 +1237,7 @@ export default function DMEDashboard() {
   }, [data.snapshots, needCharts]);
 
   // Min/max over all snapshots for the 8 top metrics
-  const onOverview = tab === 'overview';
+  const onOverview = shown.includes('overview');
   const minmax = useMemo(() => {
     if (!onOverview) return null;
     // One allocation-free pass per metric; rounding is applied to the
@@ -1255,12 +1281,161 @@ export default function DMEDashboard() {
   // ...except the first rows after switching to a chart tab
   const feed = throttled.chartData === NO_ROWS ? feedNow : throttled;
   // KLR RPM MAPS: the DME's engine speed over time (the KLR logs none in rpm)
-  const dmeRpmRows = useMemo(() => tab !== 'klr_rpm_maps' ? null : (feed.data.snapshots ?? [])
-    .map(s => ({ t: s.t, rpm: snapRpm(s) })).filter(d => d.rpm != null), [tab, feed.data.snapshots]);
+  const klrRpmShown = shown.includes('klr_rpm_maps');
+  const dmeRpmRows = useMemo(() => !klrRpmShown ? null : (feed.data.snapshots ?? [])
+    .map(s => ({ t: s.t, rpm: snapRpm(s) })).filter(d => d.rpm != null), [klrRpmShown, feed.data.snapshots]);
 
-  // (KLR MAPS keep the DME scrubber: their cursor and click-to-seek follow the DME snapshots)
-  const KLR_TABS = ['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag'];
-  const TABS = ['overview','ports','iram','charts','rpm_charts','phase','diag','klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','klr_maps','klr_rpm_maps','timeline','maps','rpm_maps'];
+  // A tab button: shows that tab below (log), or opens it in its own window (live)
+  const openTab = t => {
+    if (liveUrl) popouts.open(t, `${TAB_LABEL[t]} — DME 951 live`, 1180, 900);
+    else setTab(t);
+  };
+  const tabOn = t => liveUrl ? !!popouts.wins[t] : tab === t;
+
+  // One tab's content: below the header (log), or in its own window (live)
+  const renderTab = t => (
+    <>
+    {t==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
+      fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
+      minmax={minmax} clEverActive={clEverActive} />}
+    {t==='ports'    && <PortsTab snap={snap}
+        logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
+        logLoaded={data.snapshots.length>0} />}
+    {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
+    <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
+      {t==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
+          onSeek={seekTo} range={zoom} setRange={setZoom} />}
+      {t==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
+          xRpm range={rpmZoom} setRange={setRpmZoom} />}
+      {t==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
+          dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
+          range={zoom} setRange={setZoom}
+          lookups={feed.data.lookups} lookupsVer={feed.data.lookupsVer}
+          klrLookups={feed.data.klrLookups} klrLookupsVer={feed.data.klrLookupsVer} />}
+      {t==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
+          range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+          logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
+      {t==='rpm_maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} byRpm
+          range={rpmMapZoom} setRange={setRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+          logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
+      {t==='klr_maps' && <MapsTab cpu="klr" lookups={feed.data.klrLookups} ver={feed.data.klrLookupsVer} onSeek={seekTo}
+          range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+          logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
+      {t==='klr_rpm_maps' && <MapsTab cpu="klr" lookups={feed.data.klrLookups} ver={feed.data.klrLookupsVer} byRpm
+          rpmRows={dmeRpmRows} range={klrRpmMapZoom} setRange={setKlrRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
+          logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
+    </CursorContext.Provider>
+    {t==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
+    {t==='diag'     && <DiagTab iram={iram} snap={snap} />}
+    {t==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t}
+                                   boost={{ klrIdx, dmeSnapshots: data.snapshots }} />}
+    {t==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
+        logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
+        logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
+    {t==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
+    {t==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
+        range={zoom} setRange={setZoom}
+        currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
+    {t==='klr_rpm_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
+        xRpm range={rpmZoom} setRange={setRpmZoom}
+        currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
+    {t==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
+    {t==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
+    </>
+  );
+  // The playback scrubber for a tab: KLR tabs step the KLR phases
+  const dmeScrubber = () => data.snapshots.length > 0 && (
+      <div style={S.scrubber}>
+        {/* Play / Pause */}
+        <button onClick={()=>setPlaying(p=>!p)}
+          style={{...S.btn(playing?'p':'s'),minWidth:'60px',letterSpacing:'.05em',
+                  boxShadow:playing?`0 0 8px ${C.textBright}44`:'none'}}>
+          {playing ? '⏸ PAUSE' : '▶ PLAY'}
+        </button>
+
+        {/* Step back */}
+        <button onClick={()=>{setPlaying(false);setIdx(i=>Math.max(0,i-1));}}
+          style={{...S.btn('s'),padding:'5px 8px'}} title="Step back">◀</button>
+
+        {/* Step forward */}
+        <button onClick={()=>{setPlaying(false);setIdx(i=>Math.min(data.snapshots.length-1,i+1));}}
+          style={{...S.btn('s'),padding:'5px 8px'}} title="Step forward">▶</button>
+
+        {/* Rewind to start */}
+        <button onClick={()=>{setPlaying(false);setIdx(0);}}
+          style={{...S.btn('s'),padding:'5px 8px'}} title="Rewind">⏮</button>
+
+        {/* Speed selector */}
+        <select value={playSpeed} onChange={e=>{setPlaySpeed(+e.target.value);}}
+          style={{background:C.panelBg,border:`1px solid ${C.border}`,color:C.textDim,
+                  fontFamily:'inherit',fontSize:'9px',padding:'3px 4px',cursor:'pointer'}}>
+          <option value={500}>0.2×</option>
+          <option value={200}>0.5×</option>
+          <option value={100}>1×</option>
+          <option value={50}>2×</option>
+          <option value={20}>5×</option>
+          <option value={10}>10×</option>
+          <option value={1}>MAX</option>
+        </select>
+
+        {/* Scrub slider */}
+        <input type="range" min={0} max={data.snapshots.length-1} value={idx}
+          onChange={e=>{setPlaying(false);setIdx(+e.target.value);}}
+          style={{flex:1,accentColor:'#00cc66',cursor:'pointer'}} />
+
+        {/* Time display */}
+        <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",
+                      fontSize:'14px',whiteSpace:'nowrap',minWidth:'90px',textAlign:'right',
+                      textShadow:`0 0 8px ${C.textBright}66`}}>
+          t={snap.t ?? '---'} ms
+        </span>
+
+        {/* Snapshot counter */}
+        <span style={{color:C.textDim,fontSize:'9px',whiteSpace:'nowrap'}}>
+          {idx+1}/{data.snapshots.length}
+        </span>
+      </div>
+  );
+  const klrScrubber = () => klrData.phases?.length > 0 && (
+      <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
+        <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
+        <button onClick={()=>setKlrPlaying(p=>!p)}
+          style={{...S.btn(klrPlaying?'p':'s'), minWidth:'60px', fontSize:'9px',
+                  borderColor: klrPlaying ? '#44aaff' : C.border,
+                  color: klrPlaying ? '#44aaff' : C.textDim,
+                  boxShadow: klrPlaying ? `0 0 8px #44aaff44` : 'none'}}>
+          {klrPlaying ? '⏸ PAUSE' : '▶ PLAY'}
+        </button>
+        <button onClick={()=>{setKlrPlaying(false);setKlrIdx(i=>Math.max(0,i-1));}}
+          style={{...S.btn('s'),padding:'5px 8px'}} title="Step back">◀</button>
+        <button onClick={()=>{setKlrPlaying(false);setKlrIdx(i=>Math.min(klrData.phases.length-1,i+1));}}
+          style={{...S.btn('s'),padding:'5px 8px'}} title="Step forward">▶</button>
+        <button onClick={()=>{setKlrPlaying(false);setKlrIdx(0);}}
+          style={{...S.btn('s'),padding:'5px 8px'}} title="Rewind">⏮</button>
+        <select value={klrPlaySpeed} onChange={e=>setKlrPlaySpeed(+e.target.value)}
+          style={{background:'#030c08',border:`1px solid #004433`,color:C.textDim,
+                  fontFamily:'inherit',fontSize:'9px',padding:'3px 4px',cursor:'pointer'}}>
+          <option value={500}>0.2×</option>
+          <option value={200}>0.5×</option>
+          <option value={100}>1×</option>
+          <option value={50}>2×</option>
+          <option value={20}>5×</option>
+          <option value={10}>10×</option>
+          <option value={1}>MAX</option>
+        </select>
+        <input type="range" min={0} max={klrData.phases.length-1} value={klrIdx}
+          onChange={e=>{setKlrPlaying(false);setKlrIdx(+e.target.value);}}
+          style={{flex:1, accentColor:'#44aaff', cursor:'pointer'}}/>
+        <span style={{color:'#44aaff',fontSize:'12px',whiteSpace:'nowrap',minWidth:'90px',
+                      textAlign:'right',textShadow:`0 0 8px #44aaff66`}}>
+          t={klrData.phases[klrIdx]?.t ?? '---'} ms
+        </span>
+        <span style={{color:C.textDim,fontSize:'9px',whiteSpace:'nowrap'}}>
+          {klrIdx+1}/{klrData.phases.length}
+        </span>
+      </div>
+  );
+  const scrubber = t => KLR_TABS.includes(t) ? klrScrubber() : dmeScrubber();
 
   return (
     <div style={S.root}>
@@ -1299,193 +1474,59 @@ export default function DMEDashboard() {
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {['overview','ports','iram','charts','rpm_charts','phase','diag','maps','rpm_maps'].map(t=>(
-            <button key={t} style={S.tab(tab===t)} onClick={()=>setTab(t)}
-              title={t==='maps' ? 'DME map and table lookup results over time' : t==='rpm_maps' ? 'DME maps that take rpm as an input, against rpm' : undefined}>
-              {t==='overview'?'DME OVERVIEW':
-               t==='ports'   ?'DME PORTS'  :
-               t==='iram'    ?'DME IRAM'   :
-               t==='charts'  ?'DME CHARTS' :
-               t==='rpm_charts'?'DME RPM CHARTS':
-               t==='phase'   ?'DME PHASE'  :
-               t==='diag'    ?'DME DIAG'   :
-               t==='maps'    ?'DME MAPS'   :
-               t==='rpm_maps'?'DME RPM MAPS':
-               t.toUpperCase()}
+          {DME_TABS.map(t=>(
+            <button key={t} style={S.tab(tabOn(t))} onClick={()=>openTab(t)}
+              title={liveUrl ? `Open ${TAB_LABEL[t]} in its own window` : TAB_TITLE[t]}>
+              {TAB_LABEL[t]}{liveUrl && ' ↗'}
             </button>
           ))}
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {['klr','klr_ports','klr_iram','klr_charts','klr_rpm_charts','klr_phase','klr_diag','klr_maps','klr_rpm_maps'].map(t=>(
-            <button key={t} style={S.tabKlr(tab===t)} onClick={()=>setTab(t)}
-              title={t==='klr_maps' ? 'KLR map and table lookup results over time' : t==='klr_rpm_maps' ? 'KLR maps and tables against the engine speed' : undefined}>
-              {t==='klr'       ?'KLR OVERVIEW':
-               t==='klr_ports' ?'KLR PORTS'   :
-               t==='klr_iram'  ?'KLR IRAM'    :
-               t==='klr_charts'?'KLR CHARTS'  :
-               t==='klr_rpm_charts'?'KLR RPM CHARTS':
-               t==='klr_phase' ?'KLR PHASE'   :
-               t==='klr_diag'  ?'KLR DIAG'    :
-               t==='klr_maps'  ?'KLR MAPS'    :
-               t==='klr_rpm_maps'?'KLR RPM MAPS':
-               t.toUpperCase()}
+          {KLR_ROW.map(t=>(
+            <button key={t} style={S.tabKlr(tabOn(t))} onClick={()=>openTab(t)}
+              title={liveUrl ? `Open ${TAB_LABEL[t]} in its own window` : TAB_TITLE[t]}>
+              {TAB_LABEL[t]}{liveUrl && ' ↗'}
             </button>
           ))}
         </div>
         {/* Row 3 — DME + KLR together */}
         <div style={S.tabRowKlr}>
-          <button style={S.tab(tab==='timeline')} onClick={()=>setTab('timeline')}>TIMELINE</button>
+          <button style={S.tab(tabOn('timeline'))} onClick={()=>openTab('timeline')}
+            title={liveUrl ? 'Open TIMELINE in its own window' : undefined}>TIMELINE{liveUrl && ' ↗'}</button>
+          {/* Live: the code debuggers (LivePanel renders them into their windows) */}
+          {liveUrl && ['dme', 'klr'].map(cpu => {
+            const name = `code_${cpu}`, on = !!popouts.wins[name];
+            return (
+              <button key={cpu} style={(cpu === 'dme' ? S.tab : S.tabKlr)(on)}
+                onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} CODE — DME 951 live`, 980, 1080)}
+                title={on ? `Close the ${cpu.toUpperCase()} code debugger window` : `Open the ${cpu.toUpperCase()} code debugger in its own window`}>
+                {cpu.toUpperCase()} CODE ↗
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
-                               series={liveSer} mem={liveMem}
+                               series={liveSer} mem={liveMem} popouts={popouts}
                                onClose={()=>setLiveUrl(null)} />}
-        {tab==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
-          fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
-          minmax={minmax} clEverActive={clEverActive} />}
-        {tab==='ports'    && <PortsTab snap={snap}
-            logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
-            logLoaded={data.snapshots.length>0} />}
-        {tab==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
-        <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
-          {tab==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
-              onSeek={seekTo} range={zoom} setRange={setZoom} />}
-          {tab==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
-              xRpm range={rpmZoom} setRange={setRpmZoom} />}
-          {tab==='timeline' && <TimelineTab chartData={feed.chartData} dmeSnapshots={feed.data.snapshots}
-              dmePhases={feed.data.phases} klrData={feed.klrData} onSeek={seekTo}
-              range={zoom} setRange={setZoom}
-              lookups={feed.data.lookups} lookupsVer={feed.data.lookupsVer}
-              klrLookups={feed.data.klrLookups} klrLookupsVer={feed.data.klrLookupsVer} />}
-          {tab==='maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} onSeek={seekTo}
-              range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
-              logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
-          {tab==='rpm_maps' && <MapsTab lookups={feed.data.lookups} ver={feed.data.lookupsVer} byRpm
-              range={rpmMapZoom} setRange={setRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
-              logRom={liveUrl ? null : (feed.data.rom?.dme ?? false)} />}
-          {tab==='klr_maps' && <MapsTab cpu="klr" lookups={feed.data.klrLookups} ver={feed.data.klrLookupsVer} onSeek={seekTo}
-              range={zoom} setRange={setZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
-              logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
-          {tab==='klr_rpm_maps' && <MapsTab cpu="klr" lookups={feed.data.klrLookups} ver={feed.data.klrLookupsVer} byRpm
-              rpmRows={dmeRpmRows} range={klrRpmMapZoom} setRange={setKlrRpmMapZoom} bridge={liveUrl ?? DEFAULT_LIVE_URL}
-              logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
-        </CursorContext.Provider>
-        {tab==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
-        {tab==='diag'     && <DiagTab iram={iram} snap={snap} />}
-        {tab==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t}
-                                       boost={{ klrIdx, dmeSnapshots: data.snapshots }} />}
-        {tab==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
-            logHasPorts={klrData.snapshots?.some(s=>s.p1!==undefined||s.p2!==undefined)}
-            logLoaded={(klrData.snapshots?.length||0)+(klrData.status?.length||0)>0} />}
-        {tab==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
-            range={zoom} setRange={setZoom}
-            currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
-        {tab==='klr_rpm_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
-            xRpm range={rpmZoom} setRange={setRpmZoom}
-            currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
-        {tab==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
-        {tab==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
+        {!liveUrl && renderTab(tab)}
       </div>
 
-      {/* ── TIME SCRUBBER + PLAYBACK ────────────────────────── */}
-      {data.snapshots.length>0 && !KLR_TABS.includes(tab) && (
-        <div style={S.scrubber}>
-          {/* Play / Pause */}
-          <button onClick={()=>setPlaying(p=>!p)}
-            style={{...S.btn(playing?'p':'s'),minWidth:'60px',letterSpacing:'.05em',
-                    boxShadow:playing?`0 0 8px ${C.textBright}44`:'none'}}>
-            {playing ? '⏸ PAUSE' : '▶ PLAY'}
-          </button>
+      {/* ── TIME SCRUBBER + PLAYBACK (log) ─────────────────── */}
+      {!liveUrl && scrubber(tab)}
 
-          {/* Step back */}
-          <button onClick={()=>{setPlaying(false);setIdx(i=>Math.max(0,i-1));}}
-            style={{...S.btn('s'),padding:'5px 8px'}} title="Step back">◀</button>
-
-          {/* Step forward */}
-          <button onClick={()=>{setPlaying(false);setIdx(i=>Math.min(data.snapshots.length-1,i+1));}}
-            style={{...S.btn('s'),padding:'5px 8px'}} title="Step forward">▶</button>
-
-          {/* Rewind to start */}
-          <button onClick={()=>{setPlaying(false);setIdx(0);}}
-            style={{...S.btn('s'),padding:'5px 8px'}} title="Rewind">⏮</button>
-
-          {/* Speed selector */}
-          <select value={playSpeed} onChange={e=>{setPlaySpeed(+e.target.value);}}
-            style={{background:C.panelBg,border:`1px solid ${C.border}`,color:C.textDim,
-                    fontFamily:'inherit',fontSize:'9px',padding:'3px 4px',cursor:'pointer'}}>
-            <option value={500}>0.2×</option>
-            <option value={200}>0.5×</option>
-            <option value={100}>1×</option>
-            <option value={50}>2×</option>
-            <option value={20}>5×</option>
-            <option value={10}>10×</option>
-            <option value={1}>MAX</option>
-          </select>
-
-          {/* Scrub slider */}
-          <input type="range" min={0} max={data.snapshots.length-1} value={idx}
-            onChange={e=>{setPlaying(false);setIdx(+e.target.value);}}
-            style={{flex:1,accentColor:'#00cc66',cursor:'pointer'}} />
-
-          {/* Time display */}
-          <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",
-                        fontSize:'14px',whiteSpace:'nowrap',minWidth:'90px',textAlign:'right',
-                        textShadow:`0 0 8px ${C.textBright}66`}}>
-            t={snap.t ?? '---'} ms
-          </span>
-
-          {/* Snapshot counter */}
-          <span style={{color:C.textDim,fontSize:'9px',whiteSpace:'nowrap'}}>
-            {idx+1}/{data.snapshots.length}
-          </span>
-        </div>
-      )}
-
-      {/* ── KLR PLAYBACK SCRUBBER — KLR tabs only ──────────── */}
-      {klrData.phases?.length > 0 && KLR_TABS.includes(tab) && (
-        <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
-          <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
-          <button onClick={()=>setKlrPlaying(p=>!p)}
-            style={{...S.btn(klrPlaying?'p':'s'), minWidth:'60px', fontSize:'9px',
-                    borderColor: klrPlaying ? '#44aaff' : C.border,
-                    color: klrPlaying ? '#44aaff' : C.textDim,
-                    boxShadow: klrPlaying ? `0 0 8px #44aaff44` : 'none'}}>
-            {klrPlaying ? '⏸ PAUSE' : '▶ PLAY'}
-          </button>
-          <button onClick={()=>{setKlrPlaying(false);setKlrIdx(i=>Math.max(0,i-1));}}
-            style={{...S.btn('s'),padding:'5px 8px'}} title="Step back">◀</button>
-          <button onClick={()=>{setKlrPlaying(false);setKlrIdx(i=>Math.min(klrData.phases.length-1,i+1));}}
-            style={{...S.btn('s'),padding:'5px 8px'}} title="Step forward">▶</button>
-          <button onClick={()=>{setKlrPlaying(false);setKlrIdx(0);}}
-            style={{...S.btn('s'),padding:'5px 8px'}} title="Rewind">⏮</button>
-          <select value={klrPlaySpeed} onChange={e=>setKlrPlaySpeed(+e.target.value)}
-            style={{background:'#030c08',border:`1px solid #004433`,color:C.textDim,
-                    fontFamily:'inherit',fontSize:'9px',padding:'3px 4px',cursor:'pointer'}}>
-            <option value={500}>0.2×</option>
-            <option value={200}>0.5×</option>
-            <option value={100}>1×</option>
-            <option value={50}>2×</option>
-            <option value={20}>5×</option>
-            <option value={10}>10×</option>
-            <option value={1}>MAX</option>
-          </select>
-          <input type="range" min={0} max={klrData.phases.length-1} value={klrIdx}
-            onChange={e=>{setKlrPlaying(false);setKlrIdx(+e.target.value);}}
-            style={{flex:1, accentColor:'#44aaff', cursor:'pointer'}}/>
-          <span style={{color:'#44aaff',fontSize:'12px',whiteSpace:'nowrap',minWidth:'90px',
-                        textAlign:'right',textShadow:`0 0 8px #44aaff66`}}>
-            t={klrData.phases[klrIdx]?.t ?? '---'} ms
-          </span>
-          <span style={{color:C.textDim,fontSize:'9px',whiteSpace:'nowrap'}}>
-            {klrIdx+1}/{klrData.phases.length}
-          </span>
-        </div>
-      )}
+      {/* ── LIVE: each open tab in its own window ───────────── */}
+      {liveTabs.map(t => (
+        <Popout key={t} entry={popouts.wins[t]} title={TAB_LABEL[t]}
+                sub={`live simulation${follow ? '' : ' · FOLLOW off'}`} footer={scrubber(t)}>
+          {renderTab(t)}
+          {t === 'iram' && tooltip && <IRAMTooltip tip={tooltip} />}
+        </Popout>
+      ))}
 
       {/* ── LOG INPUT MODAL ─────────────────────────────────── */}
       {showLog && (
@@ -1527,7 +1568,7 @@ export default function DMEDashboard() {
       )}
 
       {/* ── IRAM TOOLTIP ────────────────────────────────────── */}
-      {tooltip && <IRAMTooltip tip={tooltip} />}
+      {!liveUrl && tooltip && <IRAMTooltip tip={tooltip} />}
     </div>
   );
 }

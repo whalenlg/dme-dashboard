@@ -9,6 +9,7 @@ import { IRAM_MAP, KLR_KNOWN } from "./memDefs.js";
 import { NUMBERED_MAPS, DIRECT_TABLES } from "./mapDefs.js";
 import { KLR_MAPS } from "./klrMapDefs.js";
 import { rpmAtFn } from "./rpmAt.js";
+import { useWin } from "./popouts.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  MAPS TAB
@@ -254,6 +255,7 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
   const [info, setInfo] = useState(null);     // { status, sha, rom, error, maps, tables } or { unreachable }
   const [img, setImg] = useState(null);       // object URL
   const [imgErr, setImgErr] = useState(null);
+  const win = useWin();   // this tab may be in a pop-out window
 
   useEffect(() => {
     let stop = false, timer = null;
@@ -283,9 +285,9 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
 
   useEffect(() => {
     const k = e => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+    win.addEventListener('keydown', k);
+    return () => win.removeEventListener('keydown', k);
+  }, [onClose, win]);
 
   const note = s => <div style={{color:C.textDim,fontSize:'12px',padding:'40px 20px',textAlign:'center',lineHeight:1.6}}>{s}</div>;
   let body;

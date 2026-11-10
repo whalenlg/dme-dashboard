@@ -110,26 +110,18 @@ code {
   background: var(--code-bg);
 }
 
-/* Live mode: sim inputs | live stats | DME + KLR debuggers. The three
-   columns need more than the 1126px #root, so use the full window. */
-#root:has(.live-cols) {
-  width: 100%;
-}
+/* Live mode: sim inputs | live stats. The tabs and the DME + KLR code
+   debuggers open in windows of their own, so the page keeps the log
+   view's 1126px #root. */
 .live-cols {
   display: grid;
   text-align: left;
-  grid-template-columns: minmax(260px, 300px) minmax(320px, 400px) minmax(0, 1fr);
+  grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
   gap: 8px;
   align-items: start;
 }
-/* Both code debuggers closed: the live stats take the rest of the row */
-.live-cols.no-code { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); }
-@media (max-width: 1280px) {
-  .live-cols { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); }
-  .live-cols > :last-child { grid-column: 1 / -1; }
-}
 @media (max-width: 700px) {
-  .live-cols, .live-cols.no-code { grid-template-columns: minmax(0, 1fr); }
+  .live-cols { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Dragging to zoom focuses the chart; no ring for that (keyboard focus keeps it) */
