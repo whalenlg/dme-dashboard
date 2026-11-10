@@ -640,13 +640,36 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     if (row) codeRef.current.scrollTop = row.offsetTop - (codeRef.current.clientHeight - ROW_H) / 2;
   }, [c, first, listing]);
 
-  const doJump = () => {
-    const q = jump.trim();
+  // Label search: every label containing the text is highlighted as you
+  // type; GO / Enter goes to the exact label (else the first match), and
+  // ◀ ▶ (or Enter / Shift+Enter again) step through the matches by address
+  const q = jump.trim().toLowerCase();
+  const matches = useMemo(() => q ? listing.filter(r => r.label && r.label.toLowerCase().includes(q)).map(r => r.a) : [],
+                          [listing, q]);
+  const matchSet = useMemo(() => new Set(matches), [matches]);
+  const [hit, setHit] = useState(-1);   // index in matches of the one shown
+  const onMatch = hit >= 0 && matches[hit] === center;
+  const goMatch = i => {
+    const k = ((i % matches.length) + matches.length) % matches.length;
+    setHit(k);
+    setCenter(matches[k]);
+  };
+  const doJump = (dir = 0) => {
     if (!q) { setCenter(null); return; }
-    const byLabel = listing.find(r => r.label.toLowerCase() === q.toLowerCase())
-                 ?? listing.find(r => r.label.toLowerCase().includes(q.toLowerCase()));
-    const a = byLabel ? byLabel.a : parseInt(q, 16);
+    if (matches.length) {
+      if (onMatch && dir) return goMatch(hit + dir);
+      const exact = listing.findIndex(r => r.label.toLowerCase() === q);
+      const i = exact >= 0 ? matches.indexOf(listing[exact].a) : -1;
+      return goMatch(i >= 0 ? i : dir < 0 ? matches.length - 1 : 0);
+    }
+    const a = parseInt(q, 16);
     if (!isNaN(a)) setCenter(a);
+  };
+  // The matched part of a label, marked
+  const markLabel = label => {
+    const i = q && label ? label.toLowerCase().indexOf(q) : -1;
+    if (i < 0) return label;
+    return <>{label.slice(0, i)}<mark style={{background:'#ffcc00',color:'#000',padding:0}}>{label.slice(i, i + q.length)}</mark>{label.slice(i + q.length)}</>;
   };
 
   return (
@@ -656,9 +679,16 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
         <span style={{color:C.textBright,letterSpacing:'0.05em'}}>PC {hx(pc, cpu === 'dme' ? 4 : 3)}</span>
         {routine && <span style={{color:C.amber,textTransform:'none',letterSpacing:0}}>in {routine}</span>}
         <span style={{marginLeft:'auto',display:'inline-flex',gap:'4px',textTransform:'none',letterSpacing:0}}>
-          <input value={jump} onChange={e => setJump(e.target.value)} onKeyDown={e => e.key === 'Enter' && doJump()}
-                 placeholder="label or hex" style={{...inp,width:'90px'}} />
-          <button style={btn(false)} onClick={doJump}>GO</button>
+          <input value={jump} onChange={e => { setJump(e.target.value); setHit(-1); }}
+                 onKeyDown={e => e.key === 'Enter' && doJump(onMatch ? (e.shiftKey ? -1 : 1) : 0)}
+                 placeholder="label or hex" style={{...inp,width:'110px'}}
+                 title="Type part of a label to highlight every match. Enter goes to the next match, Shift+Enter the previous one; or type a hex address" />
+          <button style={btn(false)} onClick={() => doJump()}>GO</button>
+          <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(-1)} title="Previous match (Shift+Enter)">◀</button>
+          <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(1)} title="Next match (Enter)">▶</button>
+          {q && (matches.length
+            ? <span style={{color:C.amber,alignSelf:'center',minWidth:'6ch'}}>{onMatch ? `${hit + 1}/${matches.length}` : `${matches.length} match${matches.length > 1 ? 'es' : ''}`}</span>
+            : isNaN(parseInt(q, 16)) && <span style={{color:C.red,alignSelf:'center'}}>no match</span>)}
           {center != null && <button style={btn(false)} onClick={() => { setCenter(null); setJump(''); }}>PC</button>}
           <button style={btn(false)} onClick={onClose}
                   title={`Close this window (reopen it with ${cpu.toUpperCase()} CODE on the main page)`}>✕</button>
@@ -724,6 +754,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
             const isOff = offSet.has(r.a);
+            const isMatch = matchSet.has(r.a), isHit = isMatch && onMatch && r.a === center;
             // Values as this instruction saw them (blank if it isn't in the trace)
             const st = running ? null : traceState(cpu, lastCtx.get(r.a), r);
             const val = st ? (cpu === 'dme' ? dmeOperandValues : klrOperandValues)(r, st.ram, st.regs) : '';
@@ -732,11 +763,12 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                    onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
                    style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',height:`${ROW_H}px`,
                            width:'max-content',minWidth:'100%',boxSizing:'border-box',
-                           background: isPc ? '#1a4a1a' : wasRecent ? '#0c1d0c' : 'transparent',
-                           borderLeft: `2px solid ${isPc ? C.textBright : 'transparent'}`}}>
+                           background: isPc ? '#1a4a1a' : isHit ? '#4a3a00' : isMatch ? '#241c00' : wasRecent ? '#0c1d0c' : 'transparent',
+                           outline: isHit ? '1px solid #ffcc00' : 'none', outlineOffset:'-1px',
+                           borderLeft: `2px solid ${isPc ? C.textBright : isHit ? '#ffcc00' : 'transparent'}`}}>
                 <span style={{width:'10px',color: hasBp ? (conds[r.a] ? C.amber : C.red) : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
-                <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
+                <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{isMatch ? markLabel(r.label) : r.label}</span>
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
                 <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
                 <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
