@@ -52,8 +52,6 @@ const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTran
 
 export default function LivePanel({ live, url, follow, setFollow, series, mem, popouts, onClose }) {
   const { connected, sim, inputs, bps, bpConds, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
-  const [stepN, setStepN]   = useState(1);
-  const [untilMs, setUntil] = useState('');
   const running = sim.state === 'running';
   // The DME and KLR code debuggers each open in a window of their own
   const codeWin = { dme: popouts.wins.code_dme, klr: popouts.wins.code_klr };
@@ -75,26 +73,12 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
         <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'13px'}}>t={tMs} ms</span>
         {running && sim.rate != null &&
           <span style={{color:C.textDim,fontSize:'9px'}}>{sim.rate.toFixed(1)} sim ms/s ({(1000 / sim.rate).toFixed(0)}× slower than real)</span>}
-        {!running && sim.reason && (() => {
-          const h = bpHitOf(sim.reason);
-          if (!h) return <span style={{color:C.amber,fontSize:'10px'}}>stopped: {sim.reason}</span>;
-          return (
-            <span style={{color:C.amber,fontSize:'10px'}}>
-              stopped: bp {h.cpu} {h.pc} · <span style={{color:C.blue}}>{hitText(h)}</span>
-              <span style={{color:C.textDim}}> (condition {h.op} {h.bit != null ? h.val : `${hx(h.val)}h`})</span>
-            </span>
-          );
-        })()}
+        {!running && <StopReason reason={sim.reason} />}
         <span style={{flex:1}} />
         <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
         <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
-        <input type="number" min={1} value={stepN} onChange={e => setStepN(Math.max(1, +e.target.value || 1))}
-               style={{...inp,width:'46px'}} title="Instructions per step" />
-        <button style={btn(false)} disabled={running} onClick={() => send(`step dme ${stepN}`)}>STEP DME</button>
-        <button style={btn(false)} disabled={running} onClick={() => send(`step klr ${stepN}`)}>STEP KLR</button>
-        <input value={untilMs} onChange={e => setUntil(e.target.value)} placeholder="ms" style={{...inp,width:'56px'}}
-               onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
-        <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}>RUN TO</button>
+        <span style={{color:'#779977',fontSize:'9px'}} title="Step, RUN TO and breakpoints are in the DME CODE and KLR CODE windows">
+          step / breakpoints: open DME CODE or KLR CODE ↗</span>
         <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
         <label style={{color:C.textDim,fontSize:'10px',cursor:'pointer'}}>
           <input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> FOLLOW
@@ -134,7 +118,8 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
       {['dme', 'klr'].map(cpu => (
         <Popout key={cpu} entry={codeWin[cpu]} title={`${cpu.toUpperCase()} CODE`}
                 sub={`live simulation · ${!connected ? 'OFFLINE' : sim.state} · t=${tMs} ms`}>
-          <div style={{textAlign:'left'}}>
+          <div style={{textAlign:'left',display:'flex',flexDirection:'column',gap:'8px'}}>
+            <RunBar cpu={cpu} sim={sim} connected={connected} running={running} send={send} />
             <AsmPanel cpu={cpu} name={cpu === 'dme' ? 'DME 8051' : 'KLR 8048'} listing={asm[cpu]} pc={cpu === 'dme' ? sim.dmePc : sim.klrPc}
                       bps={bps[cpu]} conds={bpConds?.[cpu]} reason={sim.reason} trace={trace[cpu]} traceCtx={traceCtx?.[cpu]}
                       ram={mem?.[cpu]} regs={regs?.[cpu]} running={running} stopKey={stopKey} send={send}
@@ -142,6 +127,46 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
           </div>
         </Popout>
       ))}
+    </div>
+  );
+}
+
+// Why the sim stopped: a breakpoint hit (with its condition), else the reason
+function StopReason({ reason }) {
+  if (!reason) return null;
+  const h = bpHitOf(reason);
+  if (!h) return <span style={{color:C.amber,fontSize:'10px'}}>stopped: {reason}</span>;
+  return (
+    <span style={{color:C.amber,fontSize:'10px'}}>
+      stopped: bp {h.cpu} {h.pc} · <span style={{color:C.blue}}>{hitText(h)}</span>
+      <span style={{color:C.textDim}}> (condition {h.op} {h.bit != null ? h.val : `${hx(h.val)}h`})</span>
+    </span>
+  );
+}
+
+// ── Run / pause / step / run-to, at the top of each code window ──
+function RunBar({ cpu, sim, connected, running, send }) {
+  const [stepN, setStepN]   = useState(1);
+  const [untilMs, setUntil] = useState('');
+  const CPU = cpu.toUpperCase();
+  return (
+    <div style={{...panel,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{color: !connected ? C.red : running ? C.textBright : C.amber, fontSize:'11px', minWidth:'80px'}}>
+        ● {!connected ? 'OFFLINE' : sim.state.toUpperCase()}
+      </span>
+      <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'13px'}}>t={(sim.tNs / 1e6).toFixed(3)} ms</span>
+      {!running && <StopReason reason={sim.reason} />}
+      <span style={{flex:1}} />
+      <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
+      <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
+      <input type="number" min={1} value={stepN} onChange={e => setStepN(Math.max(1, +e.target.value || 1))}
+             style={{...inp,width:'46px'}} title={`${CPU} instructions per step`} />
+      <button style={btn(false)} disabled={running} onClick={() => send(`step ${cpu} ${stepN}`)}
+              title={`Run ${stepN} ${CPU} instruction${stepN > 1 ? 's' : ''}, then pause`}>STEP {CPU}</button>
+      <input value={untilMs} onChange={e => setUntil(e.target.value)} placeholder="ms" style={{...inp,width:'56px'}}
+             onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
+      <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}
+              title="Run until this sim time (ms), then pause">RUN TO</button>
     </div>
   );
 }
@@ -636,12 +661,13 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
           <button style={btn(false)} onClick={doJump}>GO</button>
           {center != null && <button style={btn(false)} onClick={() => { setCenter(null); setJump(''); }}>PC</button>}
           <button style={btn(false)} onClick={onClose}
-                  title={`Close the ${cpu.toUpperCase()} debugger (reopen it with ${cpu.toUpperCase()} CODE above)`}>✕</button>
+                  title={`Close this window (reopen it with ${cpu.toUpperCase()} CODE on the main page)`}>✕</button>
         </span>
       </div>
-      {allBps.length > 0 && (
+      {(
         <div style={{display:'flex',gap:'4px',flexWrap:'wrap',alignItems:'center',fontSize:'10px',marginBottom:'4px'}}>
           <span style={{color:C.textDim}}>BREAKPOINTS</span>
+          {allBps.length === 0 && <span style={{color:'#779977'}}>none · click an address in the listing to add one</span>}
           {allBps.map(a => {
             const lbl = listing.length ? listing[rowFor(listing, a)] : null;
             const on = bpSet.has(a), k = condOf(a);
