@@ -118,7 +118,8 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
       {['dme', 'klr'].map(cpu => (
         <Popout key={cpu} entry={codeWin[cpu]} title={`${cpu.toUpperCase()} CODE`}
                 sub={`live simulation · ${!connected ? 'OFFLINE' : sim.state} · t=${tMs} ms`}>
-          <div style={{textAlign:'left',display:'flex',flexDirection:'column',gap:'8px'}}>
+          {/* Fills the window: the listing and the trace share its height */}
+          <div style={{textAlign:'left',display:'flex',flexDirection:'column',gap:'8px',height:'100%',minHeight:'520px'}}>
             <RunBar cpu={cpu} sim={sim} connected={connected} running={running} send={send} />
             <AsmPanel cpu={cpu} name={cpu === 'dme' ? 'DME 8051' : 'KLR 8048'} listing={asm[cpu]} pc={cpu === 'dme' ? sim.dmePc : sim.klrPc}
                       bps={bps[cpu]} conds={bpConds?.[cpu]} reason={sim.reason} trace={trace[cpu]} traceCtx={traceCtx?.[cpu]}
@@ -416,10 +417,9 @@ function InputsPanel({ inputs, send }) {
 // The stack, listing and trace panes keep a fixed height and scroll inside,
 // so the debugger doesn't jump around as their contents change.
 const ROW_H     = 15;    // px per listing / trace row
-const CODE_ROWS = 32;    // listing rows visible at once
+const CODE_ROWS = 32;    // height of the "no listing" placeholder, in rows
 const WINDOW    = 64;    // rows rendered above and below the centre line (scrollable)
 const STACK_H   = 140;   // px
-const TRACE_ROWS = 16;   // trace rows visible at once
 
 // Nearest row at or before an address (pc can sit mid-instruction while running)
 function rowFor(listing, a) {
@@ -635,10 +635,22 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
   // Scroll the centre row (PC or a GO target) to the middle of the pane
   // whenever it moves; otherwise leave the user's scroll position alone.
   const codeRef = useRef(null);
-  useLayoutEffect(() => {
-    const row = codeRef.current?.children[c - first];
+  const centreRow = useRef(null);
+  const scrollToCentre = () => {
+    const row = codeRef.current?.children[centreRow.current];
     if (row) codeRef.current.scrollTop = row.offsetTop - (codeRef.current.clientHeight - ROW_H) / 2;
-  }, [c, first, listing]);
+  };
+  useLayoutEffect(() => { centreRow.current = c - first; scrollToCentre(); }, [c, first, listing]);
+  // The pane takes its height from the window, so centre again when that changes
+  const paneH = useRef(0);
+  useEffect(() => {
+    const el = codeRef.current;
+    if (!el) return;
+    const RO = el.ownerDocument.defaultView.ResizeObserver;
+    const ro = new RO(() => { if (el.clientHeight !== paneH.current) { paneH.current = el.clientHeight; scrollToCentre(); } });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [listing.length > 0]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Label search: every label containing the text is highlighted as you
   // type; GO / Enter goes to the exact label (else the first match), and
@@ -673,7 +685,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
   };
 
   return (
-    <div style={{...panel,display: hidden ? 'none' : 'flex',flexDirection:'column',minWidth:0}}>
+    <div style={{...panel,display: hidden ? 'none' : 'flex',flexDirection:'column',minWidth:0,flex:'1 1 auto',minHeight:0}}>
       <div style={{...title,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
         <span>{name}</span>
         <span style={{color:C.textBright,letterSpacing:'0.05em'}}>PC {hx(pc, cpu === 'dme' ? 4 : 3)}</span>
@@ -749,7 +761,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
       {!listing.length ? (
         <div style={{color:C.textDim,fontSize:'10px',padding:'20px',height:`${CODE_ROWS * ROW_H}px`,boxSizing:'border-box'}}>No disassembly from the bridge.</div>
       ) : (
-        <div ref={codeRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,height:`${CODE_ROWS * ROW_H}px`,flex:'none',position:'relative',
+        <div ref={codeRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,flex:'3 1 0',minHeight:`${8 * ROW_H}px`,position:'relative',
                                    overflow:'auto',whiteSpace:'nowrap',border:`1px solid ${C.border}`}}>
           {rows.map(r => {
             const isPc = r.a === pc && !running, hasBp = bpSet.has(r.a), wasRecent = recent.has(r.a);
@@ -832,8 +844,9 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [shown, open]);
   return (
-    <div style={{marginTop:'6px',borderTop:`1px solid ${C.border}`,paddingTop:'4px'}}>
-      <div style={{...title,display:'flex',gap:'8px',alignItems:'center',marginBottom:'2px',cursor:'pointer'}}
+    <div style={{marginTop:'6px',borderTop:`1px solid ${C.border}`,paddingTop:'4px',display:'flex',flexDirection:'column',
+                 flex: open ? '2 1 0' : 'none',minHeight: open ? `${6 * ROW_H}px` : 0}}>
+      <div style={{...title,display:'flex',gap:'8px',alignItems:'center',marginBottom:'2px',cursor:'pointer',flex:'none'}}
            onClick={() => setOpen(o => !o)} title={open ? 'Hide' : 'Show'}>
         <span>{open ? '▾' : '▸'} {covered ? `last ${covered} executed` : 'recent instructions'}</span>
         <span style={{textTransform:'none',letterSpacing:0,color:'#557755'}}>
@@ -841,7 +854,7 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
         </span>
       </div>
       {open && (
-        <div ref={listRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,height:`${TRACE_ROWS * ROW_H}px`,
+        <div ref={listRef} style={{fontSize:'10.5px',lineHeight:`${ROW_H}px`,flex:'1 1 0',minHeight:`${4 * ROW_H}px`,
                                    overflow:'auto',whiteSpace:'nowrap',border:`1px solid ${C.border}`}}>
           {!shown.length && (
             <div style={{color:'#557755',padding:'4px'}}>{running ? 'shown when the sim stops' : 'no trace yet'}</div>
