@@ -674,6 +674,17 @@ const regsAt = (hist, t) => {
   return null;
 };
 
+// Idle control valve PWM, from the timer 1 reloads the firmware keeps in
+// RAM: the timer 1 ISR (000Bh) toggles P1.4 (IDLE_SPD) and reloads TH1:TL1
+// with 41h:40h when it sets P1.4, 45h:44h when it clears it. Each phase
+// lasts 10000h - reload counts (2 us each). Duty = the P1.4-high share.
+const icvPwm = ir => {
+  const r = (h, l) => ir[h] != null && ir[l] != null ? 0x10000 - ((ir[h] << 8) | ir[l]) : null;
+  const hi = r(0x41, 0x40), lo = r(0x45, 0x44);
+  if (hi == null || lo == null || hi + lo === 0) return null;
+  return { pct: 100 * hi / (hi + lo), hi, lo, hz: 1e6 / (2 * (hi + lo)) };
+};
+
 // 8051 timer tile: TH:TL, run bit, mode, overflow flag
 const timerTile = (n, regs) => {
   if (!regs) return { lbl:`TIMER ${n}`, val:'--', unit:'live sim only', col:C.textDim, mmk:null, addr:null };
@@ -1051,8 +1062,9 @@ export default function DMEDashboard() {
         setKlrData(klr);
         setZoom(null);
         setRpmZoom(null);
-        setIdx(0);
-        setKlrIdx(0);
+        // Open at the end of the run, where both scrubbers can go back from
+        setIdx(Math.max(0, dme.snapshots.length - 1));
+        setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
         setPlaying(false);
         setKlrPlaying(false);
         if (dme.snapshots.length || dme.phases.length ||
@@ -1070,8 +1082,8 @@ export default function DMEDashboard() {
     setKlrData(klr);
     setZoom(null);
     setRpmZoom(null);
-    setIdx(0);
-    setKlrIdx(0);
+    setIdx(Math.max(0, dme.snapshots.length - 1));
+    setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
     setPlaying(false);
     setKlrPlaying(false);
     if (dme.snapshots.length || dme.phases.length ||
@@ -1264,6 +1276,7 @@ export default function DMEDashboard() {
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
       load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
+      icv:     mm(s => s.iram ? icvPwm(s.iram)?.pct ?? null : null, v => `${v.toFixed(1)}%`),
     };
   }, [data.snapshots, onOverview]);
 
@@ -1295,7 +1308,7 @@ export default function DMEDashboard() {
   // One tab's content: below the header (log), or in its own window (live)
   const renderTab = t => (
     <>
-    {t==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
+    {t==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null} isLive={!!liveUrl}
       fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
       minmax={minmax} clEverActive={clEverActive} />}
     {t==='ports'    && <PortsTab snap={snap}
@@ -1576,7 +1589,7 @@ export default function DMEDashboard() {
 // ─────────────────────────────────────────────────────────────────
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
-function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
+function OverviewTab({ snap, iram, cpuRegs, isLive, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
@@ -1692,8 +1705,16 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
-    timerTile(0, cpuRegs),
-    timerTile(1, cpuRegs),
+    (() => {
+      const p = icvPwm(iram);
+      return { lbl:'ICV PWM', val: p ? `${p.pct.toFixed(1)}%` : '--',
+               unit: p ? `P1.4 high · ${p.hz.toFixed(0)} Hz` : '41:40 / 45:44',
+               col:'#ff44aa', mmk:'icv', addr:0x41,
+               tip:'Idle control valve PWM duty: the share of each period that P1.4 (IDLE_SPD) is high. ' +
+                   'From the timer 1 reloads in RAM: 41h:40h (P1.4 high phase) and 45h:44h (low phase), 2 us per count.' };
+    })(),
+    // CPU timers come from the live sim's register dumps; a log has none
+    ...(isLive ? [timerTile(0, cpuRegs), timerTile(1, cpuRegs)] : []),
   ];
 
 
@@ -1842,7 +1863,7 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
         {metricsRow3.map(m=>{
           const mmv = mm[m.mmk] || {};
           return (
-            <div key={m.lbl} style={S.metric} title={m.addr!=null ? iramDesc(m.addr) : undefined}>
+            <div key={m.lbl} style={S.metric} title={m.tip ?? (m.addr!=null ? iramDesc(m.addr) : undefined)}>
               <div style={S.metricLbl}>{m.lbl}</div>
               <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
                 {m.val}
