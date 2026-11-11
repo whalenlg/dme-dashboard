@@ -62,6 +62,9 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
     if (sim.state === 'paused') send('trace dme 512\ntrace klr 512');   // all the sim keeps
   }, [sim.state, sim.tNs, send]);
 
+  // ✕ hides the warnings seen so far; a new warning (a new list) brings the box back
+  const [warnsHidden, setWarnsHidden] = useState(null);
+  const newWarns = live.warnings !== warnsHidden;
   const tMs = (sim.tNs / 1e6).toFixed(3);
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'10px'}}>
@@ -95,9 +98,13 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
       <div className="live-cols">
         <InputsPanel inputs={inputs} send={send} />
         <div style={{display:'flex',flexDirection:'column',gap:'8px',minWidth:0}}>
-          {live.warnings.length > 0 && (
+          {live.warnings.length > 0 && newWarns && (
             <div style={{...panel,borderColor:C.red,fontSize:'10px',maxHeight:'90px',overflowY:'auto',textAlign:'left'}}>
-              <div style={{...title,color:C.red,marginBottom:'3px'}}>SIM WARNINGS ({live.warnings.length})</div>
+              <div style={{...title,color:C.red,marginBottom:'3px',display:'flex',justifyContent:'space-between'}}>
+                <span>SIM WARNINGS ({live.warnings.length})</span>
+                <button onClick={() => setWarnsHidden(live.warnings)} title="Close (it comes back on a new warning)"
+                        style={{background:'none',border:'none',color:C.red,cursor:'pointer',fontFamily:'inherit',fontSize:'12px',padding:0}}>✕</button>
+              </div>
               {live.warnings.slice().reverse().map((w, i) => {
                 const snap = live.snapshots?.find(s => s.trigger === w);
                 return (
