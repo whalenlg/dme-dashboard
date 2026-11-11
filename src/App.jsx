@@ -1,3 +1,4 @@
+import { Footer } from "./footer.jsx";
 import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition, useContext } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
@@ -1544,6 +1545,7 @@ export default function DMEDashboard() {
                                onClose={()=>setLiveUrl(null)} />}
         {!liveUrl && renderTab(tab)}
       </div>
+      <Footer />
 
 
       {/* ── LIVE: each open tab in its own window ───────────── */}
