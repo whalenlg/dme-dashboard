@@ -1281,6 +1281,7 @@ export default function DMEDashboard() {
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
       load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
+      ovl:     mm(s => s.iram?.[0x58]??null,        v => h2(v)),
       icv:     mm(s => s.iram ? icvPwm(s.iram)?.pct ?? null : null, v => `${v.toFixed(1)}%`),
     };
   }, [data.snapshots, onOverview]);
@@ -1720,6 +1721,15 @@ function OverviewTab({ snap, iram, cpuRegs, isLive, fuelMsV, fuelNext, load16, w
                col:'#ff44aa', mmk:'icv', addr:0x41,
                tip:'Idle control valve PWM duty: the share of each period that P1.4 (IDLE_SPD) is high. ' +
                    'From the timer 1 reloads in RAM: 41h:40h (P1.4 high phase) and 45h:44h (low phase), 2 us per count.' };
+    })(),
+    (() => {
+      // 21h.0: the ~3 s pre-timer is running; 21h.1: overload confirmed, ~60 s lockout
+      const f = iram[0x21] ?? 0, pre = f & 1, lock = (f >> 1) & 1;
+      return { lbl:'OVERLOAD TIMER (58h)', val:h2(iram[0x58]),
+               unit: lock ? 'LOCKOUT · fuel cut' : pre ? 'pre-timer running' : 'idle',
+               col: lock ? C.red : pre ? C.amber : '#ff5577', mmk:'ovl', addr:0x58,
+               tip:'Overload / fuel cutoff timer, counted down via the 59h prescaler. ' +
+                   '21h.0 = pre-timer running, 21h.1 = overload confirmed (lockout, fuel cut).' };
     })(),
     // CPU timers come from the live sim's register dumps; a log has none
     ...(isLive ? [timerTile(0, cpuRegs), timerTile(1, cpuRegs)] : []),
