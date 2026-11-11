@@ -23,7 +23,7 @@ export function Footer() {
         ))}
       </div>
       <div>Special thanks to users @tom and @johnb at Carpokes for their contributions and feedback during development.</div>
-      <div style={{marginTop:'6px',color:'#ccddcc'}}>Copyright 2026 Michael Whalen</div>
+      <div style={{marginTop:'6px',color:'#ccddcc'}}>Copyright 2026 Michael Whalen. No affiliation with Dr. Ing. h.c. F. Porsche AG or any of its affiliates.</div>
     </footer>
   );
 }
