@@ -167,7 +167,7 @@ const KLR_PORT_DEFS = {
   P2: [
     {bit:7, name:'IGN_OUT',   dir:'OUT', desc:'Ignition coil output → DME ign input (processed spark signal)'},
     {bit:6, name:'IGN_OUT_N', dir:'OUT', desc:'Ignition coil output active-low complement'},
-    {bit:5, name:'CV_PWM',    dir:'OUT', desc:'Coil voltage PWM control'},
+    {bit:5, name:'CV_PWM',    dir:'OUT', desc:'Boost control valve (CV) PWM output'},
     {bit:4, name:'KNOCK_DET', dir:'OUT', desc:'Diag LED Output'},
     {bit:3, name:'P2_3',      dir:'?',   desc:'P2.3 — function TBD'},
     {bit:2, name:'P2_2',      dir:'?',   desc:'P2.2 — function TBD'},
@@ -2899,8 +2899,8 @@ function KLRTab({ klrData, currentT, boost }) {
   // four across
   const arrange = c => [
     tile['AVG PULSE'], tile['AVG DELAY'], tile['KNOCK COUNT'], tile['FULL LOAD'],
-    tile['CV PWM'],    c.cvDuty,          tile['IGN FIRES'],   c.throttle,
-    c.boostInput,      c.boostTarget,     c.deviation,         tile['TIMER'],
+    c.cvDuty,          tile['IGN FIRES'], c.throttle,          tile['TIMER'],
+    c.boostInput,      c.boostTarget,     c.deviation,
   ];
 
   return boost ? <BoostControlTab klrData={klrData} {...boost} arrange={arrange} />
@@ -3019,7 +3019,6 @@ function klrChartSeries(klrData, dmeSnaps) {
   // CV_PWM and knock from STATUS lines
   const statusData = klrStatus.map(s => ({
     t: s.t,
-    cv_pwm: s.CV_PWM ?? null,
     knock:  s.knock  ?? null,
     knock_count: s.knock_count ?? null,
   }));
@@ -3040,6 +3039,19 @@ function klrChartSeries(klrData, dmeSnaps) {
     .map(d => {
       return { t: d.t, boost_psi: +gaugePsi(d.raw).toFixed(1) };
     });
+
+  // Control valve (boost) duty cycle, ram[0x41] CV_DUTY_FINAL, from the
+  // same two sources, as % (the KLR OVERVIEW tile's scaling)
+  const cvDutyData = [
+    ...(klrData.snapshots ?? [])
+      .filter(s => s.ram?.[0x41] != null)
+      .map(s => ({ t: s.t, raw: s.ram[0x41] })),
+    ...klrStatus
+      .filter(s => s.ramVals?.[0x41] != null)
+      .map(s => ({ t: s.t, raw: s.ramVals[0x41] })),
+  ]
+    .sort((a, b) => a.t - b.t)
+    .map(d => ({ t: d.t, cv_duty: +(d.raw / 255 * 100).toFixed(1) }));
 
   // KLR knock output (P1.6), from the KNOCK_OUT [PHASE] edges — the same
   // signal as knock_out in the FST. STATUS is too infrequent to catch it,
@@ -3086,7 +3098,7 @@ function klrChartSeries(klrData, dmeSnaps) {
     .map(s => ({ t: s.t, rpm: snapRpm(s) }))
     .filter(d => d.rpm != null);
 
-  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData, rpmData };
+  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, cvDutyData, knockPulseEvents, tpsData, ignOutData, rpmData };
 }
 
 // Entries with t <= T (series are time-sorted); all of them when T is null
@@ -3117,7 +3129,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     // Every series gets the engine speed at each sample's time
     const w = rows => withRpm(rows, a.rpmData);
     return { ...a, sparkData: w(a.sparkData), measured: w(a.measured), ignPulseData: w(a.ignPulseData),
-             statusData: w(a.statusData), boostData: w(a.boostData), knockPulseEvents: w(a.knockPulseEvents),
+             statusData: w(a.statusData), boostData: w(a.boostData), cvDutyData: w(a.cvDutyData), knockPulseEvents: w(a.knockPulseEvents),
              tpsData: w(a.tpsData), ignOutData: w(a.ignOutData) };
   }, [klrData, dmeSnaps, xRpm]);
   const { firstKlrT, lastKlrT } = all;
@@ -3146,6 +3158,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
   const ignPulseData  = upTo(all.ignPulseData, effectiveT);
   const statusData    = upTo(all.statusData, effectiveT);
   const boostData     = upTo(all.boostData, effectiveT);
+  const cvDutyData    = upTo(all.cvDutyData, effectiveT);
   const rpmData       = upTo(all.rpmData, effectiveT);
   const tpsData       = upTo(all.tpsData, effectiveT);
   const ignOutData    = upTo(all.ignOutData, effectiveT);
@@ -3304,15 +3317,15 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       exp:   exp.pulse,
     },
     {
-      title: 'CV_PWM (coil voltage PWM)',
-      data:  statusData,
-      key:   'cv_pwm',
-      col:   '#66ffaa',
-      unit:  '',
-      dom:   [-0.1, 1.1],
+      title: 'CV DUTY CYCLE (%)',
+      data:  cvDutyData,
+      key:   'cv_duty',
+      col:   '#cc66ff',
+      unit:  '%',
+      dom:   [0, 100],
       type:  'stepAfter',
-      note:  'Coil voltage pulse-width modulation output state',
-      empty: statusData.every(d => d.cv_pwm == null),
+      note:  'Boost control valve duty cycle, ram[0x41] CV_DUTY_FINAL (0xFF = 100%)',
+      empty: cvDutyData.length === 0,
     },
     {
       title: 'TPS ANGLE (deg)',
@@ -4151,7 +4164,7 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots, arrange }) {
                      sub="input − target"
                      col={boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red} />,
     cvDuty: <Card key="cvDuty" label="CV DUTY CYCLE" value={fmt1(cvDutyPct)} unit="%"
-                  sub={cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}
+                  sub={`${cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}${latestStatus?.CV_PWM != null ? ` · pin ${latestStatus.CV_PWM ? 'ON' : 'OFF'}` : ''}`}
                   col="#cc66ff" />,
   };
 
