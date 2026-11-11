@@ -167,7 +167,7 @@ const KLR_PORT_DEFS = {
   P2: [
     {bit:7, name:'IGN_OUT',   dir:'OUT', desc:'Ignition coil output → DME ign input (processed spark signal)'},
     {bit:6, name:'IGN_OUT_N', dir:'OUT', desc:'Ignition coil output active-low complement'},
-    {bit:5, name:'CV_PWM',    dir:'OUT', desc:'Coil voltage PWM control'},
+    {bit:5, name:'CV_PWM',    dir:'OUT', desc:'Boost control valve (CV) PWM output'},
     {bit:4, name:'KNOCK_DET', dir:'OUT', desc:'Diag LED Output'},
     {bit:3, name:'P2_3',      dir:'?',   desc:'P2.3 — function TBD'},
     {bit:2, name:'P2_2',      dir:'?',   desc:'P2.2 — function TBD'},
@@ -674,6 +674,17 @@ const regsAt = (hist, t) => {
   return null;
 };
 
+// Idle control valve PWM, from the timer 1 reloads the firmware keeps in
+// RAM: the timer 1 ISR (000Bh) toggles P1.4 (IDLE_SPD) and reloads TH1:TL1
+// with 41h:40h when it sets P1.4, 45h:44h when it clears it. Each phase
+// lasts 10000h - reload counts (2 us each). Duty = the P1.4-high share.
+const icvPwm = ir => {
+  const r = (h, l) => ir[h] != null && ir[l] != null ? 0x10000 - ((ir[h] << 8) | ir[l]) : null;
+  const hi = r(0x41, 0x40), lo = r(0x45, 0x44);
+  if (hi == null || lo == null || hi + lo === 0) return null;
+  return { pct: 100 * hi / (hi + lo), hi, lo, hz: 1e6 / (2 * (hi + lo)) };
+};
+
 // 8051 timer tile: TH:TL, run bit, mode, overflow flag
 const timerTile = (n, regs) => {
   if (!regs) return { lbl:`TIMER ${n}`, val:'--', unit:'live sim only', col:C.textDim, mmk:null, addr:null };
@@ -833,7 +844,7 @@ const S = {
            border:`1px solid ${v==='p'?C.textBright:C.border}`,
            color:v==='p'?C.textBright:C.textDim,fontFamily:'inherit',
            fontSize:'11px',letterSpacing:'0.1em',cursor:'pointer'}),
-  scrubber:{background:C.panelBg,borderTop:`1px solid ${C.border}`,
+  scrubber:{background:C.panelBg,borderTop:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`,
             padding:'6px 14px',display:'flex',alignItems:'center',gap:'10px',flexShrink:0},
   memCell:(hasVal,hot)=>({
     background: hot?'#0f2a0f':hasVal?C.panelBg2:'#060d06',
@@ -1051,8 +1062,9 @@ export default function DMEDashboard() {
         setKlrData(klr);
         setZoom(null);
         setRpmZoom(null);
-        setIdx(0);
-        setKlrIdx(0);
+        // Open at the end of the run, where both scrubbers can go back from
+        setIdx(Math.max(0, dme.snapshots.length - 1));
+        setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
         setPlaying(false);
         setKlrPlaying(false);
         if (dme.snapshots.length || dme.phases.length ||
@@ -1070,8 +1082,8 @@ export default function DMEDashboard() {
     setKlrData(klr);
     setZoom(null);
     setRpmZoom(null);
-    setIdx(0);
-    setKlrIdx(0);
+    setIdx(Math.max(0, dme.snapshots.length - 1));
+    setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
     setPlaying(false);
     setKlrPlaying(false);
     if (dme.snapshots.length || dme.phases.length ||
@@ -1214,6 +1226,11 @@ export default function DMEDashboard() {
           return ((lastLmbdHi << 8) | lastLmbdLo) - 0x8000;
         })(),
         isv:       ir[0x7F] ?? null,
+        // Overload / fuel-cut timer (58h): loaded from the ROM table (0C19h/0C29h),
+        // counted down via the 59h prescaler; 21h.0 pre-timer, 21h.1 lockout
+        ovlTimer:  ir[0x58] ?? null,
+        // ICV duty: on-time share of the timer 1 PWM (see icvPwm)
+        icv:       (() => { const p = icvPwm(ir); return p ? +p.pct.toFixed(1) : null; })(),
         dwell:   rpm != null && rpm >= 40 && ir[0x2F] != null
                    ? +(ir[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
                    : null,
@@ -1264,6 +1281,7 @@ export default function DMEDashboard() {
       afm:     mm(s => s._prevAfm??s.iram?.[0x10]??null, v => h2(v)),
       tps:     mm(s => s._prevTps??s.iram?.[0x16]??null, v => h2(v)),
       load:    mm(s => s.iram?.[0x49]??null,        v => h2(v)),
+      icv:     mm(s => s.iram ? icvPwm(s.iram)?.pct ?? null : null, v => `${v.toFixed(1)}%`),
     };
   }, [data.snapshots, onOverview]);
 
@@ -1295,7 +1313,7 @@ export default function DMEDashboard() {
   // One tab's content: below the header (log), or in its own window (live)
   const renderTab = t => (
     <>
-    {t==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null}
+    {t==='overview' && <OverviewTab snap={snap} iram={iram} cpuRegs={liveUrl ? regsAt(live.dmeRegsHist, snap.t) : null} isLive={!!liveUrl}
       fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
       minmax={minmax} clEverActive={clEverActive} />}
     {t==='ports'    && <PortsTab snap={snap}
@@ -1303,6 +1321,8 @@ export default function DMEDashboard() {
         logLoaded={data.snapshots.length>0} />}
     {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
     <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
+      {t==='diag'     && <DiagTab iram={iram} snap={snap} snapshots={feed.data.snapshots}
+          onSeek={seekTo} range={zoom} setRange={setZoom} />}
       {t==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
           onSeek={seekTo} range={zoom} setRange={setZoom} />}
       {t==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
@@ -1326,7 +1346,6 @@ export default function DMEDashboard() {
           logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
     </CursorContext.Provider>
     {t==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
-    {t==='diag'     && <DiagTab iram={iram} snap={snap} />}
     {t==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t}
                                    boost={{ klrIdx, dmeSnapshots: data.snapshots }} />}
     {t==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
@@ -1508,6 +1527,10 @@ export default function DMEDashboard() {
         </div>
       </div>
 
+      {/* ── TIME SCRUBBER + PLAYBACK (log): just under the tabs, and it
+             stays at the top of the window as the page scrolls ── */}
+      {!liveUrl && <div style={{position:'sticky',top:0,zIndex:20}}>{scrubber(tab)}</div>}
+
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
@@ -1516,13 +1539,11 @@ export default function DMEDashboard() {
         {!liveUrl && renderTab(tab)}
       </div>
 
-      {/* ── TIME SCRUBBER + PLAYBACK (log) ─────────────────── */}
-      {!liveUrl && scrubber(tab)}
 
       {/* ── LIVE: each open tab in its own window ───────────── */}
       {liveTabs.map(t => (
         <Popout key={t} entry={popouts.wins[t]} title={TAB_LABEL[t]}
-                sub={`live simulation${follow ? '' : ' · FOLLOW off'}`} footer={scrubber(t)}>
+                sub={`live simulation${follow ? '' : ' · FOLLOW off'}`} header={scrubber(t)}>
           {renderTab(t)}
           {t === 'iram' && tooltip && <IRAMTooltip tip={tooltip} />}
         </Popout>
@@ -1576,7 +1597,7 @@ export default function DMEDashboard() {
 // ─────────────────────────────────────────────────────────────────
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
-function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
+function OverviewTab({ snap, iram, cpuRegs, isLive, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
@@ -1692,8 +1713,16 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
     { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
-    timerTile(0, cpuRegs),
-    timerTile(1, cpuRegs),
+    (() => {
+      const p = icvPwm(iram);
+      return { lbl:'ICV PWM', val: p ? `${p.pct.toFixed(1)}%` : '--',
+               unit: p ? `P1.4 high · ${p.hz.toFixed(0)} Hz` : '41:40 / 45:44',
+               col:'#ff44aa', mmk:'icv', addr:0x41,
+               tip:'Idle control valve PWM duty: the share of each period that P1.4 (IDLE_SPD) is high. ' +
+                   'From the timer 1 reloads in RAM: 41h:40h (P1.4 high phase) and 45h:44h (low phase), 2 us per count.' };
+    })(),
+    // CPU timers come from the live sim's register dumps; a log has none
+    ...(isLive ? [timerTile(0, cpuRegs), timerTile(1, cpuRegs)] : []),
   ];
 
 
@@ -1842,7 +1871,7 @@ function OverviewTab({ snap, iram, cpuRegs, fuelMsV, fuelNext, load16, wu16, lmb
         {metricsRow3.map(m=>{
           const mmv = mm[m.mmk] || {};
           return (
-            <div key={m.lbl} style={S.metric} title={m.addr!=null ? iramDesc(m.addr) : undefined}>
+            <div key={m.lbl} style={S.metric} title={m.tip ?? (m.addr!=null ? iramDesc(m.addr) : undefined)}>
               <div style={S.metricLbl}>{m.lbl}</div>
               <div style={{...S.metricVal,color:m.col,fontSize:'15px',lineHeight:'1.2',margin:'3px 0'}}>
                 {m.val}
@@ -2280,12 +2309,15 @@ const DME_CHARTS = [
   {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
   {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
   {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
-  {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
+  // Advance and its target side by side (one row of the two-column grid)
   {title:'IGNITION ADVANCE (31h+57h)', k:'timingAdv',  col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
-  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
-  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'ADVANCE TARGET 32h − APPLIED (°)', k:'timingRetard', col:'#ff8800', unit:'°retard', dom:['auto','auto'], cn:true},
+  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'ICV DUTY CYCLE (41:40 / 45:44)', k:'icv', col:'#ff77cc', unit:'% on',  dom:[0,100],    cn:true},
+  {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
+  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
+  {title:'OVERLOAD / FUEL CUTOFF TIMER (58h)', k:'ovlTimer', col:'#ff5577', unit:'hex', dom:[0,255], cn:true},
 ];
 const DME_RPM_CHARTS = DME_CHARTS.filter(c => c.k !== 'rpm');
 
@@ -2556,7 +2588,98 @@ function PhaseTab({ phases, currentT }) {
 //   P2=0x1F  MOVX @R0, iram[0x13]              → COOLANT
 //   P2=0x98  MOVX @R0, lambda_state_2bit        → computed
 //
-function DiagTab({ iram, snap }) {
+// The bytes send_diag_p2 transmits for one iram image (see the table above)
+function diagTx(ir) {
+  const lmb16 = ((ir[0x1C] ?? 0) << 8) | (ir[0x1B] ?? 0);
+  return {
+    lmbLo: ir[0x1B] ?? 0,
+    ignAdv: ((( ir[0x31] ?? 0) + 0x0A) << 1) & 0xFF,
+    prpm: ir[0x37] ?? 0,
+    loadIdx: ir[0x49] ?? 0,
+    afmRaw: ir[0x10] ?? 0,
+    coolant: ir[0x13] ?? 0,
+    lmbState: (((lmb16 - 0x60) & 0xFFFF) >> 6) & 0x03,
+  };
+}
+// One distinct colour per channel, shared by the table and the chart
+const DIAG_SERIES = [
+  { k:'lmbLo',    p2:'0x19', name:'LAMBDA INTEGRATOR', col:'#cc66ff' },
+  { k:'ignAdv',   p2:'0x1B', name:'IGNITION ADVANCE',  col:'#ff8844' },
+  { k:'prpm',     p2:'0x1C', name:'ENGINE SPEED',      col:'#66ff66' },
+  { k:'loadIdx',  p2:'0x1D', name:'LOAD INDEX',        col:'#ffee44' },
+  { k:'afmRaw',   p2:'0x1E', name:'AFM RAW',           col:'#44dddd' },
+  { k:'coolant',  p2:'0x1F', name:'COOLANT',           col:'#4488ff' },
+  { k:'lmbState', p2:'0x98', name:'LAMBDA STATE',      col:'#ff4488', right:true },
+];
+const DIAG_COL = Object.fromEntries(DIAG_SERIES.map(d => [d.p2, d.col]));
+
+// The transmitted diag bytes over the log, one row per snapshot time.
+// Snapshots at the same time (DS + STATUS) are overlaid, and each one
+// starts from the previous image, so a partial dump keeps earlier values.
+const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }) {
+  const rows = useMemo(() => {
+    const out = [];
+    let ir = {};
+    for (const s of snapshots ?? []) {
+      if (!s.iram) continue;
+      ir = { ...ir, ...s.iram };
+      const row = { t: s.t, ...diagTx(ir) };
+      if (out.length && out[out.length - 1].t === s.t) out[out.length - 1] = row;
+      else out.push(row);
+    }
+    return out;
+  }, [snapshots]);
+  const lo = rows[0]?.t ?? 0, hi = rows[rows.length - 1]?.t ?? 0;
+  const full = useMemo(() => [lo, hi], [lo, hi]);
+  const zoom = useZoom(range, setRange, full, onSeek);
+  const [hidden, setHidden] = useState(() => new Set());
+  // Few enough points that each one gets a dot
+  const shown = useMemo(() => thin(inRange(rows, range, 't'), DIAG_SERIES.map(d => d.k), 400), [rows, range]);
+  if (!rows.length) return (
+    <div style={{...S.panel, color:C.textDim, textAlign:'center', padding:'24px', fontSize:'11px', marginBottom:'8px'}}>
+      No snapshot data loaded — load a log (or go live) to chart the diagnostic stream over time
+    </div>
+  );
+  const ax = {fill:C.textDim,fontSize:10,fontFamily:"'Share Tech Mono',monospace"};
+  const toggle = k => setHidden(h => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  return (
+    <div style={{...S.panel, marginBottom:'8px'}}>
+      <div style={S.panelTitle}>DIAG STREAM OVER TIME — TX BYTES  (lambda state on the right axis)</div>
+      <div style={{display:'flex', flexWrap:'wrap', gap:'6px 14px', justifyContent:'center', marginBottom:'6px', fontSize:'10px'}}>
+        {DIAG_SERIES.map(d => (
+          <button key={d.k} onClick={() => toggle(d.k)} title="show / hide"
+            style={{background:'none', border:'none', cursor:'pointer', fontFamily:'inherit', fontSize:'10px',
+                    color: hidden.has(d.k) ? C.textDim : d.col, opacity: hidden.has(d.k) ? 0.5 : 1,
+                    textDecoration: hidden.has(d.k) ? 'line-through' : 'none'}}>
+            <span style={{display:'inline-block', width:'8px', height:'8px', borderRadius:'50%', background:d.col, marginRight:'5px'}}/>
+            {d.p2} {d.name}
+          </button>
+        ))}
+      </div>
+      <ZoomBar zoom={zoom} range={range} full={full} btn={zoomBtn} color={C.textBright} dim={C.textDim} unit="ms" />
+      <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={300}>
+        <ComposedChart data={shown} margin={{top:6,right:10,bottom:0,left:0}} {...zoomHandlers(zoom)}>
+          <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
+          <XAxis dataKey="t" type="number" domain={range ?? full} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
+          <YAxis yAxisId="left" tick={ax} domain={[0,255]} ticks={[0,64,128,192,255]} stroke={C.textDim} />
+          <YAxis yAxisId="right" orientation="right" tick={ax} domain={[0,3]} ticks={[0,1,2,3]} width={24} stroke={DIAG_COL['0x98']} />
+          <Tooltip contentStyle={{background:'#060e06',border:`1px solid ${C.border}`,fontSize:'11px',fontFamily:'inherit'}}
+            labelFormatter={v=>`t=${v} ms`}
+            formatter={(v,n,p)=>[p.dataKey==='lmbState' ? `${v}` : `0x${h2(v)} (${v}d)`, n]} />
+          <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
+          <DragArea zoom={zoom} fill={C.textBright} />
+          {DIAG_SERIES.filter(d => !hidden.has(d.k)).map(d => (
+            <Line key={d.k} yAxisId={d.right ? 'right' : 'left'} type="linear" dataKey={d.k} name={`${d.p2} ${d.name}`}
+                  stroke={d.col} strokeWidth={1.2} dot={{ r:2, fill:d.col, stroke:'none' }} activeDot={{ r:4 }}
+                  isAnimationActive={false} />
+          ))}
+        </ComposedChart>
+      </ResponsiveContainer></ZoomBox>
+    </div>
+  );
+});
+
+function DiagTab({ iram, snap, snapshots, onSeek, range, setRange }) {
   const ir = iram || {};
 
   // Use the authoritative RPM from the DS header (refRpm) rather than
@@ -2599,14 +2722,14 @@ function DiagTab({ iram, snap }) {
       p2: '0x19', name: 'LAMBDA INTEGRATOR', src: 'iram[0x1B]  LMB_LO',
       raw: lmbLo, tx: lmbLo,
       decode: `${lmbLo === 0x80 ? 'Stoich (centred)' : lmbLo > 0x80 ? `Rich offset +${(lmbLo-0x80)}` : `Lean offset ${lmbLo-0x80}`}  (0x80=λ1.0)`,
-      col: '#cc66ff',
+      col: DIAG_COL['0x19'],
       detail: `16-bit integrator: 0x${h2(lmbHi)}:${h2(lmbLo)} = ${lmb16}  |  correction: ${lmbPct}%`,
     },
     {
       p2: '0x1B', name: 'IGNITION ADVANCE', src: 'iram[0x31]  IGN_ADV',
       raw: ignAdv, tx: ignAdvTx,
       decode: `${ignAdv} half-teeth = ${(ignAdv * 360 / 264).toFixed(1)}° BTDC  →  tx=(${ignAdv}+10)×2=${ignAdvTx}  |  KLR may retard further`,
-      col: '#ff8844',
+      col: DIAG_COL['0x1B'],
       detail: `Ignition duration: iram[0x30]=0x${h2(ir[0x30]??0)} (${ir[0x30]??0} half-teeth)`,
     },
     {
@@ -2615,41 +2738,42 @@ function DiagTab({ iram, snap }) {
       decode: refRpm != null
         ? `${refRpm} RPM  (from DS header)  |  iram[0x37]=0x${h2(prpm)} raw`
         : prpm >= 3 ? `${prpmToRpm(prpm)} RPM  (${prpm} × 40)` : 'Engine not running',
-      col: '#66ffaa',
+      col: DIAG_COL['0x1C'],
       detail: `Previous PRPM: iram[0x3B]=0x${h2(ir[0x3B]??0)}`,
     },
     {
       p2: '0x1D', name: 'LOAD INDEX', src: 'iram[0x49]  LOAD_IX',
       raw: loadIdx, tx: loadIdx,
       decode: `Row ${loadIdx} (0x${h2(loadIdx)}) in fuel map  |  load acc: 0x${h2(ir[0x46]??0)}${h2(ir[0x47]??0)}`,
-      col: '#aaffaa',
+      col: DIAG_COL['0x1D'],
       detail: `Fuel pulse: 0x${h2(ir[0x4B]??0)}:${h2(ir[0x4A]??0)} = ${(((ir[0x4B]||0)<<8|(ir[0x4A]||0))*2/1000).toFixed(3)}ms`,
     },
     {
       p2: '0x1E', name: 'AFM RAW', src: 'iram[0x10]  AFM_RAW',
       raw: afmRaw, tx: afmRaw,
       decode: `0x${h2(afmRaw)} = ${afmRaw}d  |  prev: iram[0x53]=0x${h2(ir[0x53]??0)}  delta: ${afmRaw-(ir[0x53]??afmRaw)>=0?'+':''}${afmRaw-(ir[0x53]??afmRaw)}`,
-      col: '#44cccc',
+      col: DIAG_COL['0x1E'],
       detail: `TPS: iram[0x16]=0x${h2(ir[0x16]??0)}  ${tpsState(ir[0x16])?.lbl ?? '--'}`,
     },
     {
       p2: '0x1F', name: 'COOLANT TEMP', src: 'iram[0x13]  COOLANT',
       raw: coolant, tx: coolant,
       decode: `0x${h2(coolant)} → ${coolC}°C  |  air temp: iram[0x12]=0x${h2(ir[0x12]??0)} → ${ntcLinToC(ir[0x12]??0)}°C`,
-      col: '#44aaff',
+      col: DIAG_COL['0x1F'],
       detail: `Cold start enrich: ${(ir[0x25]??0)>>5&1?'ACTIVE':'off'}  cold timing: ${(ir[0x25]??0)>>4&1?'ACTIVE':'off'}`,
     },
     {
       p2: '0x98', name: 'LAMBDA STATE (computed)', src: 'f(iram[0x1C:0x1B])',
       raw: lmb16, tx: lmbState,
       decode: `${lmbState} — ${LMBD_STATES[lmbState]}`,
-      col: '#cc66ff',
+      col: DIAG_COL['0x98'],
       detail: `Derived: (0x${lmb16.toString(16).padStart(4,'0').toUpperCase()} − 0x60) << 2, bits[7:6]`,
     },
   ];
 
   return (
     <div>
+      <DiagChart snapshots={snapshots} onSeek={onSeek} range={range} setRange={setRange} />
       <div style={{...S.panel, marginBottom:'8px'}}>
         <div style={S.panelTitle}>SEND_DIAG_P2 — DIAGNOSTIC STREAM  (ROM 0x1E00)</div>
         <div style={{color:C.textDim, fontSize:'9px', marginBottom:'8px', lineHeight:'1.5'}}>
@@ -2775,8 +2899,8 @@ function KLRTab({ klrData, currentT, boost }) {
   // four across
   const arrange = c => [
     tile['AVG PULSE'], tile['AVG DELAY'], tile['KNOCK COUNT'], tile['FULL LOAD'],
-    tile['CV PWM'],    c.cvDuty,          tile['IGN FIRES'],   c.throttle,
-    c.boostInput,      c.boostTarget,     c.deviation,         tile['TIMER'],
+    c.cvDuty,          tile['IGN FIRES'], c.throttle,          tile['TIMER'],
+    c.boostInput,      c.boostTarget,     c.deviation,
   ];
 
   return boost ? <BoostControlTab klrData={klrData} {...boost} arrange={arrange} />
@@ -2895,7 +3019,6 @@ function klrChartSeries(klrData, dmeSnaps) {
   // CV_PWM and knock from STATUS lines
   const statusData = klrStatus.map(s => ({
     t: s.t,
-    cv_pwm: s.CV_PWM ?? null,
     knock:  s.knock  ?? null,
     knock_count: s.knock_count ?? null,
   }));
@@ -2916,6 +3039,19 @@ function klrChartSeries(klrData, dmeSnaps) {
     .map(d => {
       return { t: d.t, boost_psi: +gaugePsi(d.raw).toFixed(1) };
     });
+
+  // Control valve (boost) duty cycle, ram[0x41] CV_DUTY_FINAL, from the
+  // same two sources, as % (the KLR OVERVIEW tile's scaling)
+  const cvDutyData = [
+    ...(klrData.snapshots ?? [])
+      .filter(s => s.ram?.[0x41] != null)
+      .map(s => ({ t: s.t, raw: s.ram[0x41] })),
+    ...klrStatus
+      .filter(s => s.ramVals?.[0x41] != null)
+      .map(s => ({ t: s.t, raw: s.ramVals[0x41] })),
+  ]
+    .sort((a, b) => a.t - b.t)
+    .map(d => ({ t: d.t, cv_duty: +(d.raw / 255 * 100).toFixed(1) }));
 
   // KLR knock output (P1.6), from the KNOCK_OUT [PHASE] edges — the same
   // signal as knock_out in the FST. STATUS is too infrequent to catch it,
@@ -2962,7 +3098,7 @@ function klrChartSeries(klrData, dmeSnaps) {
     .map(s => ({ t: s.t, rpm: snapRpm(s) }))
     .filter(d => d.rpm != null);
 
-  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, knockPulseEvents, tpsData, ignOutData, rpmData };
+  return { firstKlrT, lastKlrT, ignoreMs, sparkData, measured, ignPulseData, statusData, boostData, cvDutyData, knockPulseEvents, tpsData, ignOutData, rpmData };
 }
 
 // Entries with t <= T (series are time-sorted); all of them when T is null
@@ -2993,7 +3129,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
     // Every series gets the engine speed at each sample's time
     const w = rows => withRpm(rows, a.rpmData);
     return { ...a, sparkData: w(a.sparkData), measured: w(a.measured), ignPulseData: w(a.ignPulseData),
-             statusData: w(a.statusData), boostData: w(a.boostData), knockPulseEvents: w(a.knockPulseEvents),
+             statusData: w(a.statusData), boostData: w(a.boostData), cvDutyData: w(a.cvDutyData), knockPulseEvents: w(a.knockPulseEvents),
              tpsData: w(a.tpsData), ignOutData: w(a.ignOutData) };
   }, [klrData, dmeSnaps, xRpm]);
   const { firstKlrT, lastKlrT } = all;
@@ -3022,6 +3158,7 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
   const ignPulseData  = upTo(all.ignPulseData, effectiveT);
   const statusData    = upTo(all.statusData, effectiveT);
   const boostData     = upTo(all.boostData, effectiveT);
+  const cvDutyData    = upTo(all.cvDutyData, effectiveT);
   const rpmData       = upTo(all.rpmData, effectiveT);
   const tpsData       = upTo(all.tpsData, effectiveT);
   const ignOutData    = upTo(all.ignOutData, effectiveT);
@@ -3180,15 +3317,15 @@ const KLRChartsTab = memo(function KLRChartsTab({ klrData, dmeSnaps, currentT, e
       exp:   exp.pulse,
     },
     {
-      title: 'CV_PWM (coil voltage PWM)',
-      data:  statusData,
-      key:   'cv_pwm',
-      col:   '#66ffaa',
-      unit:  '',
-      dom:   [-0.1, 1.1],
+      title: 'CV DUTY CYCLE (%)',
+      data:  cvDutyData,
+      key:   'cv_duty',
+      col:   '#cc66ff',
+      unit:  '%',
+      dom:   [0, 100],
       type:  'stepAfter',
-      note:  'Coil voltage pulse-width modulation output state',
-      empty: statusData.every(d => d.cv_pwm == null),
+      note:  'Boost control valve duty cycle, ram[0x41] CV_DUTY_FINAL (0xFF = 100%)',
+      empty: cvDutyData.length === 0,
     },
     {
       title: 'TPS ANGLE (deg)',
@@ -4027,7 +4164,7 @@ function BoostControlTab({ klrData, klrIdx, dmeSnapshots, arrange }) {
                      sub="input − target"
                      col={boostDeltaPsi == null ? C.textDim : Math.abs(boostDeltaPsi) < 1 ? '#66ffaa' : Math.abs(boostDeltaPsi) < 5 ? C.amber : C.red} />,
     cvDuty: <Card key="cvDuty" label="CV DUTY CYCLE" value={fmt1(cvDutyPct)} unit="%"
-                  sub={cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}
+                  sub={`${cvDutyRaw != null ? `ram[0x41]=0x${h2(cvDutyRaw)}` : 'no data'}${latestStatus?.CV_PWM != null ? ` · pin ${latestStatus.CV_PWM ? 'ON' : 'OFF'}` : ''}`}
                   col="#cc66ff" />,
   };
 
