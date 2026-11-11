@@ -18,10 +18,12 @@ import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 // Sample log the deployed build opens when the page is loaded without
 // ?log= or ?live. import.meta.glob (rather than a plain import) keeps the
 // build working if the file is ever removed: the URL is then undefined.
+// The file is stored as .txt because the gh-pages branch's .gitignore has
+// *.log, so `npm run deploy` would silently leave a .log asset out.
 const SAMPLE_LOG_NAME = 'ramp_to_6000_knock.dash.log';
 const SAMPLE_LOG_URL = import.meta.env.PROD
-  ? import.meta.glob('./assets/sample_logs/*.dash.log',
-      { query: '?url', import: 'default', eager: true })[`./assets/sample_logs/${SAMPLE_LOG_NAME}`]
+  ? import.meta.glob('./assets/sample_logs/*.dash.txt',
+      { query: '?url', import: 'default', eager: true })['./assets/sample_logs/ramp_to_6000_knock.dash.txt']
   : undefined;
 
 // ─────────────────────────────────────────────────────────────────
