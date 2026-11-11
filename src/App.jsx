@@ -771,6 +771,10 @@ const liveSeries = (dmeSnaps, klrSnaps, ign) => {
       // is the spark-to-spark interval (60000 / rpm / 2), not a dwell
       dmeIgn:  di >= 0 ? +ign.dme[di].w.toFixed(3) : null,
       klrIgn:  ki >= 0 ? +ign.klr[ki].w.toFixed(3) : null,
+      // Overload / fuel cutoff timer (58h); 21h.0 pre-timer, 21h.1 lockout
+      ovl:     s.iram?.[0x58] ?? null,
+      ovlPre:  ((s.iram?.[0x21] ?? 0) & 1) === 1,
+      ovlLock: ((s.iram?.[0x21] ?? 0) & 2) === 2,
     };
     if (s.t < lastT) livePoints.set(s, pt);
     out.push(pt);
@@ -1722,7 +1726,8 @@ function OverviewTab({ snap, iram, cpuRegs, isLive, fuelMsV, fuelNext, load16, w
                tip:'Idle control valve PWM duty: the share of each period that P1.4 (IDLE_SPD) is high. ' +
                    'From the timer 1 reloads in RAM: 41h:40h (P1.4 high phase) and 45h:44h (low phase), 2 us per count.' };
     })(),
-    (() => {
+    // Live: on the main page's LIVE STATS tiles instead
+    ...(isLive ? [] : [(() => {
       // 21h.0: the ~3 s pre-timer is running; 21h.1: overload confirmed, ~60 s lockout
       const f = iram[0x21] ?? 0, pre = f & 1, lock = (f >> 1) & 1;
       return { lbl:'OVERLOAD TIMER (58h)', val:h2(iram[0x58]),
@@ -1730,7 +1735,7 @@ function OverviewTab({ snap, iram, cpuRegs, isLive, fuelMsV, fuelNext, load16, w
                col: lock ? C.red : pre ? C.amber : '#ff5577', mmk:'ovl', addr:0x58,
                tip:'Overload / fuel cutoff timer, counted down via the 59h prescaler. ' +
                    '21h.0 = pre-timer running, 21h.1 = overload confirmed (lockout, fuel cut).' };
-    })(),
+    })()]),
     // CPU timers come from the live sim's register dumps; a log has none
     ...(isLive ? [timerTile(0, cpuRegs), timerTile(1, cpuRegs)] : []),
   ];
