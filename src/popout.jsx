@@ -23,8 +23,8 @@ class WindowErrors extends Component {
 }
 // Render children into an open popup (an entry of usePopouts().wins):
 // the main page's font and colours, a title bar, the children in a
-// scrolling area, and an optional footer (a scrubber) pinned below it.
-export function Popout({ entry, title, sub, footer, children }) {
+// scrolling area, with an optional header (a scrubber) pinned above it.
+export function Popout({ entry, title, sub, header, children }) {
   if (!entry) return null;
   return createPortal(
     <WinContext.Provider value={entry.win}>
@@ -37,8 +37,8 @@ export function Popout({ entry, title, sub, footer, children }) {
           {sub && <span style={{color:'#66ddaa',fontSize:'10px'}}>{sub}</span>}
         </div>
         <WindowErrors>
+          {header && <div style={{flexShrink:0}}>{header}</div>}
           <div style={{padding:'10px',flex:1,overflow:'auto'}}>{children}</div>
-          {footer}
         </WindowErrors>
       </div>
     </WinContext.Provider>,

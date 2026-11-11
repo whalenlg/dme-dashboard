@@ -844,7 +844,7 @@ const S = {
            border:`1px solid ${v==='p'?C.textBright:C.border}`,
            color:v==='p'?C.textBright:C.textDim,fontFamily:'inherit',
            fontSize:'11px',letterSpacing:'0.1em',cursor:'pointer'}),
-  scrubber:{background:C.panelBg,borderTop:`1px solid ${C.border}`,
+  scrubber:{background:C.panelBg,borderTop:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`,
             padding:'6px 14px',display:'flex',alignItems:'center',gap:'10px',flexShrink:0},
   memCell:(hasVal,hot)=>({
     background: hot?'#0f2a0f':hasVal?C.panelBg2:'#060d06',
@@ -1523,6 +1523,10 @@ export default function DMEDashboard() {
         </div>
       </div>
 
+      {/* ── TIME SCRUBBER + PLAYBACK (log): just under the tabs, and it
+             stays at the top of the window as the page scrolls ── */}
+      {!liveUrl && <div style={{position:'sticky',top:0,zIndex:20}}>{scrubber(tab)}</div>}
+
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
         {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
@@ -1531,13 +1535,11 @@ export default function DMEDashboard() {
         {!liveUrl && renderTab(tab)}
       </div>
 
-      {/* ── TIME SCRUBBER + PLAYBACK (log) ─────────────────── */}
-      {!liveUrl && scrubber(tab)}
 
       {/* ── LIVE: each open tab in its own window ───────────── */}
       {liveTabs.map(t => (
         <Popout key={t} entry={popouts.wins[t]} title={TAB_LABEL[t]}
-                sub={`live simulation${follow ? '' : ' · FOLLOW off'}`} footer={scrubber(t)}>
+                sub={`live simulation${follow ? '' : ' · FOLLOW off'}`} header={scrubber(t)}>
           {renderTab(t)}
           {t === 'iram' && tooltip && <IRAMTooltip tip={tooltip} />}
         </Popout>
