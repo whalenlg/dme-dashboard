@@ -1226,6 +1226,9 @@ export default function DMEDashboard() {
           return ((lastLmbdHi << 8) | lastLmbdLo) - 0x8000;
         })(),
         isv:       ir[0x7F] ?? null,
+        // Overload / fuel-cut timer (58h): loaded from the ROM table (0C19h/0C29h),
+        // counted down via the 59h prescaler; 21h.0 pre-timer, 21h.1 lockout
+        ovlTimer:  ir[0x58] ?? null,
         // ICV duty: on-time share of the timer 1 PWM (see icvPwm)
         icv:       (() => { const p = icvPwm(ir); return p ? +p.pct.toFixed(1) : null; })(),
         dwell:   rpm != null && rpm >= 40 && ir[0x2F] != null
@@ -2314,6 +2317,7 @@ const DME_CHARTS = [
   {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
   {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
+  {title:'OVERLOAD / FUEL CUTOFF TIMER (58h)', k:'ovlTimer', col:'#ff5577', unit:'hex', dom:[0,255], cn:true},
 ];
 const DME_RPM_CHARTS = DME_CHARTS.filter(c => c.k !== 'rpm');
 
