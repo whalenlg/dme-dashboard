@@ -1318,6 +1318,8 @@ export default function DMEDashboard() {
         logLoaded={data.snapshots.length>0} />}
     {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
     <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
+      {t==='diag'     && <DiagTab iram={iram} snap={snap} snapshots={feed.data.snapshots}
+          onSeek={seekTo} range={zoom} setRange={setZoom} />}
       {t==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
           onSeek={seekTo} range={zoom} setRange={setZoom} />}
       {t==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
@@ -1341,7 +1343,6 @@ export default function DMEDashboard() {
           logRom={liveUrl ? null : (feed.data.rom?.klr ?? false)} />}
     </CursorContext.Provider>
     {t==='phase'    && <PhaseTab phases={data.phases} currentT={snap.t} />}
-    {t==='diag'     && <DiagTab iram={iram} snap={snap} />}
     {t==='klr'        && <KLRTab klrData={klrData} currentT={klrData.phases?.[klrIdx]?.t}
                                    boost={{ klrIdx, dmeSnapshots: data.snapshots }} />}
     {t==='klr_ports'  && <KLRPortsTab klrData={klrData} klrIdx={klrIdx}
@@ -2583,7 +2584,98 @@ function PhaseTab({ phases, currentT }) {
 //   P2=0x1F  MOVX @R0, iram[0x13]              → COOLANT
 //   P2=0x98  MOVX @R0, lambda_state_2bit        → computed
 //
-function DiagTab({ iram, snap }) {
+// The bytes send_diag_p2 transmits for one iram image (see the table above)
+function diagTx(ir) {
+  const lmb16 = ((ir[0x1C] ?? 0) << 8) | (ir[0x1B] ?? 0);
+  return {
+    lmbLo: ir[0x1B] ?? 0,
+    ignAdv: ((( ir[0x31] ?? 0) + 0x0A) << 1) & 0xFF,
+    prpm: ir[0x37] ?? 0,
+    loadIdx: ir[0x49] ?? 0,
+    afmRaw: ir[0x10] ?? 0,
+    coolant: ir[0x13] ?? 0,
+    lmbState: (((lmb16 - 0x60) & 0xFFFF) >> 6) & 0x03,
+  };
+}
+// One distinct colour per channel, shared by the table and the chart
+const DIAG_SERIES = [
+  { k:'lmbLo',    p2:'0x19', name:'LAMBDA INTEGRATOR', col:'#cc66ff' },
+  { k:'ignAdv',   p2:'0x1B', name:'IGNITION ADVANCE',  col:'#ff8844' },
+  { k:'prpm',     p2:'0x1C', name:'ENGINE SPEED',      col:'#66ff66' },
+  { k:'loadIdx',  p2:'0x1D', name:'LOAD INDEX',        col:'#ffee44' },
+  { k:'afmRaw',   p2:'0x1E', name:'AFM RAW',           col:'#44dddd' },
+  { k:'coolant',  p2:'0x1F', name:'COOLANT',           col:'#4488ff' },
+  { k:'lmbState', p2:'0x98', name:'LAMBDA STATE',      col:'#ff4488', right:true },
+];
+const DIAG_COL = Object.fromEntries(DIAG_SERIES.map(d => [d.p2, d.col]));
+
+// The transmitted diag bytes over the log, one row per snapshot time.
+// Snapshots at the same time (DS + STATUS) are overlaid, and each one
+// starts from the previous image, so a partial dump keeps earlier values.
+const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }) {
+  const rows = useMemo(() => {
+    const out = [];
+    let ir = {};
+    for (const s of snapshots ?? []) {
+      if (!s.iram) continue;
+      ir = { ...ir, ...s.iram };
+      const row = { t: s.t, ...diagTx(ir) };
+      if (out.length && out[out.length - 1].t === s.t) out[out.length - 1] = row;
+      else out.push(row);
+    }
+    return out;
+  }, [snapshots]);
+  const lo = rows[0]?.t ?? 0, hi = rows[rows.length - 1]?.t ?? 0;
+  const full = useMemo(() => [lo, hi], [lo, hi]);
+  const zoom = useZoom(range, setRange, full, onSeek);
+  const [hidden, setHidden] = useState(() => new Set());
+  // Few enough points that each one gets a dot
+  const shown = useMemo(() => thin(inRange(rows, range, 't'), DIAG_SERIES.map(d => d.k), 400), [rows, range]);
+  if (!rows.length) return (
+    <div style={{...S.panel, color:C.textDim, textAlign:'center', padding:'24px', fontSize:'11px', marginBottom:'8px'}}>
+      No snapshot data loaded — load a log (or go live) to chart the diagnostic stream over time
+    </div>
+  );
+  const ax = {fill:C.textDim,fontSize:10,fontFamily:"'Share Tech Mono',monospace"};
+  const toggle = k => setHidden(h => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  return (
+    <div style={{...S.panel, marginBottom:'8px'}}>
+      <div style={S.panelTitle}>DIAG STREAM OVER TIME — TX BYTES  (lambda state on the right axis)</div>
+      <div style={{display:'flex', flexWrap:'wrap', gap:'6px 14px', justifyContent:'center', marginBottom:'6px', fontSize:'10px'}}>
+        {DIAG_SERIES.map(d => (
+          <button key={d.k} onClick={() => toggle(d.k)} title="show / hide"
+            style={{background:'none', border:'none', cursor:'pointer', fontFamily:'inherit', fontSize:'10px',
+                    color: hidden.has(d.k) ? C.textDim : d.col, opacity: hidden.has(d.k) ? 0.5 : 1,
+                    textDecoration: hidden.has(d.k) ? 'line-through' : 'none'}}>
+            <span style={{display:'inline-block', width:'8px', height:'8px', borderRadius:'50%', background:d.col, marginRight:'5px'}}/>
+            {d.p2} {d.name}
+          </button>
+        ))}
+      </div>
+      <ZoomBar zoom={zoom} range={range} full={full} btn={zoomBtn} color={C.textBright} dim={C.textDim} unit="ms" />
+      <ZoomBox zoom={zoom}><ResponsiveContainer width="100%" height={300}>
+        <ComposedChart data={shown} margin={{top:6,right:10,bottom:0,left:0}} {...zoomHandlers(zoom)}>
+          <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
+          <XAxis dataKey="t" type="number" domain={range ?? full} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
+          <YAxis yAxisId="left" tick={ax} domain={[0,255]} ticks={[0,64,128,192,255]} stroke={C.textDim} />
+          <YAxis yAxisId="right" orientation="right" tick={ax} domain={[0,3]} ticks={[0,1,2,3]} width={24} stroke={DIAG_COL['0x98']} />
+          <Tooltip contentStyle={{background:'#060e06',border:`1px solid ${C.border}`,fontSize:'11px',fontFamily:'inherit'}}
+            labelFormatter={v=>`t=${v} ms`}
+            formatter={(v,n,p)=>[p.dataKey==='lmbState' ? `${v}` : `0x${h2(v)} (${v}d)`, n]} />
+          <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
+          <DragArea zoom={zoom} fill={C.textBright} />
+          {DIAG_SERIES.filter(d => !hidden.has(d.k)).map(d => (
+            <Line key={d.k} yAxisId={d.right ? 'right' : 'left'} type="linear" dataKey={d.k} name={`${d.p2} ${d.name}`}
+                  stroke={d.col} strokeWidth={1.2} dot={{ r:2, fill:d.col, stroke:'none' }} activeDot={{ r:4 }}
+                  isAnimationActive={false} />
+          ))}
+        </ComposedChart>
+      </ResponsiveContainer></ZoomBox>
+    </div>
+  );
+});
+
+function DiagTab({ iram, snap, snapshots, onSeek, range, setRange }) {
   const ir = iram || {};
 
   // Use the authoritative RPM from the DS header (refRpm) rather than
@@ -2626,14 +2718,14 @@ function DiagTab({ iram, snap }) {
       p2: '0x19', name: 'LAMBDA INTEGRATOR', src: 'iram[0x1B]  LMB_LO',
       raw: lmbLo, tx: lmbLo,
       decode: `${lmbLo === 0x80 ? 'Stoich (centred)' : lmbLo > 0x80 ? `Rich offset +${(lmbLo-0x80)}` : `Lean offset ${lmbLo-0x80}`}  (0x80=λ1.0)`,
-      col: '#cc66ff',
+      col: DIAG_COL['0x19'],
       detail: `16-bit integrator: 0x${h2(lmbHi)}:${h2(lmbLo)} = ${lmb16}  |  correction: ${lmbPct}%`,
     },
     {
       p2: '0x1B', name: 'IGNITION ADVANCE', src: 'iram[0x31]  IGN_ADV',
       raw: ignAdv, tx: ignAdvTx,
       decode: `${ignAdv} half-teeth = ${(ignAdv * 360 / 264).toFixed(1)}° BTDC  →  tx=(${ignAdv}+10)×2=${ignAdvTx}  |  KLR may retard further`,
-      col: '#ff8844',
+      col: DIAG_COL['0x1B'],
       detail: `Ignition duration: iram[0x30]=0x${h2(ir[0x30]??0)} (${ir[0x30]??0} half-teeth)`,
     },
     {
@@ -2642,41 +2734,42 @@ function DiagTab({ iram, snap }) {
       decode: refRpm != null
         ? `${refRpm} RPM  (from DS header)  |  iram[0x37]=0x${h2(prpm)} raw`
         : prpm >= 3 ? `${prpmToRpm(prpm)} RPM  (${prpm} × 40)` : 'Engine not running',
-      col: '#66ffaa',
+      col: DIAG_COL['0x1C'],
       detail: `Previous PRPM: iram[0x3B]=0x${h2(ir[0x3B]??0)}`,
     },
     {
       p2: '0x1D', name: 'LOAD INDEX', src: 'iram[0x49]  LOAD_IX',
       raw: loadIdx, tx: loadIdx,
       decode: `Row ${loadIdx} (0x${h2(loadIdx)}) in fuel map  |  load acc: 0x${h2(ir[0x46]??0)}${h2(ir[0x47]??0)}`,
-      col: '#aaffaa',
+      col: DIAG_COL['0x1D'],
       detail: `Fuel pulse: 0x${h2(ir[0x4B]??0)}:${h2(ir[0x4A]??0)} = ${(((ir[0x4B]||0)<<8|(ir[0x4A]||0))*2/1000).toFixed(3)}ms`,
     },
     {
       p2: '0x1E', name: 'AFM RAW', src: 'iram[0x10]  AFM_RAW',
       raw: afmRaw, tx: afmRaw,
       decode: `0x${h2(afmRaw)} = ${afmRaw}d  |  prev: iram[0x53]=0x${h2(ir[0x53]??0)}  delta: ${afmRaw-(ir[0x53]??afmRaw)>=0?'+':''}${afmRaw-(ir[0x53]??afmRaw)}`,
-      col: '#44cccc',
+      col: DIAG_COL['0x1E'],
       detail: `TPS: iram[0x16]=0x${h2(ir[0x16]??0)}  ${tpsState(ir[0x16])?.lbl ?? '--'}`,
     },
     {
       p2: '0x1F', name: 'COOLANT TEMP', src: 'iram[0x13]  COOLANT',
       raw: coolant, tx: coolant,
       decode: `0x${h2(coolant)} → ${coolC}°C  |  air temp: iram[0x12]=0x${h2(ir[0x12]??0)} → ${ntcLinToC(ir[0x12]??0)}°C`,
-      col: '#44aaff',
+      col: DIAG_COL['0x1F'],
       detail: `Cold start enrich: ${(ir[0x25]??0)>>5&1?'ACTIVE':'off'}  cold timing: ${(ir[0x25]??0)>>4&1?'ACTIVE':'off'}`,
     },
     {
       p2: '0x98', name: 'LAMBDA STATE (computed)', src: 'f(iram[0x1C:0x1B])',
       raw: lmb16, tx: lmbState,
       decode: `${lmbState} — ${LMBD_STATES[lmbState]}`,
-      col: '#cc66ff',
+      col: DIAG_COL['0x98'],
       detail: `Derived: (0x${lmb16.toString(16).padStart(4,'0').toUpperCase()} − 0x60) << 2, bits[7:6]`,
     },
   ];
 
   return (
     <div>
+      <DiagChart snapshots={snapshots} onSeek={onSeek} range={range} setRange={setRange} />
       <div style={{...S.panel, marginBottom:'8px'}}>
         <div style={S.panelTitle}>SEND_DIAG_P2 — DIAGNOSTIC STREAM  (ROM 0x1E00)</div>
         <div style={{color:C.textDim, fontSize:'9px', marginBottom:'8px', lineHeight:'1.5'}}>
