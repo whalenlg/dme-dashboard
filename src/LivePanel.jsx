@@ -219,6 +219,8 @@ const METRICS = [
   { k:'boost',  label:'BOOST',        col:'#ffaa00', unit:'psi', fmt: fmtBoost },
   { k:'dmeIgn', label:'DME SPARK INTERVAL', col:'#ff8888', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
   { k:'klrIgn', label:'KLR IGN PULSE', col:'#ff66cc', unit:'ms', step:true, fmt: v => v == null ? '--' : `${v.toFixed(2)} ms` },
+  { k:'ovl',    label:'OVERLOAD TIMER (58h)', col:'#ff5577', hex:true, step:true, warn: p => p?.ovlLock,
+    fmt: (v, p) => v == null ? '--' : `${hx(v)}${p?.ovlLock ? ' LOCKOUT' : p?.ovlPre ? ' pre-timer' : ''}` },
 ];
 
 // A metric as a tile (as on the log's DME OVERVIEW): the value, its unit
@@ -237,8 +239,9 @@ const TILE = {
   boost: v => { const [val, unit] = boostParts(v); return { val, unit: unit || 'psi / inHg' }; },
   dmeIgn: v => ({ val: ms(v, 2), unit: 'ms' }),
   klrIgn: v => ({ val: ms(v, 2), unit: 'ms' }),
+  ovl:   (v, p) => ({ val: hx(v), unit: p?.ovlLock ? 'LOCKOUT · fuel cut' : p?.ovlPre ? 'pre-timer running' : 'idle' }),
 };
-const MM_FMT = { rpm: v => v, afm: hx, tps: hx, load: hx, boost: v => boostParts(v)[0], fuel: v => v.toFixed(3) };
+const MM_FMT = { rpm: v => v, afm: hx, tps: hx, load: hx, boost: v => boostParts(v)[0], fuel: v => v.toFixed(3), ovl: hx };
 
 function StatTile({ m, last, mm }) {
   const { val, unit } = TILE[m.k](last?.[m.k], last);
