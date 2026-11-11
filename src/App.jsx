@@ -1642,13 +1642,14 @@ function OverviewTab({ snap, iram, isLive, fuelMsV, fuelNext, load16, wu16, lmbd
     ? (battRaw < 0x98 ? C.red : battRaw < 0xB0 ? C.amber : C.textBright)
     : C.textDim;
 
-  // Estimated lambda / AFR from closed-loop integrator
-  // iram[0x1C:0x1B] = 16-bit lambda integrator, centred at 0x0080 = stoich
-  // trim% = (integrator − 0x80) / 0x80 × 100
-  // estimated AFR ≈ 14.7 × (1 + trim/100)
+  // Estimated lambda / AFR from the closed-loop lambda integrator
+  // (Lmbd Int 1B:1C, 1Bh the high byte), centred at 0x8000 = stoich, the
+  // same value and sign as the LAMBDA CORR tile: positive = lean-side trim
+  // trim = (integrator − 0x8000) / 0x8000
+  // estimated AFR ≈ 14.7 × (1 + trim)
   // NOTE: narrowband sensor — this is the firmware's CL correction, not a real wideband reading
-  const lmbLo  = iram[0x1B] ?? null;
-  const lmbHi  = iram[0x1C] ?? null;
+  const lmbHi  = iram[0x1B] ?? null;
+  const lmbLo  = iram[0x1C] ?? null;
   const lmb16  = (lmbLo != null && lmbHi != null) ? (lmbHi << 8) | lmbLo : null;
   const o2Lean = ((iram[0x24] ?? 0) >> 3) & 1;
   const engSync   = ((iram[0x21] ?? 0) & 1) || (rpm != null && rpm > 100);
@@ -1659,11 +1660,11 @@ function OverviewTab({ snap, iram, isLive, fuelMsV, fuelNext, load16, wu16, lmbd
   const clActive  = clBit || (clEverActive && engSync && rpm != null && rpm > 100);
   let estLambda = null, estAFR = null, afrCol = C.textDim, afrLabel = '--';
   if (lmb16 != null && clActive) {
-    const trim = (lmb16 - 0x80) / 0x80;
+    const trim = (lmb16 - 0x8000) / 0x8000;
     estLambda = (1 + trim).toFixed(3);
     estAFR    = (14.7 * (1 + trim)).toFixed(2);
-    afrCol    = lmb16 > 0x90 ? '#44aaff'   // lean — blue
-              : lmb16 < 0x70 ? '#ff6644'   // rich — orange-red
+    afrCol    = lmb16 > 0x9000 ? '#44aaff'   // lean (trim over +12.5 %) — blue
+              : lmb16 < 0x7000 ? '#ff6644'   // rich (trim under −12.5 %) — orange-red
               : '#66ffaa';                  // stoich — green
     afrLabel  = `λ${estLambda}`;
   } else if (fuelCut) {
