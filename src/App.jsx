@@ -2309,7 +2309,7 @@ const DME_CHARTS = [
   {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
   {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
-  {title:'OVERLOAD / FUEL CUTOFF TIMER (58h)', k:'ovlTimer', col:'#ff5577', unit:'hex', dom:[0,255], cn:true},
+  {title:'OVERLOAD / FUEL CUTOFF TIMER (58h)', k:'ovlTimer', col:'#ff5577', unit:'hex', dom:[0,0x30], cn:true},
 ];
 const DME_RPM_CHARTS = DME_CHARTS.filter(c => c.k !== 'rpm');
 
