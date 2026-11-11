@@ -1,6 +1,7 @@
 import { Component } from "react";
 import { createPortal } from "react-dom";
 import { WinContext, POPOUT_BG } from "./popouts.js";
+import { Footer } from "./footer.jsx";
 
 // (usePopouts and the window context are in popouts.js)
 
@@ -38,7 +39,10 @@ export function Popout({ entry, title, sub, header, children }) {
         </div>
         <WindowErrors>
           {header && <div style={{flexShrink:0}}>{header}</div>}
-          <div style={{padding:'10px',flex:1,overflow:'auto'}}>{children}</div>
+          <div style={{flex:1,overflow:'auto',display:'flex',flexDirection:'column'}}>
+            <div style={{padding:'10px',flex:1}}>{children}</div>
+            <Footer />
+          </div>
         </WindowErrors>
       </div>
     </WinContext.Provider>,
