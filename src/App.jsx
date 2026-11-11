@@ -890,6 +890,8 @@ const TAB_TITLE = {
   klr_maps:'KLR map and table lookup results over time', klr_rpm_maps:'KLR maps and tables against the engine speed',
 };
 const NO_ROWS = [];
+// The user manual, kept with the simulator (944turbo_dme_klr docs/USER_MANUAL.md)
+const MANUAL_URL = 'https://github.com/whalenlg/944turbo_dme_klr/blob/main/docs/USER_MANUAL.md';
 
 export default function DMEDashboard() {
   const [logText, setLogText]   = useState('');
@@ -1488,6 +1490,8 @@ export default function DMEDashboard() {
             {liveUrl ? '● LIVE' : 'LIVE ○'}
           </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
+          <a style={{...S.btn('s'),textDecoration:'none',display:'inline-block',lineHeight:'normal'}} href={MANUAL_URL} target="_blank" rel="noopener noreferrer"
+            title="Open the user manual (log review, live mode, code debugger, snapshots) in a new tab">MANUAL ↗</a>
         </div>
       </div>
 
