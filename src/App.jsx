@@ -15,6 +15,15 @@ import { thin, extent, inRange } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
 
+// Sample log the deployed build opens when the page is loaded without
+// ?log= or ?live. import.meta.glob (rather than a plain import) keeps the
+// build working if the file is ever removed: the URL is then undefined.
+const SAMPLE_LOG_NAME = 'ramp_to_6000_knock.dash.log';
+const SAMPLE_LOG_URL = import.meta.env.PROD
+  ? import.meta.glob('./assets/sample_logs/*.dash.log',
+      { query: '?url', import: 'default', eager: true })[`./assets/sample_logs/${SAMPLE_LOG_NAME}`]
+  : undefined;
+
 // ─────────────────────────────────────────────────────────────────
 //  GROUP COLOUR MAP
 // ─────────────────────────────────────────────────────────────────
@@ -1019,25 +1028,19 @@ export default function DMEDashboard() {
     document.head.appendChild(lnk);
   }, []);
 
-  // Auto-load log from ?log=<url> query param.
-  // The shell script starts a temporary CORS-enabled HTTP server
-  // in the log directory and passes the full URL here.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const logParam = params.get('log');
-    if (!logParam) return;
-    fetch(logParam)
+  // Fetch a .dash.log and open it at the end of the run
+  const loadLogUrl = useCallback((url, fname, label = fname) => {
+    fetch(url)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
       })
       .then(text => {
-        const fname = logParam.split('/').pop();
         // Derive test name from filename: cl_tippy_in.dash.log → cl_tippy_in
         const testName = fname.replace(/\.dash\.log$/, '').replace(/\.log$/, '');
         document.title = `DME 951 — ${testName}`;
         leaveLive();
-        setLogFileName(fname);
+        setLogFileName(label);
         setLogText(text);
         const dme = parseLog(text);
         const klr = parseKLRLog(text);
@@ -1053,8 +1056,21 @@ export default function DMEDashboard() {
         if (dme.snapshots.length || dme.phases.length ||
             klr.snapshots.length || klr.phases.length) setShowLog(false);
       })
-      .catch(err => console.warn('[DME951] ?log= fetch failed:', err));
+      .catch(err => console.warn(`[DME951] log fetch failed (${url}):`, err));
   }, [leaveLive]);
+
+  // Auto-load log from ?log=<url> query param.
+  // The shell script starts a temporary CORS-enabled HTTP server
+  // in the log directory and passes the full URL here.
+  // With neither ?log= nor ?live, the deployed build opens the bundled
+  // sample log so visitors have something to look at straight away.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const logParam = params.get('log');
+    if (logParam) loadLogUrl(logParam, logParam.split('/').pop());
+    else if (SAMPLE_LOG_URL && !params.has('live'))
+      loadLogUrl(SAMPLE_LOG_URL, SAMPLE_LOG_NAME, `${SAMPLE_LOG_NAME} (sample)`);
+  }, [loadLogUrl]);
 
   const handleLoadAll = useCallback(() => {
     leaveLive();
