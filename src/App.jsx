@@ -1226,6 +1226,8 @@ export default function DMEDashboard() {
           return ((lastLmbdHi << 8) | lastLmbdLo) - 0x8000;
         })(),
         isv:       ir[0x7F] ?? null,
+        // ICV duty: on-time share of the timer 1 PWM (see icvPwm)
+        icv:       (() => { const p = icvPwm(ir); return p ? +p.pct.toFixed(1) : null; })(),
         dwell:   rpm != null && rpm >= 40 && ir[0x2F] != null
                    ? +(ir[0x2F] * 60000 / (rpm * HT_PER_REV)).toFixed(2)
                    : null,
@@ -2301,11 +2303,13 @@ const DME_CHARTS = [
   {title:'TPS RAW (16h)',          k:'tps',     col:'#ffcc44', unit:'hex',     dom:[0,255],    cn:true},
   {title:'INJECTION PULSE WIDTH',  k:'fuel',    col:'#66ff66', unit:'ms',      dom:[0,'auto']},
   {title:'LAMBDA ADJ — CORRECTION (1B:1C)', k:'lmbdCorr', col:'#cc66ff', unit:'d', dom:['auto','auto'], cn:true},
-  {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
+  // Advance and its target side by side (one row of the two-column grid)
   {title:'IGNITION ADVANCE (31h+57h)', k:'timingAdv',  col:'#ff4444', unit:'°BTDC',    dom:[0,'auto'],      cn:true},
-  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
-  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'ADVANCE TARGET 32h − APPLIED (°)', k:'timingRetard', col:'#ff8800', unit:'°retard', dom:['auto','auto'], cn:true},
+  {title:'ISV STEP POSITION',      k:'isv',     col:'#ff44aa', unit:'hex',     dom:[0,255],    cn:true},
+  {title:'ICV DUTY CYCLE (41:40 / 45:44)', k:'icv', col:'#ff77cc', unit:'% on',  dom:[0,100],    cn:true},
+  {title:'DWELL TIME (2F)',         k:'dwell',      col:'#ff8844', unit:'ms',  dom:[0,'auto'],    cn:true},
+  {title:'COOLANT TEMP (13)',       k:'coolant',    col:C.blue,    unit:'°C',  dom:[-20,120],     cn:true},
   {title:'FQS ADC RAW (17h)',       k:'fqsAdv',       col:'#aaffaa', unit:'hex',      dom:[0,255],         cn:true},
 ];
 const DME_RPM_CHARTS = DME_CHARTS.filter(c => c.k !== 'rpm');
