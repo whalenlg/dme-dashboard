@@ -4,6 +4,7 @@
 //  dme_klr/live/rom_compare.py (944turbo_dme_klr):
 //    GET <bridge>/compare/<cpu>/images         the images it knows (repo + uploads)
 //    GET <bridge>/compare/<cpu>?a=<name>&b=<name>[&all=1]
+//    GET <bridge>/compare/<cpu>/variants?ref=<name>   every image vs the reference
 //  The calibration maps and tables are decoded from each image the way
 //  the firmware reads them and shown side by side, differing cells
 //  marked; every other run of differing bytes (code, constants, index
@@ -130,6 +131,72 @@ function CodeRun({ r }) {
   );
 }
 
+// Every image against the reference (A), map by map: one column per
+// image, "=" where it matches; a click opens that pair
+function VariantsTable({ v, all, openPair }) {
+  const maps = all ? v.maps : v.maps.filter(m => m.differs);
+  const ref = v.images[0].name;
+  const th = { padding:'2px 6px', color:C.textDim, fontWeight:'normal', fontSize:'9px', textAlign:'center', verticalAlign:'bottom' };
+  const cellOf = c => {
+    if (!c) return { t: '—', col: '#557755', tip: 'not in this image' };
+    if (c.cells == null) return { t: 'new', col: B_COL, tip: `@${hx(c.addr, 4)}h, not in the reference` };
+    const parts = [c.cells ? `${c.cells}` : null, c.axis ? 'ax' : null, c.moved ? 'mv' : null].filter(Boolean);
+    return parts.length
+      ? { t: parts.join(' '), col: C.amber, tip: `@${hx(c.addr, 4)}h: ${c.cells} value${c.cells !== 1 ? 's' : ''} differ${c.axis ? ', axis differs' : ''}${c.moved ? ', moved' : ''}` }
+      : { t: '=', col: '#557755', tip: `@${hx(c.addr, 4)}h, same as the reference` };
+  };
+  return (
+    <div style={{overflowX:'auto',marginTop:'8px'}}>
+      <div style={{color:C.textDim,marginBottom:'4px'}}>
+        Against <span style={{color:A_COL}}>{ref}</span>: values that differ, <b>ax</b> axis differs, <b>mv</b> moved, — not in that image. Click a cell for the side-by-side compare.
+      </div>
+      <table style={{borderCollapse:'collapse',fontSize:'10px'}}>
+        <thead>
+          <tr>
+            <th style={{...th,textAlign:'left'}}>map / table</th>
+            {v.images.map((im, i) => (
+              <th key={im.name} style={{...th,color: i === 0 ? A_COL : C.textBright,maxWidth:'120px',wordBreak:'break-all'}} title={`sha ${im.sha}`}>
+                {im.name}{i === 0 ? ' (ref)' : ''}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={{borderTop:`1px solid ${C.border}`}}>
+            <td style={{padding:'2px 6px',color:C.textBright}}>all bytes</td>
+            {v.code.map((c, i) => (
+              <td key={i} style={{padding:'2px 6px',textAlign:'center',color: c.diff_bytes ? C.amber : '#557755',cursor: i ? 'pointer' : 'default'}}
+                  title={i ? `${c.diff_bytes} bytes differ; ${c.bytes} of them outside the maps, in ${c.runs} run${c.runs !== 1 ? 's' : ''}` : ''}
+                  onClick={() => i && openPair(v.images[i].name)}>
+                {i === 0 ? '' : c.diff_bytes ? `${c.diff_bytes}` : '='}
+              </td>
+            ))}
+          </tr>
+          <tr>
+            <td style={{padding:'2px 6px',color:C.textBright}}>code / other bytes</td>
+            {v.code.map((c, i) => (
+              <td key={i} style={{padding:'2px 6px',textAlign:'center',color: c.bytes ? C.amber : '#557755',cursor: i ? 'pointer' : 'default'}}
+                  onClick={() => i && openPair(v.images[i].name)}>
+                {i === 0 ? '' : c.bytes ? `${c.bytes} in ${c.runs}` : '='}
+              </td>
+            ))}
+          </tr>
+          {maps.map(m => (
+            <tr key={m.key} style={{borderTop:`1px solid ${C.border}`}}>
+              <td style={{padding:'2px 6px',color:C.textDim,whiteSpace:'nowrap'}}>{m.name}{m.id && m.id !== m.name ? ` (${m.id})` : ''} <span style={{color:'#557755'}}>{m.kind}</span></td>
+              {m.cells.map((c, i) => {
+                const x = i === 0 ? { t: c ? `${hx(c.addr, 4)}h` : '—', col: A_COL, tip: '' } : cellOf(c);
+                return <td key={i} title={x.tip} onClick={() => i && openPair(v.images[i].name)}
+                           style={{padding:'2px 6px',textAlign:'center',color:x.col,cursor: i ? 'pointer' : 'default',whiteSpace:'nowrap'}}>{x.t}</td>;
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function RomCompare({ url, roms, onClose }) {
   const [cpu, setCpu] = useState('dme');
   const [images, setImages] = useState({ dme: null, klr: null });
@@ -138,6 +205,8 @@ export default function RomCompare({ url, roms, onClose }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [all, setAll] = useState(false);
+  const [mode, setMode] = useState('pair');   // pair | variants
+  const [vres, setVres] = useState(null);
 
   // The images the bridge can compare; A starts as the loaded one
   useEffect(() => {
@@ -163,6 +232,19 @@ export default function RomCompare({ url, roms, onClose }) {
       .then(async r => r.ok ? r.json() : Promise.reject(new Error(await r.text())))
       .then(setRes).catch(e => setErr(e.message)).finally(() => setBusy(false));
   };
+  const runVariants = () => {
+    setBusy(true); setErr(null); setVres(null);
+    fetch(`${url}/compare/${cpu}/variants?ref=${encodeURIComponent(a)}`)
+      .then(async r => r.ok ? r.json() : Promise.reject(new Error(await r.text())))
+      .then(setVres).catch(e => setErr(e.message)).finally(() => setBusy(false));
+  };
+  const openPair = name => {
+    setPick(p => ({ ...p, [cpu]: { ...p[cpu], b: name } }));
+    setMode('pair'); setBusy(true); setErr(null); setRes(null);
+    fetch(`${url}/compare/${cpu}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(name)}${all ? '&all=1' : ''}`)
+      .then(async r => r.ok ? r.json() : Promise.reject(new Error(await r.text())))
+      .then(setRes).catch(e => setErr(e.message)).finally(() => setBusy(false));
+  };
   const setSide = (k, v) => setPick(p => ({ ...p, [cpu]: { ...p[cpu], [k]: v } }));
   const list = images[cpu] ?? [];
   const opt = i => <option key={`${i.src}:${i.name}`} value={i.name}>{i.name}{i.src === 'upload' ? ' (uploaded)' : ''}</option>;
@@ -172,20 +254,25 @@ export default function RomCompare({ url, roms, onClose }) {
     <div style={{...panel,fontSize:'10px',textAlign:'left',lineHeight:'1.5'}}>
       <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
         <span style={{...title,marginBottom:0}}>COMPARE ROM IMAGES</span>
-        {['dme', 'klr'].map(c => <button key={c} style={btn(cpu === c)} onClick={() => { setCpu(c); setRes(null); setErr(null); }}>{c.toUpperCase()}</button>)}
-        <span style={{color:A_COL}}>A</span>
+        {['dme', 'klr'].map(c => <button key={c} style={btn(cpu === c)} onClick={() => { setCpu(c); setRes(null); setVres(null); setErr(null); }}>{c.toUpperCase()}</button>)}
+        <span style={{color:'#335533'}}>|</span>
+        <button style={btn(mode === 'pair', C.blue)} onClick={() => setMode('pair')} title="Two images side by side">TWO IMAGES</button>
+        <button style={btn(mode === 'variants', C.blue)} onClick={() => setMode('variants')} title="Every image against one reference, map by map">ALL VARIANTS</button>
+        <span style={{color:A_COL}}>{mode === 'pair' ? 'A' : 'REF'}</span>
         <select style={sel} value={a} onChange={e => setSide('a', e.target.value)}>{list.map(opt)}</select>
-        <span style={{color:B_COL}}>B</span>
-        <select style={sel} value={b} onChange={e => setSide('b', e.target.value)}>{list.map(opt)}</select>
+        {mode === 'pair' && <><span style={{color:B_COL}}>B</span>
+        <select style={sel} value={b} onChange={e => setSide('b', e.target.value)}>{list.map(opt)}</select></>}
         <label style={{color:C.textDim,cursor:'pointer'}} title="List every map and table, not only the ones that differ">
           <input type="checkbox" checked={all} onChange={e => setAll(e.target.checked)} /> ALL MAPS
         </label>
-        <button style={btn(!busy && a && b)} disabled={busy || !a || !b} onClick={run}>{busy ? 'COMPARING…' : 'COMPARE'}</button>
+        <button style={btn(!busy && a && (b || mode === 'variants'))} disabled={busy || !a || (mode === 'pair' && !b)}
+                onClick={mode === 'pair' ? run : runVariants}>{busy ? 'COMPARING…' : 'COMPARE'}</button>
         <span style={{flex:1}} />
         <button style={btn(false)} onClick={onClose}>✕</button>
       </div>
       {err && <div style={{color:C.red,marginTop:'6px',whiteSpace:'pre-wrap'}}>{err}</div>}
-      {res && (
+      {mode === 'variants' && vres && <VariantsTable v={vres} all={all} openPair={openPair} />}
+      {mode === 'pair' && res && (
         <div style={{marginTop:'8px'}}>
           <div style={{color:C.textDim,marginBottom:'6px'}}>
             <span style={{color:A_COL}}>A</span> {res.a.name} <span style={{color:'#557755'}}>sha {res.a.sha}</span>
