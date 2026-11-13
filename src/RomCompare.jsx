@@ -253,7 +253,6 @@ export default function RomCompare({ url, roms, onClose }) {
   return (
     <div style={{...panel,fontSize:'10px',textAlign:'left',lineHeight:'1.5'}}>
       <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
-        <span style={{...title,marginBottom:0}}>COMPARE ROM IMAGES</span>
         {['dme', 'klr'].map(c => <button key={c} style={btn(cpu === c)} onClick={() => { setCpu(c); setRes(null); setVres(null); setErr(null); }}>{c.toUpperCase()}</button>)}
         <span style={{color:'#335533'}}>|</span>
         <button style={btn(mode === 'pair', C.blue)} onClick={() => setMode('pair')} title="Two images side by side">TWO IMAGES</button>
