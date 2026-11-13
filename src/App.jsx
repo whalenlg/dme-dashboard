@@ -1315,8 +1315,16 @@ export default function DMEDashboard() {
   };
   const tabOn = t => liveUrl ? !!popouts.wins[t] : tab === t;
   // Live: a code debugger's button (opens or closes its window)
+  // (log review: shown grayed out, so the rows look the same in both modes)
   const codeButton = cpu => {
     const name = `code_${cpu}`, on = !!popouts.wins[name];
+    if (!liveUrl) return (
+      // not disabled: a disabled button shows no tooltip in some browsers
+      <button key={name} aria-disabled="true" style={{...(cpu === 'dme' ? S.tab : S.tabKlr)(false),opacity:0.35,cursor:'not-allowed'}}
+        onClick={e => e.preventDefault()} title="Only valid in live mode">
+        {cpu.toUpperCase()} CODE
+      </button>
+    );
     return (
       <button key={name} style={(cpu === 'dme' ? S.tab : S.tabKlr)(on)}
         onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} CODE — DME 951 live`, 980, 1080)}
@@ -1518,7 +1526,7 @@ export default function DMEDashboard() {
               title={liveUrl ? `Open ${TAB_LABEL[t]} in its own window` : TAB_TITLE[t]}>
               {TAB_LABEL[t]}{liveUrl && ' ↗'}
             </button>,
-            i === 0 && liveUrl && codeButton('dme'),
+            i === 0 && codeButton('dme'),
           ])}
         </div>
         {/* Row 2 — KLR tabs */}
@@ -1528,7 +1536,7 @@ export default function DMEDashboard() {
               title={liveUrl ? `Open ${TAB_LABEL[t]} in its own window` : TAB_TITLE[t]}>
               {TAB_LABEL[t]}{liveUrl && ' ↗'}
             </button>,
-            i === 0 && liveUrl && codeButton('klr'),
+            i === 0 && codeButton('klr'),
           ])}
         </div>
         {/* Row 3 — DME + KLR together */}
