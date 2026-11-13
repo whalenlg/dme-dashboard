@@ -7,6 +7,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { memName } from "./memDefs.js";
 import { MemSearch } from "./memSearch.jsx";
 import { Popout } from "./popout.jsx";
+import RomCompare from "./RomCompare.jsx";
 
 // ─────────────────────────────────────────────────────────────────
 //  LIVE PANEL — controls for a running simulator (see liveSim.js)
@@ -53,6 +54,7 @@ const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTran
 export default function LivePanel({ live, url, follow, setFollow, series, mem, popouts, onClose }) {
   const { connected, sim, inputs, bps, bpConds, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
   const running = sim.state === 'running';
+  const [comparing, setComparing] = useState(false);
   // The DME and KLR code debuggers each open in a window of their own
   const codeWin = { dme: popouts.wins.code_dme, klr: popouts.wins.code_klr };
   const stopKey = running ? null : `${sim.tNs}:${sim.reason}`;
@@ -88,7 +90,9 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
         </label>
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
-      <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom} />
+      <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
+              comparing={comparing} toggleCompare={() => setComparing(c => !c)} />
+      {comparing && <RomCompare url={url} roms={roms} onClose={() => setComparing(false)} />}
       <SnapshotPanel live={live} running={running} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
@@ -180,7 +184,7 @@ function RunBar({ cpu, sim, connected, running, send }) {
 }
 
 // ── ROM images: what each EPROM holds, and loading another .mem ──
-function RomRow({ roms, asmSrc, paused, loadRom }) {
+function RomRow({ roms, asmSrc, paused, loadRom, comparing, toggleCompare }) {
   const [reset, setReset] = useState(true);
   const pick = { dme: useRef(null), klr: useRef(null) };
   const name = p => p ? p.split(/[\\/]/).pop() : '--';
@@ -207,6 +211,11 @@ function RomRow({ roms, asmSrc, paused, loadRom }) {
         <input type="checkbox" checked={reset} onChange={e => setReset(e.target.checked)} /> RESTART AFTER LOAD
       </label>
       {!paused && <span style={{color:'#779977'}}>pause to load a ROM</span>}
+      <span style={{flex:1}} />
+      <button style={btn(comparing, C.blue)} onClick={toggleCompare}
+              title="What differs between two DME or two KLR images: maps and tables decoded side by side, and the code that differs with its disassembly">
+        COMPARE IMAGES
+      </button>
     </div>
   );
 }
