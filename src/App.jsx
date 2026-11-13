@@ -1314,6 +1314,25 @@ export default function DMEDashboard() {
     else setTab(t);
   };
   const tabOn = t => liveUrl ? !!popouts.wins[t] : tab === t;
+  // Live: a code debugger's button (opens or closes its window)
+  // (log review: shown grayed out, so the rows look the same in both modes)
+  const codeButton = cpu => {
+    const name = `code_${cpu}`, on = !!popouts.wins[name];
+    if (!liveUrl) return (
+      // not disabled: a disabled button shows no tooltip in some browsers
+      <button key={name} aria-disabled="true" style={{...(cpu === 'dme' ? S.tab : S.tabKlr)(false),opacity:0.35,cursor:'not-allowed'}}
+        onClick={e => e.preventDefault()} title="Only valid in live mode">
+        {cpu.toUpperCase()} CODE
+      </button>
+    );
+    return (
+      <button key={name} style={(cpu === 'dme' ? S.tab : S.tabKlr)(on)}
+        onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} CODE — DME 951 live`, 980, 1080)}
+        title={on ? `Close the ${cpu.toUpperCase()} code debugger window` : `Open the ${cpu.toUpperCase()} code debugger in its own window`}>
+        {cpu.toUpperCase()} CODE ↗
+      </button>
+    );
+  };
 
   // One tab's content: below the header (log), or in its own window (live)
   const renderTab = t => (
@@ -1497,40 +1516,33 @@ export default function DMEDashboard() {
       </div>
 
       {/* ── TABS — three rows ────────────────────────────────── */}
+      {/* (live: each row's code debugger button follows its OVERVIEW;
+           LivePanel renders the debuggers into their windows) */}
       <div style={S.tabBar}>
         {/* Row 1 — DME tabs */}
         <div style={S.tabRow}>
-          {DME_TABS.map(t=>(
+          {DME_TABS.map((t, i)=>[
             <button key={t} style={S.tab(tabOn(t))} onClick={()=>openTab(t)}
               title={liveUrl ? `Open ${TAB_LABEL[t]} in its own window` : TAB_TITLE[t]}>
               {TAB_LABEL[t]}{liveUrl && ' ↗'}
-            </button>
-          ))}
+            </button>,
+            i === 0 && codeButton('dme'),
+          ])}
         </div>
         {/* Row 2 — KLR tabs */}
         <div style={S.tabRowKlr}>
-          {KLR_ROW.map(t=>(
+          {KLR_ROW.map((t, i)=>[
             <button key={t} style={S.tabKlr(tabOn(t))} onClick={()=>openTab(t)}
               title={liveUrl ? `Open ${TAB_LABEL[t]} in its own window` : TAB_TITLE[t]}>
               {TAB_LABEL[t]}{liveUrl && ' ↗'}
-            </button>
-          ))}
+            </button>,
+            i === 0 && codeButton('klr'),
+          ])}
         </div>
         {/* Row 3 — DME + KLR together */}
         <div style={S.tabRowKlr}>
           <button style={S.tab(tabOn('timeline'))} onClick={()=>openTab('timeline')}
             title={liveUrl ? 'Open TIMELINE in its own window' : undefined}>TIMELINE{liveUrl && ' ↗'}</button>
-          {/* Live: the code debuggers (LivePanel renders them into their windows) */}
-          {liveUrl && ['dme', 'klr'].map(cpu => {
-            const name = `code_${cpu}`, on = !!popouts.wins[name];
-            return (
-              <button key={cpu} style={(cpu === 'dme' ? S.tab : S.tabKlr)(on)}
-                onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} CODE — DME 951 live`, 980, 1080)}
-                title={on ? `Close the ${cpu.toUpperCase()} code debugger window` : `Open the ${cpu.toUpperCase()} code debugger in its own window`}>
-                {cpu.toUpperCase()} CODE ↗
-              </button>
-            );
-          })}
         </div>
       </div>
 
