@@ -40,6 +40,10 @@ const INPUTS = [
     hint:'ch4 raw F8 / 00, as TEST_IDLE_HIGH_ALT' },
   { k:'ac',        label:'AC (T1)',      positions:[0,1], names:['off','on'],
     hint:'DME T1 (P3.5): AC compressor; the closed-loop model adds its load and the ISV should catch it' },
+  { k:'cat',       label:'CAT (T0)',     positions:[0,1], names:['fitted','not fitted'],
+    hint:'DME T0 (P3.4): the firmware\'s has-cat flag (0 = fitted)' },
+  { k:'o2',        label:'O2 SENSOR',    positions:['auto',0,1,3], names:['auto','lean','cross','rich'],
+    hint:'auto follows the model\'s mixture; lean / cross / rich pin the comparator outputs (P1.6/P1.7)' },
 ];
 
 const btn = (on, col = C.textBright) => ({
@@ -182,7 +186,7 @@ function RunBar({ cpu, sim, connected, running, send }) {
              style={{...inp,width:'46px'}} title={`${CPU} instructions per step`} />
       <button style={btn(false)} disabled={running} onClick={() => send(`step ${cpu} ${stepN}`)}
               title={`Run ${stepN} ${CPU} instruction${stepN > 1 ? 's' : ''}, then pause`}>STEP {CPU}</button>
-      <input value={untilMs} onChange={e => setUntil(e.target.value)} placeholder="ms" style={{...inp,width:'56px'}}
+      <input value={untilMs} onChange={e => setUntil(e.target.value)} placeholder="ms" style={{...inp,width:'40px'}}
              onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
       <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}
               title="Run until this sim time (ms), then pause">RUN TO</button>
@@ -412,7 +416,7 @@ function InputsPanel({ inputs, send }) {
             {d.positions ? (
               <div style={{display:'flex',gap:'2px',margin:'2px 0'}}>
                 {d.positions.map((raw, i) => (
-                  <label key={i} title={`0x${hx(raw)}`}
+                  <label key={i} title={typeof raw === 'number' ? `0x${hx(raw)}` : raw}
                          style={{flex:1,textAlign:'center',fontSize:'10px',cursor:'pointer',padding:'2px 0',
                                  border:`1px solid ${cur === raw ? C.textBright : C.border}`,
                                  background: cur === raw ? '#0d4a0d' : C.panelBg2,
@@ -435,6 +439,45 @@ function InputsPanel({ inputs, send }) {
           </div>
         );
       })}
+      <KnockRow inputs={inputs} send={send} scripted={scripted} />
+    </div>
+  );
+}
+
+// Knock on the KLR's knock sensor: on the next N crank revolutions
+// (knock_revs, counted down by the sim) or on every one until STOP (knock 1)
+function KnockRow({ inputs, send, scripted }) {
+  const [revs, setRevs] = useState(10);
+  if (inputs.knock == null) return null;
+  const left = inputs.knock_revs;
+  const cont = inputs.knock === 1;
+  const on = cont || left > 0;
+  const can = !scripted;
+  const stop = () => { send('set knock 0'); if (left != null) send('set knock_revs 0'); };
+  return (
+    <div style={{marginBottom:'6px'}}>
+      <div style={{display:'flex',gap:'6px',alignItems:'center',fontSize:'10px'}}>
+        <span style={{color:C.textDim,width:'118px'}}>KNOCK (KLR)</span>
+        <span style={{color: on ? C.red : scripted ? '#cc88ff' : C.textBright,minWidth:'70px'}}>
+          {scripted ? 'SCRIPT' : cont ? 'CONTINUOUS' : left > 0 ? `${left} rev${left === 1 ? '' : 's'} left` : 'off'}
+        </span>
+      </div>
+      <div style={{display:'flex',gap:'4px',margin:'2px 0',alignItems:'center'}}>
+        {left != null && <>
+          <input type="number" min={1} max={9999} value={revs} disabled={!can} style={{...inp,width:'40px'}}
+                 onChange={e => setRevs(Math.max(1, Math.min(9999, +e.target.value || 1)))} />
+          <span style={{color:C.textDim,fontSize:'10px'}}>revs</span>
+          <button style={{...btn(false, C.red),padding:'4px 7px'}} disabled={!can} onClick={() => send(`set knock_revs ${revs}`)}
+                  title={`Knock on the next ${revs} crank revolutions (one knock event per revolution, 32 teeth after TDC)`}>
+            KNOCK
+          </button>
+        </>}
+        <button style={{...btn(cont, C.red),padding:'4px 7px'}} disabled={!can} onClick={() => send('set knock 1')}
+                title="Knock on every revolution until STOP">CONTINUOUS</button>
+        <button style={{...btn(false),padding:'4px 7px'}} disabled={!can || !on} onClick={stop}>STOP</button>
+      </div>
+      {!scripted && <div style={{color:'#779977',fontSize:'8px'}}>
+        the TEST_KNOCK_PULSE drop on the KLR knock sensor, once per revolution; the engine has to be turning</div>}
     </div>
   );
 }
