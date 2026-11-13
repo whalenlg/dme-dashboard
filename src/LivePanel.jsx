@@ -54,7 +54,11 @@ const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTran
 export default function LivePanel({ live, url, follow, setFollow, series, mem, popouts, onClose }) {
   const { connected, sim, inputs, bps, bpConds, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
   const running = sim.state === 'running';
-  const [comparing, setComparing] = useState(false);
+  // ROM compare opens in a window of its own (see popouts.js)
+  const compareWin = popouts.wins.rom_compare;
+  const comparing = !!compareWin;
+  const toggleCompare = () => comparing ? popouts.close('rom_compare')
+                                        : popouts.open('rom_compare', 'COMPARE ROM IMAGES — DME 951 live', 1280, 900);
   // The DME and KLR code debuggers each open in a window of their own
   const codeWin = { dme: popouts.wins.code_dme, klr: popouts.wins.code_klr };
   const stopKey = running ? null : `${sim.tNs}:${sim.reason}`;
@@ -91,8 +95,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
       <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
-              comparing={comparing} toggleCompare={() => setComparing(c => !c)} />
-      {comparing && <RomCompare url={url} roms={roms} onClose={() => setComparing(false)} />}
+              comparing={comparing} toggleCompare={toggleCompare} />
       <SnapshotPanel live={live} running={running} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
@@ -124,6 +127,10 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
           <EngineRow series={series} />
         </div>
       </div>
+
+      <Popout entry={compareWin} title="COMPARE ROM IMAGES" sub="maps, tables and code that differ between two images, or across all of them">
+        <RomCompare url={url} roms={roms} onClose={() => popouts.close('rom_compare')} />
+      </Popout>
 
       {/* The code debuggers, each in its own window */}
       {['dme', 'klr'].map(cpu => (
