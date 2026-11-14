@@ -77,6 +77,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [iv, setIv] = useState(true);
   const [workers, setWorkers] = useState(null);
   const [perTest, setPerTest] = useState(false);
+  const [debug, setDebug] = useState([]);             // iverilog debug flags (step 4)
   const [macos, setMacos] = useState('both');
   const [pull, setPull] = useState(true);
   const [interval, setIntervalMs] = useState(100);
@@ -116,7 +117,8 @@ export default function RunAllPanel({ url, state, onClose }) {
     if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
-                               perTestBuild: perTest, macosTest: macos, pull });
+                               perTestBuild: perTest, macosTest: macos, pull,
+                               ...(ivOn && debug.length ? { debug } : {}) });
     try {
       const r = await fetch(`${url}/runall/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (!r.ok) alertLine(setBusy, `couldn't start: ${await r.text() || r.status}`);
@@ -255,6 +257,19 @@ export default function RunAllPanel({ url, state, onClose }) {
               <label style={lbl(locked || lite)} title={lite ? 'run_all.sh only' : 'git checkout main and git pull before the run; off runs the checkout as it is (--no-pull)'}>
                 <input type="checkbox" checked={pull && !lite} disabled={locked || lite} onChange={e=>setPull(e.target.checked)} />update first (git checkout main + pull)
               </label>
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite || !ivOn?.55:1}}>IVERILOG DEBUG (STEP 4)</div>
+              {[['DME_DEBUG','DME debug'],['DME_DEEP_DEBUG','DME deep debug'],['KLR_DEBUG','KLR debug']].map(([f, l]) => (
+                <label key={f} style={lbl(locked || lite || !ivOn)}
+                  title={lite ? 'The lite package has no iverilog' : !ivOn ? 'Only for the iverilog suite: tick iverilog'
+                    : `--${f}: every iverilog test is built on its own with this debug output, and stays on this machine (no regression hosts: the dumps are large)`}>
+                  <input type="checkbox" checked={!lite && ivOn && debug.includes(f)} disabled={locked || lite || !ivOn}
+                    onChange={e=>setDebug(d => e.target.checked ? [...d, f] : d.filter(x => x !== f))} />{l} (--{f})
+                </label>
+              ))}
+              {!lite && ivOn && debug.length > 0 && <div style={{color:C.amber,fontSize:'10px',marginTop:'3px'}}>
+                The iverilog tests all run here, each built on its own</div>}
             </div>
             <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>MACOS INSTALL TEST (STEP 6)</div>
