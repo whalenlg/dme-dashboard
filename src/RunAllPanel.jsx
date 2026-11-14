@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import RegressHosts from "./RegressHosts.jsx";
+import HostTest from "./HostTest.jsx";
 import { useRegressHosts, usableThreads } from "./runAll.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -294,6 +295,10 @@ export default function RunAllPanel({ url, state, onClose }) {
         <div style={box}>
           <div style={ttl}>Regression hosts</div>
           <RegressHosts url={url} state={hostState} locked={locked} useHosts={useHosts} setUseHosts={setUseHosts} lite={lite} />
+          <div style={{borderTop:`1px solid ${C.border}`,marginTop:'10px',paddingTop:'8px'}}>
+            <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'6px'}}>TEST THE NETWORK RUN (INSTALL/TEST_REGRESS_HOSTS.SH)</div>
+            <HostTest url={url} info={info} hosts={hostState.hosts?.hosts ?? []} runActive={active} refresh={refresh} />
+          </div>
         </div>
 
         {/* ── Run controls + full-run progress ── */}
