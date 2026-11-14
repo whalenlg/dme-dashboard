@@ -1026,13 +1026,6 @@ export default function DMEDashboard() {
     return () => clearInterval(id);
   }, [klrPlaying, klrPlaySpeed, klrData.phases?.length]);
 
-  useEffect(() => {
-    const lnk = document.createElement('link');
-    lnk.rel='stylesheet';
-    lnk.href='https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap';
-    document.head.appendChild(lnk);
-  }, []);
-
   // Fetch a .dash.log and open it at the end of the run
   const loadLogUrl = useCallback((url, fname, label = fname) => {
     fetch(url)

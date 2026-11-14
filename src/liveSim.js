@@ -24,7 +24,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //  capped (oldest dropped), so a long session can't exhaust memory.
 // ─────────────────────────────────────────────────────────────────
 
-export const DEFAULT_LIVE_URL = 'http://127.0.0.1:8951';
+// The bridge's address. The lite package's copy of the dashboard (built
+// with --mode lite) is served by the bridge itself, so it uses the page's
+// own origin, whatever --port the bridge was given.
+export const DEFAULT_LIVE_URL = import.meta.env.VITE_LIVE_SAME_ORIGIN
+  ? window.location.origin
+  : 'http://127.0.0.1:8951';
 const FLUSH_MS = 150;   // handle queued bridge lines
 const LOG_MS = 500;     // hand new log lines to the parsers
 const MAX_IGN  = 40000; // [IGN] / [INJ] pulses kept per series (~8 sim minutes at idle)
