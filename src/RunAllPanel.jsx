@@ -1,4 +1,6 @@
 import { useState, useMemo } from "react";
+import RegressHosts from "./RegressHosts.jsx";
+import { useRegressHosts, usableThreads } from "./runAll.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  RUN REGRESSIONS: the regression suite from the dashboard
@@ -85,6 +87,9 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [open, setOpen] = useState({});              // group name → expanded
   const [showOut, setShowOut] = useState(false);
   const [busy, setBusy] = useState(null);
+  const hostState = useRegressHosts(url, true);
+  const [useHosts, setUseHosts] = useState(true);
+  const remoteW = useHosts ? usableThreads(hostState.hosts) : 0;
   const ivOn = iv && !lite;
   const maxW = lite ? Math.max(8, info?.cpus ?? 8) : 8;
   const w = workers ?? Math.min(8, info?.cpus ?? 8);
@@ -98,7 +103,7 @@ export default function RunAllPanel({ url, state, onClose }) {
 
   const nSims = (vl ? 1 : 0) + (ivOn ? 1 : 0);
   const pickedLens = [...picked].map(n => (lite && +simMs > 0 ? Math.min(+simMs / 1000, lenOf[n] ?? 40) : lenOf[n] ?? 40));
-  const est = estimateWall(pickedLens, w) * Math.max(1, nSims);
+  const est = estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims);
   const simTotal = pickedLens.reduce((a, b) => a + b, 0);
 
   const active = !!run?.running;
@@ -107,6 +112,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const start = async () => {
     setBusy('starting');
     const body = { workers: w, interval_ms: +interval || 100, tests: [...picked] };
+    body.useHosts = useHosts;
     if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
@@ -153,6 +159,8 @@ export default function RunAllPanel({ url, state, onClose }) {
         <span style={{width:'72px',textAlign:'right',color:C.textDim,fontSize:'10px'}}>{suiteKeys.length > 1 ? su.label : ''}</span>
         <Bar pct={p} color={col} height={10} label={`${Math.floor(p)}%`} />
         <span style={{width:'130px',textAlign:'left',color:col,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{state}</span>
+        <span style={{width:'110px',textAlign:'left',color:C.textDim,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
+              title={t?.host ? `Ran on the regression host ${t.host}` : undefined}>{t?.host ? `@${t.host}` : ''}</span>
       </div>
     );
   };
@@ -267,6 +275,12 @@ export default function RunAllPanel({ url, state, onClose }) {
           </div>
         </div>
 
+        {/* ── Regression hosts: other machines that take some of the tests ── */}
+        <div style={box}>
+          <div style={ttl}>Regression hosts</div>
+          <RegressHosts url={url} state={hostState} locked={locked} useHosts={useHosts} setUseHosts={setUseHosts} lite={lite} />
+        </div>
+
         {/* ── Run controls + full-run progress ── */}
         <div style={box}>
           <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
@@ -276,7 +290,7 @@ export default function RunAllPanel({ url, state, onClose }) {
               : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
               {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
-              with {w} at a time{!lite ? ', plus the CPU regressions and comparison' : ''}</span>}
+              with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}{!lite ? ', plus the CPU regressions and comparison' : ''}</span>}
             {busy && busy !== 'starting' && busy !== 'stopping' && <span style={{color:C.red,fontSize:'10px'}}>{busy}</span>}
           </div>
           {run && <div style={{marginTop:'10px'}}>
@@ -291,6 +305,8 @@ export default function RunAllPanel({ url, state, onClose }) {
             </div>
             <div style={{color:C.textDim,fontSize:'10px',margin:'4px 0 0 82px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
                  title={run.command}>{run.command}</div>
+            {run.opts?.hosts?.length > 0 && <div style={{color:C.textDim,fontSize:'10px',margin:'2px 0 0 82px'}}>
+              also on: {run.opts.hosts.map(h => `${h.name} (${h.threads})`).join(' · ')}</div>}
             {/* The steps (run_all.sh's 1/6 … 6/6) */}
             <div style={{display:'flex',flexWrap:'wrap',gap:'4px 14px',margin:'8px 0 0 82px',fontSize:'10px'}}>
               {run.steps.map(s => (

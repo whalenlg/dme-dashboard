@@ -37,3 +37,26 @@ export function useRunAll(url, open) {
   return { info, err, refresh };
 }
 
+// ── Regression hosts (the REGRESSION HOSTS box in RUN REGRESSIONS) ──
+export function useRegressHosts(url, open) {
+  const [hosts, setHosts] = useState(null);   // {local, hosts}
+  const [err, setErr] = useState(null);
+  const load = useCallback(async (probe) => {
+    try {
+      const r = await fetch(`${url}/runall/hosts${probe ? '?probe=1' : ''}`);
+      if (!r.ok) throw new Error(r.status === 404 ? 'this bridge has no regression hosts (update 944turbo_dme_klr)' : `bridge answered ${r.status}`);
+      setHosts(await r.json()); setErr(null);
+    } catch (e) { setErr(e.message); }
+  }, [url]);
+  useEffect(() => {
+    if (!open || !url) return;
+    load(false);
+    const id = setInterval(() => load(false), 15000);
+    return () => clearInterval(id);
+  }, [open, url, load]);
+  return { hosts, err, load, setHosts };
+}
+
+// The threads the run can count on: the enabled hosts that answered with
+// the same software
+export const usableThreads = h => (h?.hosts ?? []).filter(x => x.enabled && x.status?.ok).reduce((a, x) => a + x.threads, 0);
