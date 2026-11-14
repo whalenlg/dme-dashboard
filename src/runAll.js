@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-// GET <bridge>/runall for the RUN ALL panel (RunAllPanel.jsx) and the
+// GET <bridge>/runall for the RUN REGRESSIONS panel (RunAllPanel.jsx) and the
 // header button
 const POLL_OPEN_MS = 2000;
 const POLL_BG_MS = 10000;
@@ -16,7 +16,7 @@ export function useRunAll(url, open) {
   const refresh = useCallback(async () => {
     try {
       const r = await fetch(`${url}/runall`);
-      if (r.status === 404) throw new Error('this bridge has no RUN ALL (update 944turbo_dme_klr)');
+      if (r.status === 404) throw new Error('this bridge has no RUN REGRESSIONS (update 944turbo_dme_klr)');
       if (!r.ok) throw new Error(`bridge answered ${r.status}`);
       const j = await r.json();
       setInfo(j); setErr(null);

@@ -1000,7 +1000,7 @@ export default function DMEDashboard() {
     window.history.replaceState(null, '', u);
   };
   useEffect(() => { if (liveUrl) { lastLiveUrl.current = liveUrl; setLiveParam(true); } }, [liveUrl]);
-  // RUN ALL: the regression suite on the bridge (RunAllPanel.jsx)
+  // RUN REGRESSIONS: the regression suite on the bridge (RunAllPanel.jsx)
   const [showRunAll, setShowRunAll] = useState(false);
   // (the bridge last used for LIVE, or the default one)
   const [runAllUrl, setRunAllUrl] = useState(liveUrl || DEFAULT_LIVE_URL);
@@ -1513,7 +1513,7 @@ export default function DMEDashboard() {
           </button>
           <button style={S.btn(runAllRun?.running ? 'p' : 's')} onClick={()=>setShowRunAll(true)}
             title="Run the regression suite (run_all.sh, or run_tests.py in the lite package) on the bridge, with progress">
-            {runAllRun?.running ? `RUN ALL ${(runAllRun.total_s ? Math.min(99.9, 100 * runAllRun.done_s / runAllRun.total_s) : 0).toFixed(0)}%` : 'RUN ALL ▸'}
+            {runAllRun?.running ? `RUN REGRESSIONS ${(runAllRun.total_s ? Math.min(99.9, 100 * runAllRun.done_s / runAllRun.total_s) : 0).toFixed(0)}%` : 'RUN REGRESSIONS ▸'}
           </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
           <a style={{...S.btn('s'),textDecoration:'none',display:'inline-block',lineHeight:'normal'}} href={MANUAL_URL} target="_blank" rel="noopener noreferrer"
