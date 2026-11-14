@@ -8,6 +8,8 @@ import TimelineTab from "./TimelineTab.jsx";
 import MapsTab from "./MapsTab.jsx";
 import { IRAM_MAP, KLR_KNOWN, BIT_LABELS, BIT_DESC, prpmToRpm, ntcLinToC, battRawToV } from "./memDefs.js";
 import LivePanel from "./LivePanel.jsx";
+import RunAllPanel from "./RunAllPanel.jsx";
+import { useRunAll } from "./runAll.js";
 import { Popout } from "./popout.jsx";
 import { usePopouts } from "./popouts.js";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
@@ -998,6 +1000,13 @@ export default function DMEDashboard() {
     window.history.replaceState(null, '', u);
   };
   useEffect(() => { if (liveUrl) { lastLiveUrl.current = liveUrl; setLiveParam(true); } }, [liveUrl]);
+  // RUN ALL: the regression suite on the bridge (RunAllPanel.jsx)
+  const [showRunAll, setShowRunAll] = useState(false);
+  // (the bridge last used for LIVE, or the default one)
+  const [runAllUrl, setRunAllUrl] = useState(liveUrl || DEFAULT_LIVE_URL);
+  if (liveUrl && liveUrl !== runAllUrl) setRunAllUrl(liveUrl);
+  const runAll = useRunAll(runAllUrl, showRunAll);
+  const runAllRun = runAll.info?.run;
 
   // Playback engine
   useEffect(() => {
@@ -1502,6 +1511,10 @@ export default function DMEDashboard() {
             title="Drive the simulator through dme_klr/live/bridge.mjs">
             {liveUrl ? '● LIVE' : 'LIVE ○'}
           </button>
+          <button style={S.btn(runAllRun?.running ? 'p' : 's')} onClick={()=>setShowRunAll(true)}
+            title="Run the regression suite (run_all.sh, or run_tests.py in the lite package) on the bridge, with progress">
+            {runAllRun?.running ? `RUN ALL ${(runAllRun.total_s ? Math.min(99.9, 100 * runAllRun.done_s / runAllRun.total_s) : 0).toFixed(0)}%` : 'RUN ALL ▸'}
+          </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
           <a style={{...S.btn('s'),textDecoration:'none',display:'inline-block',lineHeight:'normal'}} href={MANUAL_URL} target="_blank" rel="noopener noreferrer"
             title="Open the user manual (log review, live mode, code debugger, snapshots) in a new tab">MANUAL ↗</a>
@@ -1563,6 +1576,8 @@ export default function DMEDashboard() {
       ))}
 
       {/* ── LOG INPUT MODAL ─────────────────────────────────── */}
+      {showRunAll && <RunAllPanel url={runAllUrl} state={runAll} onClose={()=>setShowRunAll(false)} />}
+
       {showLog && (
         <div style={S.logOverlay}>
           <div style={S.logBox}>
