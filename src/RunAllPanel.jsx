@@ -81,7 +81,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [iv, setIv] = useState(true);
   const [workers, setWorkers] = useState(null);
   const [perTest, setPerTest] = useState(false);
-  const [debug, setDebug] = useState([]);             // iverilog debug flags (step 4)
+  const [debug, setDebug] = useState({});             // test → iverilog debug flags (step 4)
   const [macos, setMacos] = useState('both');
   const [pull, setPull] = useState(true);
   const [interval, setIntervalMs] = useState(100);
@@ -97,6 +97,16 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [useHosts, setUseHosts] = useState(true);
   const remoteW = useHosts ? usableThreads(hostState.hosts) : 0;
   const ivOn = iv && !lite;
+  // the picked tests with iverilog debug switches on (each its own build, always here)
+  const DBG = [['DME_DEBUG', 'D', 'DME debug'], ['DME_DEEP_DEBUG', 'DD', 'DME deep debug'], ['KLR_DEBUG', 'K', 'KLR debug']];
+  const dbgTests = ivOn ? Object.keys(debug).filter(t => picked.has(t)) : [];
+  const toggleDbg = (t, f) => setDebug(d => {
+    const cur = d[t] ?? [];
+    const next = cur.includes(f) ? cur.filter(x => x !== f) : [...cur, f];
+    const o = { ...d };
+    if (next.length) o[t] = next; else delete o[t];
+    return o;
+  });
   const maxW = lite ? Math.max(8, info?.cpus ?? 8) : 8;
   const w = workers ?? Math.min(8, info?.cpus ?? 8);
 
@@ -118,15 +128,22 @@ export default function RunAllPanel({ url, state, onClose }) {
   // the debug flags. A test's estimate is its length times that, plus its
   // own .vvp; "while running" adds the raw .log and VCD the longest W
   // tests hold at once before they are gzipped / turned into FST.
-  const dbgKey = [...debug].sort().join('+');
-  const diskRate = ivOn && debug.length > 0 ? info?.ivDisk?.configs?.[dbgKey] ?? null : null;
-  const diskOf = n => (diskRate ? (lenOf[n] ?? 40) * diskRate.kept_mb_per_sim_s + (diskRate.build_mb ?? 0) : null);
-  const diskTotal = diskRate ? [...picked].reduce((a, n) => a + diskOf(n), 0) : null;
-  const diskPeak = diskRate ? [...picked].map(n => lenOf[n] ?? 40).sort((a, b) => b - a).slice(0, w)
-    .reduce((a, l) => a + l * Math.max(0, diskRate.peak_mb_per_sim_s - diskRate.kept_mb_per_sim_s), 0) : null;
-  const diskTitle = diskRate ? `Estimate from iv_disk_usage.sh (${info.ivDisk.measured?.date ?? 'undated'}): `
-    + `${diskRate.kept_mb_per_sim_s} MB kept per simulated second with --${debug.join(' --')} `
-    + `(FST ${diskRate.fst_mb_per_sim_s} MB/s), up to ${diskRate.peak_mb_per_sim_s} MB/s while a test runs` : undefined;
+  // per test: its debug switches' rates, if iv_disk_rates.json has that combination
+  const rateOf = n => (dbgTests.includes(n) ? info?.ivDisk?.configs?.[[...debug[n]].sort().join('+')] ?? null : null);
+  const diskOf = n => { const r = rateOf(n); return r ? (lenOf[n] ?? 40) * r.kept_mb_per_sim_s + (r.build_mb ?? 0) : null; };
+  const showDisk = dbgTests.length > 0 && !!info?.ivDisk;
+  const diskTotal = dbgTests.reduce((a, n) => a + (diskOf(n) ?? 0), 0);
+  const diskPeak = dbgTests.map(n => { const r = rateOf(n); return r ? (lenOf[n] ?? 40) * Math.max(0, r.peak_mb_per_sim_s - r.kept_mb_per_sim_s) : 0; })
+    .sort((a, b) => b - a).slice(0, w).reduce((a, b) => a + b, 0);
+  const diskTitle = n => {
+    const r = rateOf(n);
+    return r ? `iverilog output with --${[...debug[n]].sort().join(' --')}: about ${r.kept_mb_per_sim_s} MB kept per simulated second `
+      + `(FST ${r.fst_mb_per_sim_s} MB/s), up to ${r.peak_mb_per_sim_s} MB/s on disk while it runs; `
+      + `from iv_disk_usage.sh (${info.ivDisk.measured?.date ?? 'undated'})`
+      : 'No measurement for this combination in dme_klr/iv_disk_rates.json (iv_disk_usage.sh --save-rates)';
+  };
+  const totalTitle = `iverilog debug output of the ${dbgTests.length} test(s) with D / DD / K on, kept after the run; `
+    + `the second figure is the raw log and VCD the ${w} longest of them hold while running, before gzip / vcd2fst`;
 
   const active = !!run?.running;
   const romSel = (active && run?.opts?.roms) || rom || romInfo?.default || { dme:'', klr:'' };
@@ -139,7 +156,7 @@ export default function RunAllPanel({ url, state, onClose }) {
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
                                perTestBuild: perTest, macosTest: macos, pull,
-                               ...(ivOn && debug.length ? { debug } : {}) });
+                               ...(ivOn && dbgTests.length ? { debug: Object.fromEntries(dbgTests.map(t => [t, debug[t]])) } : {}) });
     try {
       const r = await fetch(`${url}/runall/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (!r.ok) alertLine(setBusy, `couldn't start: ${await r.text() || r.status}`);
@@ -287,23 +304,6 @@ export default function RunAllPanel({ url, state, onClose }) {
               </label>
             </div>
             <div>
-              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite || !ivOn?.55:1}}>IVERILOG DEBUG (STEP 4)</div>
-              {[['DME_DEBUG','DME debug'],['DME_DEEP_DEBUG','DME deep debug'],['KLR_DEBUG','KLR debug']].map(([f, l]) => (
-                <label key={f} style={lbl(locked || lite || !ivOn)}
-                  title={lite ? 'The lite package has no iverilog' : !ivOn ? 'Only for the iverilog suite: tick iverilog'
-                    : `--${f}: every iverilog test is built on its own with this debug output, and stays on this machine (no regression hosts: the dumps are large)`}>
-                  <input type="checkbox" checked={!lite && ivOn && debug.includes(f)} disabled={locked || lite || !ivOn}
-                    onChange={e=>setDebug(d => e.target.checked ? [...d, f] : d.filter(x => x !== f))} />{l} (--{f})
-                </label>
-              ))}
-              {!lite && ivOn && debug.length > 0 && <div style={{color:C.amber,fontSize:'10px',marginTop:'3px'}}>
-                The iverilog tests all run here, each built on its own</div>}
-              {!lite && ivOn && debug.length > 0 && <div style={{color:C.amber,fontSize:'10px',marginTop:'3px'}} title={diskTitle}>
-                {diskRate ? <>Disk: about <b>{fmtSize(diskTotal)}</b> for the {picked.size} picked test{picked.size === 1 ? '' : 's'},
-                  plus up to {fmtSize(diskPeak)} while {w} run at once</>
-                  : 'No disk estimate for these flags (dme_klr/iv_disk_rates.json: run iv_disk_usage.sh --save-rates)'}</div>}
-            </div>
-            <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>MACOS INSTALL TEST (STEP 6)</div>
               <select value={lite ? 'none' : macos} disabled={locked || lite} style={{...inp,opacity:lite?.55:1}} onChange={e=>setMacos(e.target.value)}
                 title={lite ? 'run_all.sh only' : '--macos-test: a clean macOS VM (Tart), after steps 1-5 pass'}>
@@ -342,8 +342,8 @@ export default function RunAllPanel({ url, state, onClose }) {
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
               {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
               with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}{!lite ? ', plus the CPU regressions and comparison' : ''}
-              {diskRate && <span style={{color:C.amber}} title={diskTitle}> · iverilog debug output: about {fmtSize(diskTotal)} on disk
-                (+{fmtSize(diskPeak)} while running)</span>}</span>}
+              {showDisk && <span style={{color:C.amber}} title={totalTitle}> · iverilog debug output ({dbgTests.length} test{dbgTests.length === 1 ? '' : 's'}):
+                about {fmtSize(diskTotal)} on disk (+{fmtSize(diskPeak)} while running)</span>}</span>}
             {busy && busy !== 'starting' && busy !== 'stopping' && <span style={{color:C.red,fontSize:'10px'}}>{busy}</span>}
             {!lite && <button style={{...btn('s'),marginLeft:'auto',padding:'3px 10px',fontSize:'10px'}}
               title="fqs_analysis.py (run_all.sh step 5) on the iverilog and Verilator dash logs as they are now: how each FQS position changes the injector pulse width and the ignition timing"
@@ -408,7 +408,8 @@ export default function RunAllPanel({ url, state, onClose }) {
         {/* ── Test groups (the manuals' Appendix A) ── */}
         <div style={box}>
           <div style={ttl}>
-            Test groups <span style={{letterSpacing:0,textTransform:'none'}}>as in the manuals' Appendix A</span>
+            Test groups <span style={{letterSpacing:0,textTransform:'none'}}>as in the manuals' Appendix A{!lite &&
+              <> · D / DD / K on a test: its iverilog DME / DME deep / KLR debug output (large; that test runs here, built on its own)</>}</span>
             <span style={{marginLeft:'auto',display:'flex',gap:'6px'}}>
               <button style={{...btn('s', locked),padding:'2px 8px',fontSize:'9px'}} disabled={locked} onClick={()=>setSel(null)}>ALL</button>
               <button style={{...btn('s', locked),padding:'2px 8px',fontSize:'9px'}} disabled={locked} onClick={()=>setSel(new Set())}>NONE</button>
@@ -423,7 +424,8 @@ export default function RunAllPanel({ url, state, onClose }) {
             const gp = groupProgress(g);
             const isOpen = !!open[g.name];
             const sim = g.tests.reduce((a, t) => a + t.sim_s, 0);
-            const gDisk = diskRate ? names.filter(x => picked.has(x)).reduce((a, x) => a + diskOf(x), 0) : null;
+            const gDbg = names.filter(x => dbgTests.includes(x));
+            const gDisk = gDbg.reduce((a, x) => a + (diskOf(x) ?? 0), 0);
             return (
               <div key={g.name} style={{borderTop:`1px solid ${C.border}`,padding:'4px 0'}}>
                 <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
@@ -433,7 +435,8 @@ export default function RunAllPanel({ url, state, onClose }) {
                   <span style={{cursor:'pointer',color:C.textBright,width:'400px',flexShrink:0}} onClick={()=>setOpen(o => ({...o, [g.name]: !isOpen}))}>
                     {isOpen ? '▾' : '▸'} {g.name}
                     <span style={{color:C.textDim,fontSize:'10px'}}> · {n}/{names.length} tests · {fmtDur(sim)}</span>
-                    {diskRate && n > 0 && <span style={{color:C.amber,fontSize:'10px'}} title={diskTitle}> · ~{fmtSize(gDisk)}</span>}
+                    {gDbg.length > 0 && <span style={{color:C.amber,fontSize:'10px'}} title={totalTitle}> · {gDbg.length} with iverilog debug
+                      {showDisk ? ` · ~${fmtSize(gDisk)}` : ''}</span>}
                   </span>
                   {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
                      style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
@@ -454,9 +457,24 @@ export default function RunAllPanel({ url, state, onClose }) {
                         <input type="checkbox" checked={picked.has(t.name)} disabled={locked} onChange={()=>toggle([t.name])} />
                         <span style={{color:picked.has(t.name) ? C.text : C.grey}}>{t.name}</span>
                         <span style={{color:C.textDim,fontSize:'10px',marginLeft:'auto'}}>{fmtSim(t.sim_s)}</span>
-                        {diskRate && <span style={{color:picked.has(t.name) ? C.amber : C.grey,fontSize:'10px',width:'52px',textAlign:'right'}}
-                          title={diskTitle}>~{fmtSize(diskOf(t.name))}</span>}
                       </label>
+                      {!lite && <span style={{display:'flex',gap:'3px',flexShrink:0}}>
+                        {DBG.map(([f, short, long]) => {
+                          const on = ivOn && (debug[t.name] ?? []).includes(f);
+                          const dis = locked || !ivOn || !picked.has(t.name);
+                          return (
+                            <button key={f} disabled={dis} onClick={()=>toggleDbg(t.name, f)}
+                              title={!ivOn ? 'iverilog debug: tick iverilog first'
+                                : `${long} (--${f}) for ${t.name} in the iverilog suite: built on its own, always on this machine; large dumps`}
+                              style={{padding:'0 5px',fontSize:'9px',fontFamily:'inherit',lineHeight:'14px',cursor:dis?'default':'pointer',
+                                      background:on ? '#2a1a00' : C.panelBg,border:`1px solid ${on ? C.amber : C.border}`,
+                                      color:on ? C.amber : dis ? '#334433' : C.textDim}}>{short}</button>
+                          );
+                        })}
+                      </span>}
+                      {!lite && <span style={{width:'58px',flexShrink:0,textAlign:'right',color:C.amber,fontSize:'10px',lineHeight:'16px'}}
+                        title={dbgTests.includes(t.name) ? diskTitle(t.name) : undefined}>
+                        {dbgTests.includes(t.name) && info?.ivDisk ? (diskOf(t.name) != null ? `~${fmtSize(diskOf(t.name))}` : '?') : ''}</span>}
                       <div style={{flex:1,display:'flex',flexDirection:'column'}}>
                         {suiteKeys.filter(k => suites[k].tests[t.name]).map(k => testRow(t.name, suites[k]))}
                       </div>
