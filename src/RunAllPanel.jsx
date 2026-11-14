@@ -10,6 +10,8 @@ import { useRegressHosts, usableThreads } from "./runAll.js";
 //                             with their simulated lengths, and the run
 //    POST <url>/runall/start  JSON options (below)
 //    POST <url>/runall/stop
+//    GET  <url>/runall/fqs    the FQS analysis (fqs_analysis.py) of the
+//                             dash logs as they are now (developer install)
 //  Developer install: dme_klr/run_all.sh with every option it takes.
 //  Lite package: run_tests.py (Verilator only, so iverilog and the
 //  run_all-only options are greyed out).
@@ -37,6 +39,7 @@ const fmtDur = s => {
 };
 const fmtSim = s => (s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${+s.toFixed(1)} s`);
 const pctOf = (d, t) => (t > 0 ? Math.min(100, (100 * d) / t) : 0);
+const fmtSize = mb => (mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : `${Math.round(mb)} MB`);
 
 // The longest-first schedule run_tests.py and run_dashboard_parallel.sh
 // use, as wall seconds at the manuals' rate: a run can't end before its
@@ -88,6 +91,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [rom, setRom] = useState(null);              // {dme, klr}; null = the default pair
   const [open, setOpen] = useState({});              // group name → expanded
   const [showOut, setShowOut] = useState(false);
+  const [fqs, setFqs] = useState(null);              // null = closed; {loading} | {text, at, ...} | {error}
   const [busy, setBusy] = useState(null);
   const hostState = useRegressHosts(url, true);
   const [useHosts, setUseHosts] = useState(true);
@@ -118,6 +122,29 @@ export default function RunAllPanel({ url, state, onClose }) {
   const est = estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims);
   const simTotal = pickedLens.reduce((a, b) => a + b, 0);
 
+  // ── iverilog debug runs: the disk they take ───────────────
+  // The bridge's ivDisk (dme_klr/iv_disk_rates.json, measured by
+  // iv_disk_usage.sh): MB per simulated second for each combination of
+  // the debug flags. A test's estimate is its length times that, plus its
+  // own .vvp; "while running" adds the raw .log and VCD the longest W
+  // tests hold at once before they are gzipped / turned into FST.
+  // per test: its debug switches' rates, if iv_disk_rates.json has that combination
+  const rateOf = n => (dbgTests.includes(n) ? info?.ivDisk?.configs?.[[...debug[n]].sort().join('+')] ?? null : null);
+  const diskOf = n => { const r = rateOf(n); return r ? (lenOf[n] ?? 40) * r.kept_mb_per_sim_s + (r.build_mb ?? 0) : null; };
+  const showDisk = dbgTests.length > 0 && !!info?.ivDisk;
+  const diskTotal = dbgTests.reduce((a, n) => a + (diskOf(n) ?? 0), 0);
+  const diskPeak = dbgTests.map(n => { const r = rateOf(n); return r ? (lenOf[n] ?? 40) * Math.max(0, r.peak_mb_per_sim_s - r.kept_mb_per_sim_s) : 0; })
+    .sort((a, b) => b - a).slice(0, w).reduce((a, b) => a + b, 0);
+  const diskTitle = n => {
+    const r = rateOf(n);
+    return r ? `iverilog output with --${[...debug[n]].sort().join(' --')}: about ${r.kept_mb_per_sim_s} MB kept per simulated second `
+      + `(FST ${r.fst_mb_per_sim_s} MB/s), up to ${r.peak_mb_per_sim_s} MB/s on disk while it runs; `
+      + `from iv_disk_usage.sh (${info.ivDisk.measured?.date ?? 'undated'})`
+      : 'No measurement for this combination in dme_klr/iv_disk_rates.json (iv_disk_usage.sh --save-rates)';
+  };
+  const totalTitle = `iverilog debug output of the ${dbgTests.length} test(s) with D / DD / K on, kept after the run; `
+    + `the second figure is the raw log and VCD the ${w} longest of them hold while running, before gzip / vcd2fst`;
+
   const active = !!run?.running;
   const romSel = (active && run?.opts?.roms) || rom || romInfo?.default || { dme:'', klr:'' };
   const romPreset = romInfo?.presets?.find(p => p.dme === romSel.dme && p.klr === romSel.klr);
@@ -136,6 +163,13 @@ export default function RunAllPanel({ url, state, onClose }) {
       else setBusy(null);
     } catch (e) { alertLine(setBusy, `couldn't start: ${e.message}`); }
     refresh();
+  };
+  const loadFqs = async () => {
+    setFqs(f => ({ ...(f ?? {}), loading: true }));
+    try {
+      const r = await fetch(`${url}/runall/fqs`);
+      setFqs(r.ok ? await r.json() : { error: `${r.status} ${await r.text()}` });
+    } catch (e) { setFqs({ error: e.message }); }
   };
   const stop = async () => {
     setBusy('stopping');
@@ -307,9 +341,26 @@ export default function RunAllPanel({ url, state, onClose }) {
               : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
               {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
-              with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}{!lite ? ', plus the CPU regressions and comparison' : ''}</span>}
+              with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}{!lite ? ', plus the CPU regressions and comparison' : ''}
+              {showDisk && <span style={{color:C.amber}} title={totalTitle}> · iverilog debug output ({dbgTests.length} test{dbgTests.length === 1 ? '' : 's'}):
+                about {fmtSize(diskTotal)} on disk (+{fmtSize(diskPeak)} while running)</span>}</span>}
             {busy && busy !== 'starting' && busy !== 'stopping' && <span style={{color:C.red,fontSize:'10px'}}>{busy}</span>}
+            {!lite && <button style={{...btn('s'),marginLeft:'auto',padding:'3px 10px',fontSize:'10px'}}
+              title="fqs_analysis.py (run_all.sh step 5) on the iverilog and Verilator dash logs as they are now: how each FQS position changes the injector pulse width and the ignition timing"
+              onClick={() => (fqs ? setFqs(null) : loadFqs())}>{fqs ? 'HIDE FQS ANALYSIS' : 'FQS ANALYSIS'}</button>}
           </div>
+          {fqs && <div style={{marginTop:'10px',borderTop:`1px solid ${C.border}`,paddingTop:'8px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'10px',fontSize:'10px',color:C.textDim}}>
+              <span style={{color:C.textBright,letterSpacing:'.15em',fontSize:'9px'}}>FQS ANALYSIS</span>
+              <span>{fqs.loading ? 'running fqs_analysis.py…' : fqs.error ? <span style={{color:C.red}}>{fqs.error}</span>
+                : `fqs_analysis.py on the logs as of ${new Date(fqs.at).toLocaleTimeString()}${fqs.exit ? ` (exit ${fqs.exit})` : ''}`}</span>
+              {active && <span style={{color:C.amber}}>a run is going: tests not done yet show their older logs or none</span>}
+              <button style={{...btn('s', fqs.loading),marginLeft:'auto',padding:'2px 8px',fontSize:'9px'}} disabled={fqs.loading}
+                onClick={loadFqs}>REFRESH</button>
+            </div>
+            {fqs.text != null && <pre style={{background:'#030803',border:`1px solid ${C.border}`,color:'#00cc66',fontSize:'10px',padding:'8px',
+                                              maxHeight:'480px',overflow:'auto',whiteSpace:'pre',lineHeight:1.35,margin:'6px 0 0'}}>{fqs.text}</pre>}
+          </div>}
           {run && <div style={{marginTop:'10px'}}>
             <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
               <span style={{width:'72px',textAlign:'right',color:C.textBright,fontSize:'10px',letterSpacing:'.1em'}}>FULL RUN</span>
@@ -373,6 +424,8 @@ export default function RunAllPanel({ url, state, onClose }) {
             const gp = groupProgress(g);
             const isOpen = !!open[g.name];
             const sim = g.tests.reduce((a, t) => a + t.sim_s, 0);
+            const gDbg = names.filter(x => dbgTests.includes(x));
+            const gDisk = gDbg.reduce((a, x) => a + (diskOf(x) ?? 0), 0);
             return (
               <div key={g.name} style={{borderTop:`1px solid ${C.border}`,padding:'4px 0'}}>
                 <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
@@ -382,8 +435,8 @@ export default function RunAllPanel({ url, state, onClose }) {
                   <span style={{cursor:'pointer',color:C.textBright,width:'400px',flexShrink:0}} onClick={()=>setOpen(o => ({...o, [g.name]: !isOpen}))}>
                     {isOpen ? '▾' : '▸'} {g.name}
                     <span style={{color:C.textDim,fontSize:'10px'}}> · {n}/{names.length} tests · {fmtDur(sim)}</span>
-                    {(() => { const d = names.filter(x => dbgTests.includes(x)).length;
-                              return d ? <span style={{color:C.amber,fontSize:'10px'}}> · {d} with iverilog debug</span> : null; })()}
+                    {gDbg.length > 0 && <span style={{color:C.amber,fontSize:'10px'}} title={totalTitle}> · {gDbg.length} with iverilog debug
+                      {showDisk ? ` · ~${fmtSize(gDisk)}` : ''}</span>}
                   </span>
                   {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
                      style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
@@ -419,6 +472,9 @@ export default function RunAllPanel({ url, state, onClose }) {
                           );
                         })}
                       </span>}
+                      {!lite && <span style={{width:'58px',flexShrink:0,textAlign:'right',color:C.amber,fontSize:'10px',lineHeight:'16px'}}
+                        title={dbgTests.includes(t.name) ? diskTitle(t.name) : undefined}>
+                        {dbgTests.includes(t.name) && info?.ivDisk ? (diskOf(t.name) != null ? `~${fmtSize(diskOf(t.name))}` : '?') : ''}</span>}
                       <div style={{flex:1,display:'flex',flexDirection:'column'}}>
                         {suiteKeys.filter(k => suites[k].tests[t.name]).map(k => testRow(t.name, suites[k]))}
                       </div>
