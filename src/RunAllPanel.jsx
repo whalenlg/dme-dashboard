@@ -1,0 +1,377 @@
+import { useState, useMemo } from "react";
+
+// ─────────────────────────────────────────────────────────────────
+//  RUN ALL: the regression suite from the dashboard
+//  Talks to dme_klr/live/runall.mjs on the bridge (944turbo_dme_klr):
+//    GET  <url>/runall        the tests in the manuals' Appendix A groups,
+//                             with their simulated lengths, and the run
+//    POST <url>/runall/start  JSON options (below)
+//    POST <url>/runall/stop
+//  Developer install: dme_klr/run_all.sh with every option it takes.
+//  Lite package: run_tests.py (Verilator only, so iverilog and the
+//  run_all-only options are greyed out).
+//  Progress is simulated time against each test's length; the run keeps
+//  going on the bridge when this panel is closed.
+// ─────────────────────────────────────────────────────────────────
+
+const C = {
+  bg:'#040a04', panelBg:'#060e06', panelBg2:'#0a150a', border:'#0d2e0d', border2:'#1a3a1a',
+  text:'#00e060', textDim:'#ccddcc', textBright:'#00ff80', amber:'#ffaa00', red:'#ff4444', blue:'#44aaff', grey:'#557755',
+};
+const VERDICT_COL = { PASS:C.textBright, WARN:C.amber, FAIL:C.red, SKIP:C.grey };
+// The manuals' rate: about 40 s of wall time per simulated second, per test
+const WALL_PER_SIM_S = 40;
+
+const fmtDur = s => {
+  if (s == null || !isFinite(s)) return '—';
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+  return `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
+};
+const fmtSim = s => (s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${+s.toFixed(1)} s`);
+const pctOf = (d, t) => (t > 0 ? Math.min(100, (100 * d) / t) : 0);
+
+// The longest-first schedule run_tests.py and run_dashboard_parallel.sh
+// use, as wall seconds at the manuals' rate: a run can't end before its
+// longest test, and N workers share the rest
+function estimateWall(lens, workers) {
+  const w = Array(Math.max(1, workers)).fill(0);
+  for (const l of [...lens].sort((a, b) => b - a)) {
+    let i = 0;
+    for (let k = 1; k < w.length; k++) if (w[k] < w[i]) i = k;
+    w[i] += l * WALL_PER_SIM_S;
+  }
+  return Math.max(...w);
+}
+
+function Bar({ pct, color = C.textBright, height = 8, label, title }) {
+  return (
+    <div title={title} style={{position:'relative',height,background:'#020602',border:`1px solid ${C.border2}`,
+                               borderRadius:'2px',overflow:'hidden',flex:1,minWidth:'60px'}}>
+      <div style={{width:`${pct}%`,height:'100%',background:color,opacity:.75,transition:'width .4s'}} />
+      {label != null && <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',
+                                     fontSize:'10px',color:'#e8ffe8',textShadow:'0 0 3px #000,0 0 3px #000'}}>{label}</div>}
+    </div>
+  );
+}
+
+export default function RunAllPanel({ url, state, onClose }) {
+  const { info, err, refresh } = state;
+  const mode = info?.mode;
+  const lite = mode === 'lite';
+  const run = info?.run;
+  const groups = useMemo(() => info?.groups ?? [], [info?.groups]);
+  const allTests = useMemo(() => groups.flatMap(g => g.tests), [groups]);
+  const lenOf = useMemo(() => Object.fromEntries(allTests.map(t => [t.name, t.sim_s])), [allTests]);
+
+  // ── Options ───────────────────────────────────────────────
+  const [sel, setSel] = useState(null);             // Set of picked tests; null = all
+  const picked = useMemo(() => sel ?? new Set(allTests.map(t => t.name)), [sel, allTests]);
+  const [vl, setVl] = useState(true);
+  const [iv, setIv] = useState(true);
+  const [workers, setWorkers] = useState(null);
+  const [perTest, setPerTest] = useState(false);
+  const [macos, setMacos] = useState('both');
+  const [pull, setPull] = useState(true);
+  const [interval, setIntervalMs] = useState(100);
+  const [simMs, setSimMs] = useState('');
+  const [open, setOpen] = useState({});              // group name → expanded
+  const [showOut, setShowOut] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const ivOn = iv && !lite;
+  const maxW = lite ? Math.max(8, info?.cpus ?? 8) : 8;
+  const w = workers ?? Math.min(8, info?.cpus ?? 8);
+
+  const toggle = names => setSel(() => {
+    const s = new Set(picked);
+    const on = names.every(n => s.has(n));
+    for (const n of names) on ? s.delete(n) : s.add(n);
+    return s;
+  });
+
+  const nSims = (vl ? 1 : 0) + (ivOn ? 1 : 0);
+  const pickedLens = [...picked].map(n => (lite && +simMs > 0 ? Math.min(+simMs / 1000, lenOf[n] ?? 40) : lenOf[n] ?? 40));
+  const est = estimateWall(pickedLens, w) * Math.max(1, nSims);
+  const simTotal = pickedLens.reduce((a, b) => a + b, 0);
+
+  const active = !!run?.running;
+  const start = async () => {
+    setBusy('starting');
+    const body = { workers: w, interval_ms: +interval || 100, tests: [...picked] };
+    if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
+    else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
+                               perTestBuild: perTest, macosTest: macos, pull });
+    try {
+      const r = await fetch(`${url}/runall/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (!r.ok) alertLine(setBusy, `couldn't start: ${await r.text() || r.status}`);
+      else setBusy(null);
+    } catch (e) { alertLine(setBusy, `couldn't start: ${e.message}`); }
+    refresh();
+  };
+  const stop = async () => {
+    setBusy('stopping');
+    try { await fetch(`${url}/runall/stop`, { method:'POST' }); } catch { /* the next poll says */ }
+    setBusy(null);
+    refresh();
+  };
+
+  // ── Styles ────────────────────────────────────────────────
+  const box = {background:C.panelBg,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'10px',marginBottom:'10px'};
+  const ttl = {color:C.textDim,fontSize:'9px',letterSpacing:'0.2em',textTransform:'uppercase',
+               borderBottom:`1px solid ${C.border}`,paddingBottom:'4px',marginBottom:'8px',display:'flex',gap:'8px',alignItems:'baseline'};
+  const btn = (v, dis) => ({padding:'6px 16px',background:v==='p'?'#0d4a0d':v==='r'?'#3a0d0d':C.panelBg,
+                            border:`1px solid ${v==='p'?C.textBright:v==='r'?C.red:C.border}`,
+                            color:dis?C.grey:v==='p'?C.textBright:v==='r'?C.red:C.textDim,fontFamily:'inherit',
+                            fontSize:'11px',letterSpacing:'0.1em',cursor:dis?'default':'pointer',opacity:dis?.5:1});
+  const lbl = dis => ({display:'flex',alignItems:'center',gap:'6px',color:dis?C.grey:C.textDim,opacity:dis?.55:1,
+                       cursor:dis?'not-allowed':'pointer',fontSize:'11px'});
+  const inp = {background:'#030803',border:`1px solid ${C.border2}`,color:C.textBright,fontFamily:'inherit',fontSize:'11px',padding:'3px 5px'};
+  const locked = active;
+
+  // ── Progress views ────────────────────────────────────────
+  const suites = run?.suites ?? {};
+  const suiteKeys = Object.keys(suites);
+  const testRow = (name, su) => {
+    const t = su?.tests?.[name];
+    const len = t?.len_s ?? lenOf[name] ?? 40;
+    const p = t ? (t.state === 'done' ? 100 : pctOf(t.t_s, len)) : 0;
+    const col = t?.verdict ? VERDICT_COL[t.verdict] : t?.state === 'running' ? C.blue : C.grey;
+    const state = !t ? '' : t.verdict ?? (t.state === 'running' ? `${fmtSim(t.t_s)} / ${fmtSim(len)}` : t.state);
+    return (
+      <div key={`${su?.label}-${name}`} style={{display:'flex',alignItems:'center',gap:'8px',padding:'1px 0'}}
+           title={t?.detail || undefined}>
+        <span style={{width:'72px',textAlign:'right',color:C.textDim,fontSize:'10px'}}>{suiteKeys.length > 1 ? su.label : ''}</span>
+        <Bar pct={p} color={col} height={10} label={`${Math.floor(p)}%`} />
+        <span style={{width:'130px',textAlign:'left',color:col,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{state}</span>
+      </div>
+    );
+  };
+  const groupProgress = g => {
+    let d = 0, tot = 0;
+    const v = { PASS:0, WARN:0, FAIL:0 };
+    let inRun = false;
+    for (const su of Object.values(suites)) for (const { name } of g.tests) {
+      const t = su.tests[name];
+      if (!t) continue;
+      inRun = true;
+      tot += t.len_s; d += t.state === 'done' ? t.len_s : t.t_s;
+      if (v[t.verdict] != null) v[t.verdict]++;
+    }
+    return inRun ? { p: pctOf(d, tot), v } : null;
+  };
+
+  const stepIcon = s => s.state === 'running' ? '◐' : s.state === 'done' ? '●' : s.state === 'skipped' ? '⊘' : s.state === 'stopped' ? '■' : '○';
+  const overall = run ? (run.running ? Math.min(99.9, pctOf(run.done_s, run.total_s)) : run.exit === 0 ? 100 : pctOf(run.done_s, run.total_s)) : 0;
+  const runCol = !run ? C.grey : run.running ? C.blue : run.exit === 0 ? C.textBright : run.stopping ? C.amber : C.red;
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'#020502ee',zIndex:100,display:'flex',justifyContent:'center',overflow:'auto'}}>
+      <div style={{background:C.bg,border:`1px solid #0d4a0d`,borderRadius:'4px',padding:'16px',width:'1100px',maxWidth:'96vw',
+                   margin:'2vh 0',height:'fit-content',textAlign:'left',color:C.text}}>
+        {/* ── Title ── */}
+        <div style={{display:'flex',alignItems:'baseline',gap:'12px',borderBottom:'1px solid #0d4a0d',paddingBottom:'10px',marginBottom:'12px'}}>
+          <div style={{color:C.textBright,fontSize:'13px',fontFamily:"'Orbitron',monospace",letterSpacing:'0.08em'}}>▶ RUN ALL — REGRESSION SUITE</div>
+          {mode && <span style={{color:'#66ddaa',fontSize:'10px'}}>
+            {lite ? 'lite package · run_tests.py' : 'developer install · dme_klr/run_all.sh'} · {url}
+          </span>}
+          <button style={{...btn('s'),marginLeft:'auto',padding:'3px 10px'}} onClick={onClose}
+            title="Close; a run keeps going on the bridge">CLOSE ✕</button>
+        </div>
+        {err && <div style={{...box,color:C.amber}}>{err}</div>}
+        {info && !mode && <div style={{...box,color:C.amber}}>The bridge found neither dme_klr/run_all.sh nor run_tests.py next to it.</div>}
+
+        {mode && <>
+        {/* ── Options ── */}
+        <div style={box}>
+          <div style={ttl}>Options{locked && <span style={{color:C.amber,letterSpacing:0,textTransform:'none'}}>(fixed while a run is going)</span>}</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:'10px 18px'}}>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>SIMULATOR</div>
+              <label style={lbl(locked)}><input type="checkbox" checked={vl} disabled={locked} onChange={e=>setVl(e.target.checked)} />Verilator</label>
+              <label style={lbl(locked || lite)} title={lite ? 'The lite package has only the prebuilt Verilator simulators' : 'run_all.sh steps 4 and 5'}>
+                <input type="checkbox" checked={ivOn} disabled={locked || lite} onChange={e=>setIv(e.target.checked)} />iverilog
+                {lite && <span style={{fontSize:'9px'}}>(not in the lite package)</span>}
+              </label>
+              {!lite && !(vl && ivOn) && <div style={{color:C.amber,fontSize:'10px',marginTop:'3px'}}>
+                One simulator only: step 5 compares against the other's older logs</div>}
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>{lite ? 'TESTS AT A TIME (-j)' : 'WORKERS (THREADS)'}</div>
+              <input type="number" min={1} max={maxW} value={w} disabled={locked} style={{...inp,width:'60px'}}
+                onChange={e=>setWorkers(Math.min(maxW, Math.max(1, +e.target.value || 1)))} />
+              <span style={{color:C.textDim,fontSize:'10px',marginLeft:'8px'}}>{info.cpus} CPUs here; more than that doesn't help</span>
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>SNAPSHOT INTERVAL</div>
+              <input type="number" min={1} value={interval} disabled={locked} style={{...inp,width:'60px'}}
+                onChange={e=>setIntervalMs(e.target.value)} /> <span style={{color:C.textDim,fontSize:'10px'}}>simulated ms (DASH_INTERVAL_MS)</span>
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>BUILD</div>
+              <label style={lbl(locked || lite)} title={lite ? 'run_all.sh only' : 'Build every test on its own instead of one shared testbench'}>
+                <input type="checkbox" checked={perTest && !lite} disabled={locked || lite} onChange={e=>setPerTest(e.target.checked)} />per-test build (--per-test-build)
+              </label>
+              <label style={lbl(locked || lite)} title={lite ? 'run_all.sh only' : 'git checkout main and git pull before the run; off runs the checkout as it is (--no-pull)'}>
+                <input type="checkbox" checked={pull && !lite} disabled={locked || lite} onChange={e=>setPull(e.target.checked)} />update first (git checkout main + pull)
+              </label>
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>MACOS INSTALL TEST (STEP 6)</div>
+              <select value={lite ? 'none' : macos} disabled={locked || lite} style={{...inp,opacity:lite?.55:1}} onChange={e=>setMacos(e.target.value)}
+                title={lite ? 'run_all.sh only' : '--macos-test: a clean macOS VM (Tart), after steps 1-5 pass'}>
+                {['both','install','lite','none'].map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              {!lite && macos !== 'none' && !(info.platform === 'darwin' && info.tart) &&
+                <div style={{color:C.textDim,fontSize:'10px',marginTop:'3px'}}>Skipped on this machine: needs macOS with Tart</div>}
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?1:.55}}>QUICK CHECK (LITE)</div>
+              <input type="number" min={0} placeholder="full length" value={lite ? simMs : ''} disabled={locked || !lite}
+                style={{...inp,width:'90px',opacity:lite?1:.55}} onChange={e=>setSimMs(e.target.value)}
+                title={lite ? 'Stop every test at this many simulated ms (--sim-ms); verdicts assume the full length' : 'run_tests.py only'} />
+              <span style={{color:C.textDim,fontSize:'10px',marginLeft:'6px',opacity:lite?1:.55}}>ms per test (--sim-ms)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Run controls + full-run progress ── */}
+        <div style={box}>
+          <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
+            {!active
+              ? <button style={btn('p', !picked.size || !nSims || busy)} disabled={!picked.size || !nSims || !!busy} onClick={start}>
+                  {busy === 'starting' ? 'STARTING…' : `▶ START RUN (${picked.size} test${picked.size === 1 ? '' : 's'})`}</button>
+              : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
+            {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
+              {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
+              with {w} at a time{!lite ? ', plus the CPU regressions and comparison' : ''}</span>}
+            {busy && busy !== 'starting' && busy !== 'stopping' && <span style={{color:C.red,fontSize:'10px'}}>{busy}</span>}
+          </div>
+          {run && <div style={{marginTop:'10px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+              <span style={{width:'72px',textAlign:'right',color:C.textBright,fontSize:'10px',letterSpacing:'.1em'}}>FULL RUN</span>
+              <Bar pct={overall} color={runCol} height={16} label={`${overall.toFixed(1)}%`}
+                title="Simulated seconds done of every picked test's length, over all simulators" />
+              <span style={{width:'210px',fontSize:'10px',color:runCol}}>
+                {run.running ? `${fmtDur(run.elapsed_s)} so far · ${run.eta_s != null ? `~${fmtDur(run.eta_s)} left` : 'estimating…'}`
+                  : `${run.stopping ? 'stopped' : run.exit === 0 ? 'finished' : `ended (exit ${run.exit})`} after ${fmtDur(run.elapsed_s)}`}
+              </span>
+            </div>
+            <div style={{color:C.textDim,fontSize:'10px',margin:'4px 0 0 82px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
+                 title={run.command}>{run.command}</div>
+            {/* The steps (run_all.sh's 1/6 … 6/6) */}
+            <div style={{display:'flex',flexWrap:'wrap',gap:'4px 14px',margin:'8px 0 0 82px',fontSize:'10px'}}>
+              {run.steps.map(s => (
+                <span key={s.n} title={s.note || undefined}
+                      style={{color:s.verdict ? VERDICT_COL[s.verdict] : s.state === 'running' ? C.blue : C.grey}}>
+                  {stepIcon(s)} {run.steps.length > 1 ? `${s.n}/${run.steps.length} ` : ''}{s.label}
+                  {s.verdict ? ` · ${s.verdict}` : s.state === 'skipped' ? ' · skipped' : ''}
+                </span>
+              ))}
+            </div>
+            {/* One bar per dashboard suite */}
+            {suiteKeys.map(k => {
+              const su = suites[k];
+              return (
+                <div key={k} style={{display:'flex',alignItems:'center',gap:'10px',marginTop:'6px'}}>
+                  <span style={{width:'72px',textAlign:'right',color:C.textDim,fontSize:'10px'}}>{su.label}</span>
+                  <Bar pct={pctOf(su.done_s, su.total_s)} color={C.text} height={10} label={`${pctOf(su.done_s, su.total_s).toFixed(1)}%`} />
+                  <span style={{width:'210px',fontSize:'10px',color:C.textDim}}>
+                    {su.building ? 'building the testbench… · ' : ''}{su.counts.done}/{Object.keys(su.tests).length} done
+                    {su.counts.running ? ` · ${su.counts.running} running` : ''}
+                    {su.counts.PASS ? <span style={{color:VERDICT_COL.PASS}}> · {su.counts.PASS} PASS</span> : null}
+                    {su.counts.WARN ? <span style={{color:VERDICT_COL.WARN}}> · {su.counts.WARN} WARN</span> : null}
+                    {su.counts.FAIL ? <span style={{color:VERDICT_COL.FAIL}}> · {su.counts.FAIL} FAIL</span> : null}
+                  </span>
+                </div>
+              );
+            })}
+          </div>}
+        </div>
+
+        {/* ── Test groups (the manuals' Appendix A) ── */}
+        <div style={box}>
+          <div style={ttl}>
+            Test groups <span style={{letterSpacing:0,textTransform:'none'}}>as in the manuals' Appendix A</span>
+            <span style={{marginLeft:'auto',display:'flex',gap:'6px'}}>
+              <button style={{...btn('s', locked),padding:'2px 8px',fontSize:'9px'}} disabled={locked} onClick={()=>setSel(null)}>ALL</button>
+              <button style={{...btn('s', locked),padding:'2px 8px',fontSize:'9px'}} disabled={locked} onClick={()=>setSel(new Set())}>NONE</button>
+              <button style={{...btn('s'),padding:'2px 8px',fontSize:'9px'}}
+                onClick={()=>setOpen(o => Object.values(o).some(Boolean) ? {} : Object.fromEntries(groups.map(g => [g.name, true])))}>
+                {Object.values(open).some(Boolean) ? 'COLLAPSE' : 'EXPAND'}</button>
+            </span>
+          </div>
+          {groups.map(g => {
+            const names = g.tests.map(t => t.name);
+            const n = names.filter(x => picked.has(x)).length;
+            const gp = groupProgress(g);
+            const isOpen = !!open[g.name];
+            const sim = g.tests.reduce((a, t) => a + t.sim_s, 0);
+            return (
+              <div key={g.name} style={{borderTop:`1px solid ${C.border}`,padding:'4px 0'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                  <input type="checkbox" checked={n === names.length} disabled={locked}
+                    ref={el => { if (el) el.indeterminate = n > 0 && n < names.length; }}
+                    onChange={()=>toggle(names)} title="Pick or drop the whole group" />
+                  <span style={{cursor:'pointer',color:C.textBright,width:'400px',flexShrink:0}} onClick={()=>setOpen(o => ({...o, [g.name]: !isOpen}))}>
+                    {isOpen ? '▾' : '▸'} {g.name}
+                    <span style={{color:C.textDim,fontSize:'10px'}}> · {n}/{names.length} tests · {fmtDur(sim)}</span>
+                  </span>
+                  {gp ? <>
+                    <Bar pct={gp.p} color={gp.v.FAIL ? C.red : gp.v.WARN ? C.amber : C.text} height={10} label={`${Math.floor(gp.p)}%`} />
+                    <span style={{width:'130px',fontSize:'10px',color:C.textDim}}>
+                      {gp.v.PASS ? <span style={{color:VERDICT_COL.PASS}}>{gp.v.PASS} PASS </span> : null}
+                      {gp.v.WARN ? <span style={{color:VERDICT_COL.WARN}}>{gp.v.WARN} WARN </span> : null}
+                      {gp.v.FAIL ? <span style={{color:VERDICT_COL.FAIL}}>{gp.v.FAIL} FAIL</span> : null}
+                    </span>
+                  </> : <span style={{flex:1}} />}
+                </div>
+                {isOpen && <div style={{margin:'4px 0 6px 22px'}}>
+                  {g.tests.map(t => (
+                    <div key={t.name} style={{display:'flex',alignItems:'flex-start',gap:'8px',padding:'1px 0'}}>
+                      <label style={{...lbl(locked),width:'378px',flexShrink:0}}>
+                        <input type="checkbox" checked={picked.has(t.name)} disabled={locked} onChange={()=>toggle([t.name])} />
+                        <span style={{color:picked.has(t.name) ? C.text : C.grey}}>{t.name}</span>
+                        <span style={{color:C.textDim,fontSize:'10px',marginLeft:'auto'}}>{fmtSim(t.sim_s)}</span>
+                      </label>
+                      <div style={{flex:1,display:'flex',flexDirection:'column'}}>
+                        {suiteKeys.filter(k => suites[k].tests[t.name]).map(k => testRow(t.name, suites[k]))}
+                      </div>
+                    </div>
+                  ))}
+                </div>}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Running now, and the output ── */}
+        {run && <div style={box}>
+          <div style={ttl}>Running now</div>
+          {suiteKeys.flatMap(k => Object.entries(suites[k].tests).filter(([, t]) => t.state === 'running').map(([name]) => (
+            <div key={`${k}-${name}`} style={{display:'flex',alignItems:'center',gap:'8px'}}>
+              <span style={{width:'400px',color:C.text,fontSize:'11px'}}>{name}</span>
+              <div style={{flex:1}}>{testRow(name, suites[k])}</div>
+            </div>
+          )))}
+          {!suiteKeys.some(k => suites[k].counts.running) &&
+            <div style={{color:C.textDim,fontSize:'10px'}}>{run.running ? 'No dashboard test running (another step, or the build)' : 'Nothing; the run has ended'}</div>}
+          <div style={{marginTop:'8px'}}>
+            <button style={{...btn('s'),padding:'2px 8px',fontSize:'9px'}} onClick={()=>setShowOut(v=>!v)}>
+              {showOut ? 'HIDE OUTPUT' : 'SHOW OUTPUT'}</button>
+          </div>
+          {showOut && <pre style={{background:'#030803',border:`1px solid ${C.border}`,color:'#00cc66',fontSize:'10px',padding:'8px',
+                                   maxHeight:'320px',overflow:'auto',whiteSpace:'pre-wrap',margin:'6px 0 0'}}>
+            {run.out.join('\n')}</pre>}
+        </div>}
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// A start error shows for a few seconds in place of the busy state
+function alertLine(setBusy, msg) {
+  setBusy(msg);
+  setTimeout(() => setBusy(b => (b === msg ? null : b)), 6000);
+}
