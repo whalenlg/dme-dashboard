@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 
 // ─────────────────────────────────────────────────────────────────
-//  RUN ALL: the regression suite from the dashboard
+//  RUN REGRESSIONS: the regression suite from the dashboard
 //  Talks to dme_klr/live/runall.mjs on the bridge (944turbo_dme_klr):
 //    GET  <url>/runall        the tests in the manuals' Appendix A groups,
 //                             with their simulated lengths, and the run
@@ -21,6 +21,9 @@ const C = {
 const VERDICT_COL = { PASS:C.textBright, WARN:C.amber, FAIL:C.red, SKIP:C.grey };
 // The manuals' rate: about 40 s of wall time per simulated second, per test
 const WALL_PER_SIM_S = 40;
+// The manuals, kept with the simulator; a group's MANUAL button opens its
+// section of Appendix A (the bridge names the manual and the anchor)
+const DOCS_URL = 'https://github.com/whalenlg/944turbo_dme_klr/blob/main';
 
 const fmtDur = s => {
   if (s == null || !isFinite(s)) return '—';
@@ -76,6 +79,9 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [pull, setPull] = useState(true);
   const [interval, setIntervalMs] = useState(100);
   const [simMs, setSimMs] = useState('');
+  // The ROM images every test runs on (the bridge's list; 1989 by default)
+  const romInfo = info?.roms;
+  const [rom, setRom] = useState(null);              // {dme, klr}; null = the default pair
   const [open, setOpen] = useState({});              // group name → expanded
   const [showOut, setShowOut] = useState(false);
   const [busy, setBusy] = useState(null);
@@ -96,9 +102,12 @@ export default function RunAllPanel({ url, state, onClose }) {
   const simTotal = pickedLens.reduce((a, b) => a + b, 0);
 
   const active = !!run?.running;
+  const romSel = (active && run?.opts?.roms) || rom || romInfo?.default || { dme:'', klr:'' };
+  const romPreset = romInfo?.presets?.find(p => p.dme === romSel.dme && p.klr === romSel.klr);
   const start = async () => {
     setBusy('starting');
     const body = { workers: w, interval_ms: +interval || 100, tests: [...picked] };
+    if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
                                perTestBuild: perTest, macosTest: macos, pull });
@@ -171,7 +180,7 @@ export default function RunAllPanel({ url, state, onClose }) {
                    margin:'2vh 0',height:'fit-content',textAlign:'left',color:C.text}}>
         {/* ── Title ── */}
         <div style={{display:'flex',alignItems:'baseline',gap:'12px',borderBottom:'1px solid #0d4a0d',paddingBottom:'10px',marginBottom:'12px'}}>
-          <div style={{color:C.textBright,fontSize:'13px',fontFamily:"'Orbitron',monospace",letterSpacing:'0.08em'}}>▶ RUN ALL — REGRESSION SUITE</div>
+          <div style={{color:C.textBright,fontSize:'13px',fontFamily:"'Orbitron',monospace",letterSpacing:'0.08em'}}>▶ RUN REGRESSIONS</div>
           {mode && <span style={{color:'#66ddaa',fontSize:'10px'}}>
             {lite ? 'lite package · run_tests.py' : 'developer install · dme_klr/run_all.sh'} · {url}
           </span>}
@@ -186,6 +195,29 @@ export default function RunAllPanel({ url, state, onClose }) {
         <div style={box}>
           <div style={ttl}>Options{locked && <span style={{color:C.amber,letterSpacing:0,textTransform:'none'}}>(fixed while a run is going)</span>}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:'10px 18px'}}>
+            {romInfo && <div style={{gridColumn:'1 / -1'}}>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>ROM IMAGES (EVERY TEST)</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:'6px 14px',alignItems:'center'}}>
+                <select value={romPreset ? romPreset.name : 'custom'} disabled={locked} style={inp}
+                  title="A DME + KLR pair the developer scripts use (run89.sh, run86.sh, run_carpokes.sh), or any two images"
+                  onChange={e => { const p = romInfo.presets.find(x => x.name === e.target.value); if (p) setRom({ dme: p.dme, klr: p.klr }); }}>
+                  {romInfo.presets.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                  <option value="custom" disabled={!!romPreset}>custom pair</option>
+                </select>
+                {['dme', 'klr'].map(cpu => (
+                  <label key={cpu} style={lbl(locked)}>
+                    <span style={{color:cpu === 'klr' ? C.blue : C.textBright}}>{cpu.toUpperCase()}</span>
+                    <select value={romSel[cpu]} disabled={locked} style={inp}
+                      onChange={e => setRom({ ...romSel, [cpu]: e.target.value })}>
+                      {(romInfo.images[cpu] ?? []).map(i => (
+                        <option key={i.name} value={i.name}>{i.name}{i.src === 'upload' ? ' (uploaded)' : ''}{i.name === romInfo.default[cpu] ? ' (default)' : ''}</option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                <span style={{color:C.textDim,fontSize:'10px'}}>as DME_ROM_FILE / KLR_ROM_FILE; the CPU regressions keep their own images</span>
+              </div>
+            </div>}
             <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>SIMULATOR</div>
               <label style={lbl(locked)}><input type="checkbox" checked={vl} disabled={locked} onChange={e=>setVl(e.target.checked)} />Verilator</label>
@@ -317,6 +349,9 @@ export default function RunAllPanel({ url, state, onClose }) {
                     {isOpen ? '▾' : '▸'} {g.name}
                     <span style={{color:C.textDim,fontSize:'10px'}}> · {n}/{names.length} tests · {fmtDur(sim)}</span>
                   </span>
+                  {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
+                     style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
+                     title={`What the ${g.name} tests check: the ${lite ? 'user' : 'developer'} manual, Appendix A`}>MANUAL ↗</a>}
                   {gp ? <>
                     <Bar pct={gp.p} color={gp.v.FAIL ? C.red : gp.v.WARN ? C.amber : C.text} height={10} label={`${Math.floor(gp.p)}%`} />
                     <span style={{width:'130px',fontSize:'10px',color:C.textDim}}>
