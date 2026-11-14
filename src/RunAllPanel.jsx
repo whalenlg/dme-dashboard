@@ -78,7 +78,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [iv, setIv] = useState(true);
   const [workers, setWorkers] = useState(null);
   const [perTest, setPerTest] = useState(false);
-  const [debug, setDebug] = useState([]);             // iverilog debug flags (step 4)
+  const [debug, setDebug] = useState({});             // test → iverilog debug flags (step 4)
   const [macos, setMacos] = useState('both');
   const [pull, setPull] = useState(true);
   const [interval, setIntervalMs] = useState(100);
@@ -93,6 +93,16 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [useHosts, setUseHosts] = useState(true);
   const remoteW = useHosts ? usableThreads(hostState.hosts) : 0;
   const ivOn = iv && !lite;
+  // the picked tests with iverilog debug switches on (each its own build, always here)
+  const DBG = [['DME_DEBUG', 'D', 'DME debug'], ['DME_DEEP_DEBUG', 'DD', 'DME deep debug'], ['KLR_DEBUG', 'K', 'KLR debug']];
+  const dbgTests = ivOn ? Object.keys(debug).filter(t => picked.has(t)) : [];
+  const toggleDbg = (t, f) => setDebug(d => {
+    const cur = d[t] ?? [];
+    const next = cur.includes(f) ? cur.filter(x => x !== f) : [...cur, f];
+    const o = { ...d };
+    if (next.length) o[t] = next; else delete o[t];
+    return o;
+  });
   const maxW = lite ? Math.max(8, info?.cpus ?? 8) : 8;
   const w = workers ?? Math.min(8, info?.cpus ?? 8);
 
@@ -119,7 +129,7 @@ export default function RunAllPanel({ url, state, onClose }) {
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
                                perTestBuild: perTest, macosTest: macos, pull,
-                               ...(ivOn && debug.length ? { debug } : {}) });
+                               ...(ivOn && dbgTests.length ? { debug: Object.fromEntries(dbgTests.map(t => [t, debug[t]])) } : {}) });
     try {
       const r = await fetch(`${url}/runall/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (!r.ok) alertLine(setBusy, `couldn't start: ${await r.text() || r.status}`);
@@ -260,19 +270,6 @@ export default function RunAllPanel({ url, state, onClose }) {
               </label>
             </div>
             <div>
-              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite || !ivOn?.55:1}}>IVERILOG DEBUG (STEP 4)</div>
-              {[['DME_DEBUG','DME debug'],['DME_DEEP_DEBUG','DME deep debug'],['KLR_DEBUG','KLR debug']].map(([f, l]) => (
-                <label key={f} style={lbl(locked || lite || !ivOn)}
-                  title={lite ? 'The lite package has no iverilog' : !ivOn ? 'Only for the iverilog suite: tick iverilog'
-                    : `--${f}: every iverilog test is built on its own with this debug output, and stays on this machine (no regression hosts: the dumps are large)`}>
-                  <input type="checkbox" checked={!lite && ivOn && debug.includes(f)} disabled={locked || lite || !ivOn}
-                    onChange={e=>setDebug(d => e.target.checked ? [...d, f] : d.filter(x => x !== f))} />{l} (--{f})
-                </label>
-              ))}
-              {!lite && ivOn && debug.length > 0 && <div style={{color:C.amber,fontSize:'10px',marginTop:'3px'}}>
-                The iverilog tests all run here, each built on its own</div>}
-            </div>
-            <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>MACOS INSTALL TEST (STEP 6)</div>
               <select value={lite ? 'none' : macos} disabled={locked || lite} style={{...inp,opacity:lite?.55:1}} onChange={e=>setMacos(e.target.value)}
                 title={lite ? 'run_all.sh only' : '--macos-test: a clean macOS VM (Tart), after steps 1-5 pass'}>
@@ -360,7 +357,8 @@ export default function RunAllPanel({ url, state, onClose }) {
         {/* ── Test groups (the manuals' Appendix A) ── */}
         <div style={box}>
           <div style={ttl}>
-            Test groups <span style={{letterSpacing:0,textTransform:'none'}}>as in the manuals' Appendix A</span>
+            Test groups <span style={{letterSpacing:0,textTransform:'none'}}>as in the manuals' Appendix A{!lite &&
+              <> · D / DD / K on a test: its iverilog DME / DME deep / KLR debug output (large; that test runs here, built on its own)</>}</span>
             <span style={{marginLeft:'auto',display:'flex',gap:'6px'}}>
               <button style={{...btn('s', locked),padding:'2px 8px',fontSize:'9px'}} disabled={locked} onClick={()=>setSel(null)}>ALL</button>
               <button style={{...btn('s', locked),padding:'2px 8px',fontSize:'9px'}} disabled={locked} onClick={()=>setSel(new Set())}>NONE</button>
@@ -384,6 +382,8 @@ export default function RunAllPanel({ url, state, onClose }) {
                   <span style={{cursor:'pointer',color:C.textBright,width:'400px',flexShrink:0}} onClick={()=>setOpen(o => ({...o, [g.name]: !isOpen}))}>
                     {isOpen ? '▾' : '▸'} {g.name}
                     <span style={{color:C.textDim,fontSize:'10px'}}> · {n}/{names.length} tests · {fmtDur(sim)}</span>
+                    {(() => { const d = names.filter(x => dbgTests.includes(x)).length;
+                              return d ? <span style={{color:C.amber,fontSize:'10px'}}> · {d} with iverilog debug</span> : null; })()}
                   </span>
                   {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
                      style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
@@ -405,6 +405,20 @@ export default function RunAllPanel({ url, state, onClose }) {
                         <span style={{color:picked.has(t.name) ? C.text : C.grey}}>{t.name}</span>
                         <span style={{color:C.textDim,fontSize:'10px',marginLeft:'auto'}}>{fmtSim(t.sim_s)}</span>
                       </label>
+                      {!lite && <span style={{display:'flex',gap:'3px',flexShrink:0}}>
+                        {DBG.map(([f, short, long]) => {
+                          const on = ivOn && (debug[t.name] ?? []).includes(f);
+                          const dis = locked || !ivOn || !picked.has(t.name);
+                          return (
+                            <button key={f} disabled={dis} onClick={()=>toggleDbg(t.name, f)}
+                              title={!ivOn ? 'iverilog debug: tick iverilog first'
+                                : `${long} (--${f}) for ${t.name} in the iverilog suite: built on its own, always on this machine; large dumps`}
+                              style={{padding:'0 5px',fontSize:'9px',fontFamily:'inherit',lineHeight:'14px',cursor:dis?'default':'pointer',
+                                      background:on ? '#2a1a00' : C.panelBg,border:`1px solid ${on ? C.amber : C.border}`,
+                                      color:on ? C.amber : dis ? '#334433' : C.textDim}}>{short}</button>
+                          );
+                        })}
+                      </span>}
                       <div style={{flex:1,display:'flex',flexDirection:'column'}}>
                         {suiteKeys.filter(k => suites[k].tests[t.name]).map(k => testRow(t.name, suites[k]))}
                       </div>
