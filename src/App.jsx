@@ -14,6 +14,7 @@ import { Popout } from "./popout.jsx";
 import { usePopouts } from "./popouts.js";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
+import LogList from "./LogList.jsx";
 import { thin, extent, inRange } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
@@ -1035,6 +1036,29 @@ export default function DMEDashboard() {
     return () => clearInterval(id);
   }, [klrPlaying, klrPlaySpeed, klrData.phases?.length]);
 
+  // Parse a log's text and open it at the end of the run
+  const openLogText = useCallback((text, fname, label = fname) => {
+    // Derive test name from filename: cl_tippy_in.dash.log → cl_tippy_in
+    const testName = fname.replace(/\.dash\.log$/, '').replace(/\.log$/, '');
+    document.title = `DME 951 — ${testName}`;
+    leaveLive();
+    setLogFileName(label);
+    setLogText(text);
+    const dme = parseLog(text);
+    const klr = parseKLRLog(text);
+    setData(dme);
+    setKlrData(klr);
+    setZoom(null);
+    setRpmZoom(null);
+    // Open at the end of the run, where both scrubbers can go back from
+    setIdx(Math.max(0, dme.snapshots.length - 1));
+    setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
+    setPlaying(false);
+    setKlrPlaying(false);
+    if (dme.snapshots.length || dme.phases.length ||
+        klr.snapshots.length || klr.phases.length) setShowLog(false);
+  }, [leaveLive]);
+
   // Fetch a .dash.log and open it at the end of the run
   const loadLogUrl = useCallback((url, fname, label = fname) => {
     fetch(url)
@@ -1042,29 +1066,9 @@ export default function DMEDashboard() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
       })
-      .then(text => {
-        // Derive test name from filename: cl_tippy_in.dash.log → cl_tippy_in
-        const testName = fname.replace(/\.dash\.log$/, '').replace(/\.log$/, '');
-        document.title = `DME 951 — ${testName}`;
-        leaveLive();
-        setLogFileName(label);
-        setLogText(text);
-        const dme = parseLog(text);
-        const klr = parseKLRLog(text);
-        setData(dme);
-        setKlrData(klr);
-        setZoom(null);
-        setRpmZoom(null);
-        // Open at the end of the run, where both scrubbers can go back from
-        setIdx(Math.max(0, dme.snapshots.length - 1));
-        setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
-        setPlaying(false);
-        setKlrPlaying(false);
-        if (dme.snapshots.length || dme.phases.length ||
-            klr.snapshots.length || klr.phases.length) setShowLog(false);
-      })
+      .then(text => openLogText(text, fname, label))
       .catch(err => console.warn(`[DME951] log fetch failed (${url}):`, err));
-  }, [leaveLive]);
+  }, [openLogText]);
 
   // Auto-load log from ?log=<url> query param.
   // The shell script starts a temporary CORS-enabled HTTP server
@@ -1096,16 +1100,40 @@ export default function DMEDashboard() {
         klr.snapshots.length || klr.phases.length) setShowLog(false);
   }, [logText, leaveLive]);
 
+  // Only simulator .dash.log files can be loaded from disk (picked or dropped).
+  // The file dialog can only filter on the last extension (.log), so the full
+  // name is checked here and anything else is refused with a note in the modal.
+  const [logFileErr, setLogFileErr] = useState('');
+  const isDashLog = f => /\.dash\.log$/i.test(f.name);
+  const refuseFile = f => setLogFileErr(`${f.name} is not a .dash.log file`);
+
   // Drag-drop onto textarea
   const handleDrop = useCallback(e => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (!file) return;
+    if (!isDashLog(file)) { refuseFile(file); return; }
+    setLogFileErr('');
     setLogFileName(file.name);
     const reader = new FileReader();
     reader.onload = ev => setLogText(ev.target.result);
     reader.readAsText(file);
   }, []);
+
+  // BROWSE…: pick a log with the browser's file dialog and open it straight
+  // away (the same as ?log=). Reset the input so picking the same file again
+  // still fires onChange.
+  const logFileRef = useRef(null);
+  const handlePick = useCallback(e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!isDashLog(file)) { refuseFile(file); return; }
+    setLogFileErr('');
+    file.text()
+      .then(text => openLogText(text, file.name))
+      .catch(err => console.warn(`[DME951] reading ${file.name} failed:`, err));
+  }, [openLogText]);
 
   const snap     = data.snapshots[idx] || { iram:{} };
   // Move the scrubber to the snapshot nearest time t (Timeline tab clicks)
@@ -1587,8 +1615,16 @@ export default function DMEDashboard() {
               ▶ LOAD SIMULATION LOG
             </div>
             <div style={{color:C.textDim,fontSize:'10px',marginBottom:'5px'}}>
-              Paste your .log file below, or drag-and-drop the file onto the text area:
+              Click a regression log, pick a .dash.log with BROWSE…, paste it below, or drag-and-drop the file onto the text area:
             </div>
+            <LogList bridge={liveUrl ?? DEFAULT_LIVE_URL} onOpen={loadLogUrl} />
+            <input ref={logFileRef} type="file" accept=".log"
+              style={{display:'none'}} onChange={handlePick} />
+            {logFileErr && (
+              <div style={{color:'#ff5050',fontSize:'10px',marginBottom:'5px'}}>
+                ⚠ {logFileErr}. Only simulator .dash.log files can be loaded.
+              </div>
+            )}
             <textarea ref={logRef} style={S.ta} value={logText}
               onChange={e=>setLogText(e.target.value)}
               onDrop={handleDrop} onDragOver={e=>e.preventDefault()}
@@ -1608,6 +1644,8 @@ export default function DMEDashboard() {
                 <button style={S.btn('s')} title="Connect to the simulator (dme_klr/live/bridge.mjs)"
                   onClick={()=>setLiveUrl(lastLiveUrl.current || DEFAULT_LIVE_URL)}>LIVE SIM</button>
               )}
+              <button style={S.btn('s')} title="Open a .dash.log file from disk"
+                onClick={()=>logFileRef.current?.click()}>BROWSE…</button>
               <button style={S.btn('p')} onClick={handleLoadAll}>
                 PARSE &amp; LOAD →
               </button>
