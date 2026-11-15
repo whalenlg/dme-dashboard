@@ -14,6 +14,7 @@ import { Popout } from "./popout.jsx";
 import { usePopouts } from "./popouts.js";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
+import LogList from "./LogList.jsx";
 import { thin, extent, inRange } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
@@ -1614,8 +1615,9 @@ export default function DMEDashboard() {
               ▶ LOAD SIMULATION LOG
             </div>
             <div style={{color:C.textDim,fontSize:'10px',marginBottom:'5px'}}>
-              Pick a .dash.log with BROWSE…, paste it below, or drag-and-drop the file onto the text area:
+              Click a regression log, pick a .dash.log with BROWSE…, paste it below, or drag-and-drop the file onto the text area:
             </div>
+            <LogList bridge={liveUrl ?? DEFAULT_LIVE_URL} onOpen={loadLogUrl} />
             <input ref={logFileRef} type="file" accept=".log"
               style={{display:'none'}} onChange={handlePick} />
             {logFileErr && (
