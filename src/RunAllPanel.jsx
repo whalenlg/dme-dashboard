@@ -143,14 +143,11 @@ export default function RunAllPanel({ url, state, onClose }) {
   const nPairs = Math.max(1, pairList.length);
   const multi = pairList.length > 1;
   const pickedLens = [...picked].map(n => (lite && +simMs > 0 ? Math.min(+simMs / 1000, lenOf[n] ?? 40) : lenOf[n] ?? 40));
-  // run_all.sh runs both suites at the same time when all their tests fit
-  // the workers (2 x tests <= workers), each with a worker per test, here only
-  // (several ROM pairs: all at once when every pair's suites fit, else one
-  // pair after another)
-  const allFit = multi && nSims * picked.size * nPairs <= w;
-  const together = !multi && nSims > 1 && 2 * picked.size <= w;
-  const est = together || allFit ? estimateWall(pickedLens, picked.size)
-    : nPairs * (nSims > 1 && 2 * picked.size <= w ? estimateWall(pickedLens, picked.size) : estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims));
+  // run_all.sh runs every suite (each simulator, each ROM pair) at the same
+  // time, sharing the workers and the hosts' threads: a thread that frees up
+  // starts the next waiting test of any suite, longest first in each
+  const nSuites = Math.max(1, nSims) * nPairs;
+  const est = estimateWall(Array.from({ length: nSuites }, () => pickedLens).flat(), w + remoteW);
   const simTotal = pickedLens.reduce((a, b) => a + b, 0);
 
   // ── iverilog debug runs: the disk they take ───────────────
@@ -424,10 +421,8 @@ export default function RunAllPanel({ url, state, onClose }) {
               : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
               {fmtDur(simTotal)} simulated{nSims > 1 || multi ? ` per ${[nSims > 1 && 'simulator', multi && 'ROM pair'].filter(Boolean).join(' and ')}` : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
-              {' '}{allFit ? <>with every ROM pair and suite at the same time ({nSims * picked.size * nPairs} of the {w} workers, here only)</>
-                : multi ? <>with one ROM pair after another ({nPairs} pairs)</>
-                : together ? <>with both suites at the same time ({2 * picked.size} of the {w} workers, here only)</>
-                : <>with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}</>}{!lite ? ', plus the CPU regressions and comparison' : ''}
+              {' '}with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}
+              {nSuites > 1 ? <> ({nSuites} suites at once, sharing them: a free one takes the next waiting test of any suite)</> : ''}{!lite ? ', plus the CPU regressions and comparison' : ''}
               {showDisk && <span style={{color:C.amber}} title={totalTitle}> · iverilog debug output ({dbgTests.length} test{dbgTests.length === 1 ? '' : 's'}):
                 about {fmtSize(diskTotal)} on disk (+{fmtSize(diskPeak)} while running)</span>}</span>}
             {busy && busy !== 'starting' && busy !== 'stopping' && <span style={{color:C.red,fontSize:'10px'}}>{busy}</span>}
