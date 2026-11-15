@@ -6,6 +6,11 @@ import { useEffect, useMemo, useState } from 'react';
 // running it says so, and BROWSE… / drag-and-drop still work.
 const C = { border:'#0d2e0d', textDim:'#ccddcc', textBright:'#00ff80', text:'#00e060', faint:'#7a8a7a' };
 
+// Which simulator wrote each folder (v_run_dashboard_tests.sh: Verilator,
+// run_dashboard_tests.sh: iverilog)
+const SIM = { v_dash_logs: { name:'Verilator', color:'#44aaff' }, dash_logs: { name:'iverilog', color:'#ffaa44' } };
+const simOf = dir => SIM[dir] ?? { name: dir, color: C.faint };
+
 const fmtSize = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`;
 const fmtDate = ms => {
   const d = new Date(ms), p = n => String(n).padStart(2, '0');
@@ -28,22 +33,22 @@ export default function LogList({ bridge, onOpen }) {
   const shown = useMemo(() => {
     if (!logs) return [];
     const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
-    return logs.filter(l => words.every(w => `${l.dir}/${l.name}`.toLowerCase().includes(w)));
+    return logs.filter(l => words.every(w => `${l.dir}/${l.name} ${simOf(l.dir).name}`.toLowerCase().includes(w)));
   }, [logs, filter]);
 
   const note = { color:C.faint, fontSize:'10px', margin:'0 0 12px' };
   if (logs === null) return <div style={note}>Looking for regression logs on the bridge…</div>;
   if (logs === false) return (
     <div style={note}>
-      Start the bridge (<code>dme_klr/live/bridge.mjs</code>) to list the regression logs in
-      {' '}<code>v_dash_logs</code> and <code>dash_logs</code> here.
+      Start the bridge (<code>dme_klr/live/bridge.mjs</code>) to list the regression logs here:
+      Verilator runs (<code>v_dash_logs</code>) and iverilog runs (<code>dash_logs</code>).
     </div>
   );
   if (!logs.length) return (
     <div style={note}>No .dash.log files in <code>v_dash_logs</code> or <code>dash_logs</code> yet.</div>
   );
 
-  const open = l => onOpen(`${bridge}/logs/${l.dir}/${encodeURIComponent(l.name)}`, l.name, `${l.dir}/${l.name}`);
+  const open = l => onOpen(`${bridge}/logs/${l.dir}/${encodeURIComponent(l.name)}`, l.name, `${l.dir}/${l.name} (${simOf(l.dir).name})`);
   return (
     <div style={{marginBottom:'12px'}}>
       <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'5px'}}>
@@ -55,7 +60,7 @@ export default function LogList({ bridge, onOpen }) {
       </div>
       <div style={{maxHeight:'150px',overflowY:'auto',border:`1px solid ${C.border}`,background:'#030803'}}>
         {shown.map(l => (
-          <div key={`${l.dir}/${l.name}`} role="button" tabIndex={0} title={`Open ${l.dir}/${l.name}`}
+          <div key={`${l.dir}/${l.name}`} role="button" tabIndex={0} title={`Open ${l.dir}/${l.name} (${simOf(l.dir).name} run)`}
             onClick={() => open(l)} onKeyDown={e => { if (e.key === 'Enter') open(l); }}
             style={{display:'flex',gap:'10px',padding:'3px 8px',cursor:'pointer',fontSize:'11px',lineHeight:'16px',
                     borderBottom:`1px solid ${C.border}`}}
@@ -64,7 +69,7 @@ export default function LogList({ bridge, onOpen }) {
             <span style={{color:C.textBright,flex:1,minWidth:0,textAlign:'left',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
               {l.name.replace(/\.dash\.log$/, '')}
             </span>
-            <span style={{color:C.faint,width:'78px',flexShrink:0}}>{l.dir}</span>
+            <span style={{color:simOf(l.dir).color,width:'72px',flexShrink:0}}>{simOf(l.dir).name}</span>
             <span style={{color:C.faint,width:'108px',flexShrink:0}}>{fmtDate(l.mtime)}</span>
             <span style={{color:C.faint,width:'52px',flexShrink:0,textAlign:'right'}}>{fmtSize(l.size)}</span>
           </div>
