@@ -854,9 +854,6 @@ const S = {
               alignItems:'center',justifyContent:'center',zIndex:100},
   logBox:{background:C.panelBg,border:`1px solid #0d4a0d`,borderRadius:'4px',
           padding:'18px',width:'600px',maxWidth:'92vw'},
-  ta:{width:'100%',height:'190px',background:'#030803',border:`1px solid ${C.border}`,
-      color:'#00cc66',fontFamily:'inherit',fontSize:'11px',padding:'8px',
-      resize:'vertical',boxSizing:'border-box',outline:'none'},
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -898,7 +895,6 @@ const NO_ROWS = [];
 const MANUAL_URL = 'https://github.com/whalenlg/944turbo_dme_klr/blob/main/docs/USER_MANUAL.md';
 
 export default function DMEDashboard() {
-  const [logText, setLogText]   = useState('');
   const [logFileName, setLogFileName] = useState('');
   const [data, setData]         = useState({ snapshots:[], phases:[], expect:[] });
   const [klrData, setKlrData]     = useState({ snapshots:[], phases:[], status:[], sparks:[] });
@@ -911,7 +907,6 @@ export default function DMEDashboard() {
   const [showLog, setShowLog]   = useState(true);
   const [playing, setPlaying]   = useState(false);
   const [playSpeed, setPlaySpeed] = useState(100); // ms between steps
-  const logRef = useRef();
 
   // Live simulator (dme_klr/live/bridge.mjs). ?live or ?live=<bridge url>
   // connects on load; otherwise the LIVE button does.
@@ -1043,7 +1038,6 @@ export default function DMEDashboard() {
     document.title = `DME 951 — ${testName}`;
     leaveLive();
     setLogFileName(label);
-    setLogText(text);
     const dme = parseLog(text);
     const klr = parseKLRLog(text);
     setData(dme);
@@ -1083,23 +1077,6 @@ export default function DMEDashboard() {
       loadLogUrl(SAMPLE_LOG_URL, SAMPLE_LOG_NAME, `${SAMPLE_LOG_NAME} (sample)`);
   }, [loadLogUrl]);
 
-  const handleLoadAll = useCallback(() => {
-    leaveLive();
-    setLogFileName(n => n === 'live simulation' ? 'pasted log' : n);
-    const dme = parseLog(logText);
-    const klr = parseKLRLog(logText);
-    setData(dme);
-    setKlrData(klr);
-    setZoom(null);
-    setRpmZoom(null);
-    setIdx(Math.max(0, dme.snapshots.length - 1));
-    setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
-    setPlaying(false);
-    setKlrPlaying(false);
-    if (dme.snapshots.length || dme.phases.length ||
-        klr.snapshots.length || klr.phases.length) setShowLog(false);
-  }, [logText, leaveLive]);
-
   // Only simulator .dash.log files can be loaded from disk (picked or dropped).
   // The file dialog can only filter on the last extension (.log), so the full
   // name is checked here and anything else is refused with a note in the modal.
@@ -1107,26 +1084,8 @@ export default function DMEDashboard() {
   const isDashLog = f => /\.dash\.log$/i.test(f.name);
   const refuseFile = f => setLogFileErr(`${f.name} is not a .dash.log file`);
 
-  // Drag-drop onto textarea
-  const handleDrop = useCallback(e => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    if (!isDashLog(file)) { refuseFile(file); return; }
-    setLogFileErr('');
-    setLogFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = ev => setLogText(ev.target.result);
-    reader.readAsText(file);
-  }, []);
-
-  // BROWSE…: pick a log with the browser's file dialog and open it straight
-  // away (the same as ?log=). Reset the input so picking the same file again
-  // still fires onChange.
-  const logFileRef = useRef(null);
-  const handlePick = useCallback(e => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  // Open a .dash.log from disk straight away (the same as ?log=)
+  const openLogFile = useCallback(file => {
     if (!file) return;
     if (!isDashLog(file)) { refuseFile(file); return; }
     setLogFileErr('');
@@ -1134,6 +1093,23 @@ export default function DMEDashboard() {
       .then(text => openLogText(text, file.name))
       .catch(err => console.warn(`[DME951] reading ${file.name} failed:`, err));
   }, [openLogText]);
+
+  // Drag-and-drop anywhere on the LOAD LOG window
+  const [logDragOver, setLogDragOver] = useState(false);
+  const handleDrop = useCallback(e => {
+    e.preventDefault();
+    setLogDragOver(false);
+    openLogFile(e.dataTransfer.files[0]);
+  }, [openLogFile]);
+
+  // BROWSE…: pick a log with the browser's file dialog. Reset the input so
+  // picking the same file again still fires onChange.
+  const logFileRef = useRef(null);
+  const handlePick = useCallback(e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    openLogFile(file);
+  }, [openLogFile]);
 
   const snap     = data.snapshots[idx] || { iram:{} };
   // Move the scrubber to the snapshot nearest time t (Timeline tab clicks)
@@ -1608,14 +1584,17 @@ export default function DMEDashboard() {
 
       {showLog && (
         <div style={S.logOverlay}>
-          <div style={S.logBox}>
+          <div style={{...S.logBox,...(logDragOver ? {borderColor:C.textBright} : {})}}
+            onDragOver={e => { e.preventDefault(); setLogDragOver(true); }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setLogDragOver(false); }}
+            onDrop={handleDrop}>
             <div style={{color:C.textBright,fontSize:'13px',fontFamily:"'Orbitron',monospace",
                          letterSpacing:'0.08em',borderBottom:`1px solid #0d4a0d`,
                          paddingBottom:'10px',marginBottom:'12px'}}>
               ▶ LOAD SIMULATION LOG
             </div>
             <div style={{color:C.textDim,fontSize:'10px',marginBottom:'5px'}}>
-              Click a regression log, pick a .dash.log with BROWSE…, paste it below, or drag-and-drop the file onto the text area:
+              Click a regression log, pick a .dash.log with BROWSE…, or drag one into the box below:
             </div>
             <LogList bridge={liveUrl ?? DEFAULT_LIVE_URL} onOpen={loadLogUrl} />
             <input ref={logFileRef} type="file" accept=".log"
@@ -1625,15 +1604,14 @@ export default function DMEDashboard() {
                 ⚠ {logFileErr}. Only simulator .dash.log files can be loaded.
               </div>
             )}
-            <textarea ref={logRef} style={S.ta} value={logText}
-              onChange={e=>setLogText(e.target.value)}
-              onDrop={handleDrop} onDragOver={e=>e.preventDefault()}
-              placeholder={"DME: [DS] ... (DME snapshot)\nKLR: [DS] ... (KLR snapshot)\nDME: [PHASE] / KLR: [PHASE] ...\n\nPaste your .dash.log file here or drag and drop."}
-            />
-            <div style={{color:C.textDim,fontSize:'9px',marginTop:'4px',marginBottom:'14px'}}>
-              Supports combined DME+KLR logs (<code>DME: [DS]</code> / <code>[KLR]</code>),
-              DME-only logs (<code>[DS]</code> / <code>[STATUS]</code>), and legacy formats.
-              All data is parsed in one pass.
+            <div style={{border:`2px dashed ${logDragOver ? C.textBright : '#1a4a1a'}`,borderRadius:'4px',
+                         background:logDragOver ? '#0d2e0d' : '#030803',
+                         color:logDragOver ? C.textBright : C.textDim,
+                         textAlign:'center',padding:'26px 8px',marginBottom:'14px'}}>
+              <div style={{fontSize:'12px',letterSpacing:'0.12em',marginBottom:'4px'}}>
+                {logDragOver ? 'DROP TO OPEN' : 'DRAG AND DROP'}
+              </div>
+              <div style={{fontSize:'10px',color:'#7a8a7a'}}>.dash.log files</div>
             </div>
             <div style={{display:'flex',gap:'8px',justifyContent:'flex-end',flexWrap:'wrap'}}>
               {(data.snapshots.length > 0 || data.phases.length > 0 ||
@@ -1644,11 +1622,8 @@ export default function DMEDashboard() {
                 <button style={S.btn('s')} title="Connect to the simulator (dme_klr/live/bridge.mjs)"
                   onClick={()=>setLiveUrl(lastLiveUrl.current || DEFAULT_LIVE_URL)}>LIVE SIM</button>
               )}
-              <button style={S.btn('s')} title="Open a .dash.log file from disk"
+              <button style={S.btn('p')} title="Open a .dash.log file from disk"
                 onClick={()=>logFileRef.current?.click()}>BROWSE…</button>
-              <button style={S.btn('p')} onClick={handleLoadAll}>
-                PARSE &amp; LOAD →
-              </button>
             </div>
           </div>
         </div>
