@@ -11,6 +11,21 @@ const C = { border:'#0d2e0d', textDim:'#ccddcc', textBright:'#00ff80', text:'#00
 const SIM = { v_dash_logs: { name:'Verilator', color:'#44aaff' }, dash_logs: { name:'iverilog', color:'#ffaa44' } };
 const simOf = dir => SIM[dir] ?? { name: dir, color: C.faint };
 
+// The list's columns: heading, sort value, width (flex: 1 for the name)
+const COLS = [
+  { key:'name',  label:'Test',      width:null,   align:'left'  },
+  { key:'sim',   label:'Simulator', width:'72px', align:'left'  },
+  { key:'mtime', label:'Modified',  width:'108px', align:'left' },
+  { key:'size',  label:'Size',      width:'52px', align:'right' },
+];
+const SORT_VAL = {
+  name:  l => l.name.replace(/\.dash\.log$/, '').toLowerCase(),
+  sim:   l => simOf(l.dir).name.toLowerCase(),
+  mtime: l => l.mtime,
+  size:  l => l.size,
+};
+const colStyle = c => c.width ? { width:c.width, flexShrink:0, textAlign:c.align } : { flex:1, minWidth:0, textAlign:c.align };
+
 const fmtSize = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`;
 const fmtDate = ms => {
   const d = new Date(ms), p = n => String(n).padStart(2, '0');
@@ -23,6 +38,10 @@ export default function LogList({ bridge, onOpen }) {
   // Include Verilator / iverilog logs: both checked each time LOAD LOG opens
   const [include, setInclude] = useState({ v_dash_logs: true, dash_logs: true });
   const toggle = dir => setInclude(i => ({ ...i, [dir]: !i[dir] }));
+  // Sort: click a column heading; again to reverse. Newest first to start.
+  const [sort, setSort] = useState({ key: 'mtime', dir: -1 });
+  const sortBy = key => setSort(s => s.key === key ? { key, dir: -s.dir }
+                                                   : { key, dir: key === 'mtime' || key === 'size' ? -1 : 1 });
 
   useEffect(() => {
     let live = true;
@@ -36,8 +55,14 @@ export default function LogList({ bridge, onOpen }) {
   const shown = useMemo(() => {
     if (!logs) return [];
     const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
-    return logs.filter(l => include[l.dir] !== false && words.every(w => `${l.dir}/${l.name} ${simOf(l.dir).name}`.toLowerCase().includes(w)));
-  }, [logs, filter, include]);
+    const val = SORT_VAL[sort.key];
+    return logs.filter(l => include[l.dir] !== false && words.every(w => `${l.dir}/${l.name} ${simOf(l.dir).name}`.toLowerCase().includes(w)))
+      .sort((a, b) => {
+        const x = val(a), y = val(b);
+        const c = typeof x === 'string' ? x.localeCompare(y, undefined, { numeric: true }) : x - y;
+        return sort.dir * c || b.mtime - a.mtime;
+      });
+  }, [logs, filter, include, sort]);
 
   const note = { color:C.faint, fontSize:'10px', margin:'0 0 12px' };
   if (logs === null) return <div style={note}>Looking for regression logs on the bridge…</div>;
@@ -71,6 +96,18 @@ export default function LogList({ bridge, onOpen }) {
         ))}
       </div>
       <div style={{maxHeight:'150px',overflowY:'auto',border:`1px solid ${C.border}`,background:'#030803'}}>
+        <div style={{display:'flex',gap:'10px',padding:'3px 8px',fontSize:'10px',lineHeight:'14px',
+                     position:'sticky',top:0,background:'#0a1a0a',borderBottom:`1px solid ${C.border}`}}>
+          {COLS.map(c => (
+            <span key={c.key} role="button" tabIndex={0} aria-sort={sort.key === c.key ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none'}
+              title={`Sort by ${c.label.toLowerCase()}`}
+              onClick={() => sortBy(c.key)} onKeyDown={e => { if (e.key === 'Enter') sortBy(c.key); }}
+              style={{...colStyle(c),cursor:'pointer',userSelect:'none',letterSpacing:'0.08em',
+                      color:sort.key === c.key ? C.textBright : C.textDim}}>
+              {c.label}{sort.key === c.key ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}
+            </span>
+          ))}
+        </div>
         {shown.map(l => (
           <div key={`${l.dir}/${l.name}`} role="button" tabIndex={0} title={`Open ${l.dir}/${l.name} (${simOf(l.dir).name} run)`}
             onClick={() => open(l)} onKeyDown={e => { if (e.key === 'Enter') open(l); }}
@@ -78,12 +115,12 @@ export default function LogList({ bridge, onOpen }) {
                     borderBottom:`1px solid ${C.border}`}}
             onMouseEnter={e => { e.currentTarget.style.background = '#0d2e0d'; }}
             onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
-            <span style={{color:C.textBright,flex:1,minWidth:0,textAlign:'left',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+            <span style={{color:C.textBright,...colStyle(COLS[0]),overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
               {l.name.replace(/\.dash\.log$/, '')}
             </span>
-            <span style={{color:simOf(l.dir).color,width:'72px',flexShrink:0}}>{simOf(l.dir).name}</span>
-            <span style={{color:C.faint,width:'108px',flexShrink:0}}>{fmtDate(l.mtime)}</span>
-            <span style={{color:C.faint,width:'52px',flexShrink:0,textAlign:'right'}}>{fmtSize(l.size)}</span>
+            <span style={{color:simOf(l.dir).color,...colStyle(COLS[1])}}>{simOf(l.dir).name}</span>
+            <span style={{color:C.faint,...colStyle(COLS[2])}}>{fmtDate(l.mtime)}</span>
+            <span style={{color:C.faint,...colStyle(COLS[3])}}>{fmtSize(l.size)}</span>
           </div>
         ))}
         {!shown.length && <div style={{color:C.faint,fontSize:'10px',padding:'4px 8px'}}>{
