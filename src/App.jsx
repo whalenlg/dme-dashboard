@@ -1099,11 +1099,20 @@ export default function DMEDashboard() {
         klr.snapshots.length || klr.phases.length) setShowLog(false);
   }, [logText, leaveLive]);
 
+  // Only simulator .dash.log files can be loaded from disk (picked or dropped).
+  // The file dialog can only filter on the last extension (.log), so the full
+  // name is checked here and anything else is refused with a note in the modal.
+  const [logFileErr, setLogFileErr] = useState('');
+  const isDashLog = f => /\.dash\.log$/i.test(f.name);
+  const refuseFile = f => setLogFileErr(`${f.name} is not a .dash.log file`);
+
   // Drag-drop onto textarea
   const handleDrop = useCallback(e => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (!file) return;
+    if (!isDashLog(file)) { refuseFile(file); return; }
+    setLogFileErr('');
     setLogFileName(file.name);
     const reader = new FileReader();
     reader.onload = ev => setLogText(ev.target.result);
@@ -1118,6 +1127,8 @@ export default function DMEDashboard() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    if (!isDashLog(file)) { refuseFile(file); return; }
+    setLogFileErr('');
     file.text()
       .then(text => openLogText(text, file.name))
       .catch(err => console.warn(`[DME951] reading ${file.name} failed:`, err));
@@ -1605,8 +1616,13 @@ export default function DMEDashboard() {
             <div style={{color:C.textDim,fontSize:'10px',marginBottom:'5px'}}>
               Pick a .dash.log with BROWSE…, paste it below, or drag-and-drop the file onto the text area:
             </div>
-            <input ref={logFileRef} type="file" accept=".log,.txt,text/plain"
+            <input ref={logFileRef} type="file" accept=".log"
               style={{display:'none'}} onChange={handlePick} />
+            {logFileErr && (
+              <div style={{color:'#ff5050',fontSize:'10px',marginBottom:'5px'}}>
+                ⚠ {logFileErr}. Only simulator .dash.log files can be loaded.
+              </div>
+            )}
             <textarea ref={logRef} style={S.ta} value={logText}
               onChange={e=>setLogText(e.target.value)}
               onDrop={handleDrop} onDragOver={e=>e.preventDefault()}
@@ -1626,7 +1642,7 @@ export default function DMEDashboard() {
                 <button style={S.btn('s')} title="Connect to the simulator (dme_klr/live/bridge.mjs)"
                   onClick={()=>setLiveUrl(lastLiveUrl.current || DEFAULT_LIVE_URL)}>LIVE SIM</button>
               )}
-              <button style={S.btn('s')} title="Open a .dash.log from disk"
+              <button style={S.btn('s')} title="Open a .dash.log file from disk"
                 onClick={()=>logFileRef.current?.click()}>BROWSE…</button>
               <button style={S.btn('p')} onClick={handleLoadAll}>
                 PARSE &amp; LOAD →
