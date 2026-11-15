@@ -11,7 +11,7 @@ const C = { border:'#0d2e0d', textDim:'#ccddcc', textBright:'#00ff80', text:'#00
 // run_dashboard_tests.sh: iverilog)
 const SIM = { v_dash_logs: { name:'Verilator', color:'#44aaff' }, dash_logs: { name:'iverilog', color:'#ffaa44' } };
 const simOf = dir => SIM[dir] ?? { name: dir, color: C.faint };
-// The ROM pair's folder a log is in (89, 86, carpokes, <DME>+<KLR>), or
+// The ROM pair's folder a log is in (89, 86, carpokes or a DME image's name), or
 // "older" for the folders from before those
 const romOf = l => l.rom ?? 'older';
 const pathOf = l => `${l.rom != null ? `${l.rom}/` : ''}${l.dir}/${l.name}`;

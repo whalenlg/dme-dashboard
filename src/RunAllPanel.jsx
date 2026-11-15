@@ -14,7 +14,7 @@ import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 //                             of one ROM pair's dash logs as they are now
 //                             (developer install)
 //  Each ROM pair's runs write in its own folder, $DMEKLR_TMP/dme_klr/<rom>
-//  (89, 86, carpokes or <DME>+<KLR>: romFolder in runAll.js)
+//  (89, 86, carpokes or the DME image's name: romFolder in runAll.js)
 //  Developer install: dme_klr/run_all.sh with every option it takes.
 //  Lite package: run_tests.py (Verilator only, so iverilog and the
 //  run_all-only options are greyed out).
