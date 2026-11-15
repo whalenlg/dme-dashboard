@@ -89,6 +89,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [debug, setDebug] = useState({});             // test → iverilog debug flags (step 4)
   const [macos, setMacos] = useState('both');
   const [pull, setPull] = useState(true);
+  const [plot, setPlot] = useState(true);             // step 5's difference plots (off: --no-plot)
   const [interval, setIntervalMs] = useState(100);
   const [simMs, setSimMs] = useState('');
   // The ROM images every test runs on (the bridge's list; 1989 by default)
@@ -160,7 +161,7 @@ export default function RunAllPanel({ url, state, onClose }) {
     if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
-                               perTestBuild: perTest, macosTest: macos, pull,
+                               perTestBuild: perTest, macosTest: macos, pull, plot,
                                ...(ivOn && dbgTests.length ? { debug: Object.fromEntries(dbgTests.map(t => [t, debug[t]])) } : {}) });
     try {
       const r = await fetch(`${url}/runall/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -213,6 +214,15 @@ export default function RunAllPanel({ url, state, onClose }) {
         <span style={{width:'130px',textAlign:'left',color:col,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{state}</span>
         <span style={{width:'110px',textAlign:'left',color:C.textDim,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
               title={t?.host ? `Ran on the regression host ${t.host}` : undefined}>{t?.host ? `@${t.host}` : ''}</span>
+        {/* step 5's plots of where iverilog and Verilator differ (on the iverilog line) */}
+        <span style={{width:'92px',display:'flex',gap:'3px',flexShrink:0}}>
+          {(su === suites.iv || !suites.iv) && (run?.diffs?.[name] ?? []).map(ecu => (
+            <a key={ecu} href={`${url}/runall/diff?test=${encodeURIComponent(name)}&ecu=${ecu}&run=${run.id}`} target="_blank" rel="noreferrer"
+               title={`${name}: where its iverilog and Verilator ${ecu} values differ (${name}_${ecu}_diff.jpg, compare_sim_logs.py --plot)`}
+               style={{padding:'0 4px',fontSize:'9px',lineHeight:'14px',border:`1px solid ${C.amber}`,color:C.amber,textDecoration:'none',whiteSpace:'nowrap'}}>
+              ◪ {ecu}</a>
+          ))}
+        </span>
       </div>
     );
   };
@@ -306,6 +316,15 @@ export default function RunAllPanel({ url, state, onClose }) {
               </label>
               <label style={lbl(locked || lite)} title={lite ? 'run_all.sh only' : 'git checkout main and git pull before the run; off runs the checkout as it is (--no-pull)'}>
                 <input type="checkbox" checked={pull && !lite} disabled={locked || lite} onChange={e=>setPull(e.target.checked)} />update first (git checkout main + pull)
+              </label>
+            </div>
+            <div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>COMPARISON (STEP 5)</div>
+              <label style={lbl(locked || lite)}
+                title={lite ? 'run_all.sh only (the lite package has no iverilog to compare with)'
+                  : 'Plot where each test\'s iverilog and Verilator logs differ (compare_sim_logs.py --plot; off: --no-plot). '
+                    + 'A ◪ DME / ◪ KLR icon on the test\'s line opens its plot'}>
+                <input type="checkbox" checked={plot && !lite} disabled={locked || lite} onChange={e=>setPlot(e.target.checked)} />Plot Differences
               </label>
             </div>
             <div>
