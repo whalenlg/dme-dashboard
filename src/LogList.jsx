@@ -20,6 +20,9 @@ const fmtDate = ms => {
 export default function LogList({ bridge, onOpen }) {
   const [logs, setLogs] = useState(null);   // null: loading; false: no bridge
   const [filter, setFilter] = useState('');
+  // Include Verilator / iverilog logs: both checked each time LOAD LOG opens
+  const [include, setInclude] = useState({ v_dash_logs: true, dash_logs: true });
+  const toggle = dir => setInclude(i => ({ ...i, [dir]: !i[dir] }));
 
   useEffect(() => {
     let live = true;
@@ -33,8 +36,8 @@ export default function LogList({ bridge, onOpen }) {
   const shown = useMemo(() => {
     if (!logs) return [];
     const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
-    return logs.filter(l => words.every(w => `${l.dir}/${l.name} ${simOf(l.dir).name}`.toLowerCase().includes(w)));
-  }, [logs, filter]);
+    return logs.filter(l => include[l.dir] !== false && words.every(w => `${l.dir}/${l.name} ${simOf(l.dir).name}`.toLowerCase().includes(w)));
+  }, [logs, filter, include]);
 
   const note = { color:C.faint, fontSize:'10px', margin:'0 0 12px' };
   if (logs === null) return <div style={note}>Looking for regression logs on the bridge…</div>;
@@ -57,6 +60,15 @@ export default function LogList({ bridge, onOpen }) {
           aria-label="Filter the regression logs"
           style={{flex:1,minWidth:0,background:'#030803',border:`1px solid ${C.border}`,color:C.text,
                   fontFamily:'inherit',fontSize:'11px',padding:'3px 6px',outline:'none'}} />
+        {Object.entries(SIM).map(([dir, sim]) => (
+          <label key={dir} title={`Show the ${sim.name} runs (${dir})`}
+            style={{display:'flex',alignItems:'center',gap:'4px',flexShrink:0,cursor:'pointer',
+                    color:sim.color,fontSize:'10px',whiteSpace:'nowrap'}}>
+            <input type="checkbox" checked={include[dir] !== false} onChange={() => toggle(dir)}
+              style={{margin:0,accentColor:sim.color,cursor:'pointer'}} />
+            Include {sim.name} logs
+          </label>
+        ))}
       </div>
       <div style={{maxHeight:'150px',overflowY:'auto',border:`1px solid ${C.border}`,background:'#030803'}}>
         {shown.map(l => (
@@ -74,7 +86,9 @@ export default function LogList({ bridge, onOpen }) {
             <span style={{color:C.faint,width:'52px',flexShrink:0,textAlign:'right'}}>{fmtSize(l.size)}</span>
           </div>
         ))}
-        {!shown.length && <div style={{color:C.faint,fontSize:'10px',padding:'4px 8px'}}>No log matches “{filter}”.</div>}
+        {!shown.length && <div style={{color:C.faint,fontSize:'10px',padding:'4px 8px'}}>{
+          !Object.keys(SIM).some(d => include[d] !== false) ? 'Both kinds of log are unchecked.'
+          : filter ? `No log matches “${filter}”.` : 'No logs of the checked kind.'}</div>}
       </div>
     </div>
   );
