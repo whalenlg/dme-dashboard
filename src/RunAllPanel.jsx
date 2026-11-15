@@ -14,7 +14,11 @@ import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 //                             of one ROM pair's dash logs as they are now
 //                             (developer install)
 //  Each ROM pair's runs write in its own folder, $DMEKLR_TMP/dme_klr/<rom>
-//  (89, 86, carpokes or the DME image's name: romFolder in runAll.js)
+//  (89, 86, carpokes or the DME image's name: romFolder in runAll.js).
+//  Developer install: the named pairs can be ticked together (89 alone by
+//  default), {pairs: ['89', '86', 'carpokes']}: each test then runs once per
+//  pair and simulator (run_all.sh --roms), each pair in its own folder, and
+//  the run's suites are 'vl:<rom>' / 'iv:<rom>'.
 //  Developer install: dme_klr/run_all.sh with every option it takes.
 //  Lite package: run_tests.py (Verilator only, so iverilog and the
 //  run_all-only options are greyed out).
@@ -97,7 +101,8 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [simMs, setSimMs] = useState('');
   // The ROM images every test runs on (the bridge's list; 1989 by default)
   const romInfo = info?.roms;
-  const [rom, setRom] = useState(null);              // {dme, klr}; null = the default pair
+  const [rom, setRom] = useState(null);              // {dme, klr}: a custom pair; null = the ticked pair(s)
+  const [pairs, setPairs] = useState(() => new Set(['89']));   // the named pairs ticked (developer install)
   const [open, setOpen] = useState({});              // group name → expanded
   const [showOut, setShowOut] = useState(false);
   const [fqs, setFqs] = useState(null);              // null = closed; {loading} | {text, at, ...} | {error}
@@ -128,11 +133,20 @@ export default function RunAllPanel({ url, state, onClose }) {
   });
 
   const nSims = (vl ? 1 : 0) + (ivOn ? 1 : 0);
+  // The named ROM pairs ticked (developer install); a custom pair is one
+  const presets = romInfo?.presets ?? [];
+  const pairList = !lite && !rom ? presets.map(p => p.folder).filter(f => pairs.has(f)) : [];
+  const nPairs = Math.max(1, pairList.length);
+  const multi = pairList.length > 1;
   const pickedLens = [...picked].map(n => (lite && +simMs > 0 ? Math.min(+simMs / 1000, lenOf[n] ?? 40) : lenOf[n] ?? 40));
   // run_all.sh runs both suites at the same time when all their tests fit
   // the workers (2 x tests <= workers), each with a worker per test, here only
-  const together = nSims > 1 && 2 * picked.size <= w;
-  const est = together ? estimateWall(pickedLens, picked.size) : estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims);
+  // (several ROM pairs: all at once when every pair's suites fit, else one
+  // pair after another)
+  const allFit = multi && nSims * picked.size * nPairs <= w;
+  const together = !multi && nSims > 1 && 2 * picked.size <= w;
+  const est = together || allFit ? estimateWall(pickedLens, picked.size)
+    : nPairs * (nSims > 1 && 2 * picked.size <= w ? estimateWall(pickedLens, picked.size) : estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims));
   const simTotal = pickedLens.reduce((a, b) => a + b, 0);
 
   // ── iverilog debug runs: the disk they take ───────────────
@@ -145,7 +159,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const rateOf = n => (dbgTests.includes(n) ? info?.ivDisk?.configs?.[[...debug[n]].sort().join('+')] ?? null : null);
   const diskOf = n => { const r = rateOf(n); return r ? (lenOf[n] ?? 40) * r.kept_mb_per_sim_s + (r.build_mb ?? 0) : null; };
   const showDisk = dbgTests.length > 0 && !!info?.ivDisk;
-  const diskTotal = dbgTests.reduce((a, n) => a + (diskOf(n) ?? 0), 0);
+  const diskTotal = nPairs * dbgTests.reduce((a, n) => a + (diskOf(n) ?? 0), 0);   // once per ROM pair
   const diskPeak = dbgTests.map(n => { const r = rateOf(n); return r ? (lenOf[n] ?? 40) * Math.max(0, r.peak_mb_per_sim_s - r.kept_mb_per_sim_s) : 0; })
     .sort((a, b) => b - a).slice(0, w).reduce((a, b) => a + b, 0);
   const diskTitle = n => {
@@ -159,17 +173,21 @@ export default function RunAllPanel({ url, state, onClose }) {
     + `the second figure is the raw log and VCD the ${w} longest of them hold while running, before gzip / vcd2fst`;
 
   const active = !!run?.running;
-  const romSel = (active && run?.opts?.roms) || rom || romInfo?.default || { dme:'', klr:'' };
+  const runPairs = active ? run?.opts?.roms?.pairs : null;    // the run's own, while it goes
+  const onePair = pairList.length === 1 ? presets.find(p => p.folder === pairList[0]) : null;
+  const romSel = (active && !runPairs && run?.opts?.roms) || rom || onePair || romInfo?.default || { dme:'', klr:'' };
   const romPreset = romInfo?.presets?.find(p => p.dme === romSel.dme && p.klr === romSel.klr);
   // the picked pair's log folder, and the ones there are, for FQS ANALYSIS
-  const pickFolder = romFolder(romSel.dme, romSel.klr);
+  const pickFolder = multi ? pairList[0] : romFolder(romSel.dme, romSel.klr);
   const fqsFolder = fqsRom ?? pickFolder;
   const folders = [...new Set([pickFolder, ...(info?.romFolders ?? [])])];
+  const noPair = !lite && !!romInfo && !rom && !pairList.length;
   const start = async () => {
     setBusy('starting');
     const body = { workers: w, interval_ms: +interval || 100, tests: [...picked] };
     body.useHosts = useHosts;
-    if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
+    if (multi) body.pairs = pairList;
+    else if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
                                perTestBuild: perTest, macosTest: macos, pull, plot,
@@ -211,6 +229,10 @@ export default function RunAllPanel({ url, state, onClose }) {
   // ── Progress views ────────────────────────────────────────
   const suites = run?.suites ?? {};
   const suiteKeys = Object.keys(suites);
+  const hasIv = suiteKeys.some(k => suites[k].sim === 'iv' || k === 'iv');
+  const runMulti = (run?.roms?.length ?? 1) > 1;
+  // "Verilator", or "Verilator · 86" when the run has several ROM pairs
+  const suiteName = su => (runMulti && su?.rom ? `${su.label} · ${su.rom}` : su?.label ?? '');
   const testRow = (name, su) => {
     const t = su?.tests?.[name];
     const len = t?.len_s ?? lenOf[name] ?? 40;
@@ -218,18 +240,18 @@ export default function RunAllPanel({ url, state, onClose }) {
     const col = t?.verdict ? VERDICT_COL[t.verdict] : t?.state === 'running' ? C.blue : C.grey;
     const state = !t ? '' : t.verdict ?? (t.state === 'running' ? `${fmtSim(t.t_s)} / ${fmtSim(len)}` : t.state);
     return (
-      <div key={`${su?.label}-${name}`} style={{display:'flex',alignItems:'center',gap:'8px',padding:'1px 0'}}
+      <div key={`${su?.label}-${su?.rom ?? ""}-${name}`} style={{display:'flex',alignItems:'center',gap:'8px',padding:'1px 0'}}
            title={t?.detail || undefined}>
-        <span style={{width:'72px',textAlign:'right',color:C.textDim,fontSize:'10px'}}>{suiteKeys.length > 1 ? su.label : ''}</span>
+        <span style={{width:runMulti ? '120px' : '72px',textAlign:'right',color:C.textDim,fontSize:'10px',whiteSpace:'nowrap'}}>{suiteKeys.length > 1 ? suiteName(su) : ''}</span>
         <Bar pct={p} color={col} height={10} label={`${Math.floor(p)}%`} />
         <span style={{width:'130px',textAlign:'left',color:col,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{state}</span>
         <span style={{width:'110px',textAlign:'left',color:C.textDim,fontSize:'10px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
               title={t?.host ? `Ran on the regression host ${t.host}` : undefined}>{t?.host ? `@${t.host}` : ''}</span>
         {/* step 5's plots of where iverilog and Verilator differ (on the iverilog line) */}
         <span style={{width:'92px',display:'flex',gap:'3px',flexShrink:0}}>
-          {(su === suites.iv || !suites.iv) && (run?.diffs?.[name] ?? []).map(ecu => (
-            <a key={ecu} href={`${url}/runall/diff?test=${encodeURIComponent(name)}&ecu=${ecu}&run=${run.id}`} target="_blank" rel="noreferrer"
-               title={`${name}: where its iverilog and Verilator ${ecu} values differ (${name}_${ecu}_diff.jpg, compare_sim_logs.py --plot)`}
+          {(su?.sim === 'iv' || !hasIv) && (run?.diffs?.[su?.rom ?? run.rom]?.[name] ?? []).map(ecu => (
+            <a key={ecu} href={`${url}/runall/diff?rom=${encodeURIComponent(su?.rom ?? run.rom)}&test=${encodeURIComponent(name)}&ecu=${ecu}&run=${run.id}`} target="_blank" rel="noreferrer"
+               title={`${name}${runMulti ? ` (${su.rom})` : ''}: where its iverilog and Verilator ${ecu} values differ (${name}_${ecu}_diff.jpg, compare_sim_logs.py --plot)`}
                style={{padding:'0 4px',fontSize:'9px',lineHeight:'14px',border:`1px solid ${C.amber}`,color:C.amber,textDecoration:'none',whiteSpace:'nowrap'}}>
               ◪ {ecu}</a>
           ))}
@@ -278,10 +300,29 @@ export default function RunAllPanel({ url, state, onClose }) {
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:'10px 18px'}}>
             {romInfo && <div style={{gridColumn:'1 / -1'}}>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>ROM IMAGES (EVERY TEST)</div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:'6px 14px',alignItems:'center'}}>
+              {!lite && presets.length > 0 && <div style={{display:'flex',flexWrap:'wrap',gap:'4px 16px',alignItems:'center',marginBottom:'5px'}}>
+                <span style={{color:C.textDim,fontSize:'10px'}} title="Each test runs once per ticked pair and simulator (run_all.sh --roms), each pair in its own folder">ROM pairs:</span>
+                {presets.map(p => {
+                  const on = runPairs ? runPairs.includes(p.folder) : !rom && pairs.has(p.folder);
+                  return (
+                    <label key={p.folder} style={lbl(locked)} title={`${p.name}: DME ${p.dme}, KLR ${p.klr} → tmp/dme_klr/${p.folder}`}>
+                      <input type="checkbox" checked={on} disabled={locked} onChange={() => {
+                        setRom(null);
+                        setPairs(ps => { const n = new Set(rom ? [] : ps); n.has(p.folder) ? n.delete(p.folder) : n.add(p.folder); return n; });
+                      }} />{p.folder} <span style={{color:C.textDim,fontSize:'10px'}}>({p.name.replace(/ \(.*\)$/, '')})</span>
+                    </label>
+                  );
+                })}
+                {(multi || runPairs?.length > 1) && <span style={{color:C.textDim,fontSize:'10px'}}>
+                  each test runs {(runPairs ?? pairList).length * Math.max(1, nSims)} times ({(runPairs ?? pairList).length} pairs × {Math.max(1, nSims)} simulator{nSims === 1 ? '' : 's'}), each pair in its own folder,
+                  {' '}<code style={{color:C.text,background:'transparent',fontSize:'10px',padding:0}}>tmp/dme_klr/{'{'}{(runPairs ?? pairList).join(',')}{'}'}</code></span>}
+                {!lite && !rom && !pairList.length && !runPairs && <span style={{color:C.amber,fontSize:'10px'}}>Tick a ROM pair, or pick one below.</span>}
+              </div>}
+              {!(multi || runPairs?.length > 1) && <div style={{display:'flex',flexWrap:'wrap',gap:'6px 14px',alignItems:'center'}}>
                 <select value={romPreset ? romPreset.name : 'custom'} disabled={locked} style={inp}
                   title="A DME + KLR pair the developer scripts use (run89.sh, run86.sh, run_carpokes.sh), or any two images"
-                  onChange={e => { const p = romInfo.presets.find(x => x.name === e.target.value); if (p) setRom({ dme: p.dme, klr: p.klr }); }}>
+                  onChange={e => { const p = romInfo.presets.find(x => x.name === e.target.value);
+                                   if (p) { setRom(null); setPairs(new Set([p.folder ?? romFolder(p.dme, p.klr)])); } }}>
                   {romInfo.presets.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
                   <option value="custom" disabled={!!romPreset}>custom pair</option>
                 </select>
@@ -289,7 +330,9 @@ export default function RunAllPanel({ url, state, onClose }) {
                   <label key={cpu} style={lbl(locked)}>
                     <span style={{color:cpu === 'klr' ? C.blue : C.textBright}}>{cpu.toUpperCase()}</span>
                     <select value={romSel[cpu]} disabled={locked} style={inp}
-                      onChange={e => setRom({ ...romSel, [cpu]: e.target.value })}>
+                      onChange={e => { const n = { ...romSel, [cpu]: e.target.value };
+                                       const p = presets.find(x => x.dme === n.dme && x.klr === n.klr);
+                                       if (p && !lite) { setRom(null); setPairs(new Set([p.folder])); } else setRom(n); }}>
                       {(romInfo.images[cpu] ?? []).map(i => (
                         <option key={i.name} value={i.name}>{i.name}{i.src === 'upload' ? ' (uploaded)' : ''}{i.name === romInfo.default[cpu] ? ' (default)' : ''}</option>
                       ))}
@@ -298,7 +341,7 @@ export default function RunAllPanel({ url, state, onClose }) {
                 ))}
                 <span style={{color:C.textDim,fontSize:'10px'}}>as DME_ROM_FILE / KLR_ROM_FILE; the CPU regressions keep their own images.
                   The tests' logs go in this pair's folder, <code style={{color:C.text,background:'transparent',fontSize:'10px',padding:0}}>tmp/dme_klr/{pickFolder}</code></span>
-              </div>
+              </div>}
             </div>}
             <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>SIMULATOR</div>
@@ -372,12 +415,14 @@ export default function RunAllPanel({ url, state, onClose }) {
         <div style={box}>
           <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
             {!active
-              ? <button style={btn('p', !picked.size || !nSims || busy)} disabled={!picked.size || !nSims || !!busy} onClick={start}>
+              ? <button style={btn('p', !picked.size || !nSims || busy || noPair)} disabled={!picked.size || !nSims || !!busy || noPair} onClick={start}>
                   {busy === 'starting' ? 'STARTING…' : `▶ START RUN (${picked.size} test${picked.size === 1 ? '' : 's'})`}</button>
               : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
-              {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
-              {' '}{together ? <>with both suites at the same time ({2 * picked.size} of the {w} workers, here only)</>
+              {fmtDur(simTotal)} simulated{nSims > 1 || multi ? ` per ${[nSims > 1 && 'simulator', multi && 'ROM pair'].filter(Boolean).join(' and ')}` : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
+              {' '}{allFit ? <>with every ROM pair and suite at the same time ({nSims * picked.size * nPairs} of the {w} workers, here only)</>
+                : multi ? <>with one ROM pair after another ({nPairs} pairs)</>
+                : together ? <>with both suites at the same time ({2 * picked.size} of the {w} workers, here only)</>
                 : <>with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}</>}{!lite ? ', plus the CPU regressions and comparison' : ''}
               {showDisk && <span style={{color:C.amber}} title={totalTitle}> · iverilog debug output ({dbgTests.length} test{dbgTests.length === 1 ? '' : 's'}):
                 about {fmtSize(diskTotal)} on disk (+{fmtSize(diskPeak)} while running)</span>}</span>}
@@ -432,7 +477,7 @@ export default function RunAllPanel({ url, state, onClose }) {
               const su = suites[k];
               return (
                 <div key={k} style={{display:'flex',alignItems:'center',gap:'10px',marginTop:'6px'}}>
-                  <span style={{width:'72px',textAlign:'right',color:C.textDim,fontSize:'10px'}}>{su.label}</span>
+                  <span style={{width:runMulti ? '120px' : '72px',textAlign:'right',color:C.textDim,fontSize:'10px',whiteSpace:'nowrap'}}>{suiteName(su)}</span>
                   <Bar pct={pctOf(su.done_s, su.total_s)} color={C.text} height={10} label={`${pctOf(su.done_s, su.total_s).toFixed(1)}%`} />
                   <span style={{width:'210px',fontSize:'10px',color:C.textDim}}>
                     {su.building ? 'building the testbench… · ' : ''}{su.counts.done}/{Object.keys(su.tests).length} done
