@@ -125,7 +125,10 @@ export default function RunAllPanel({ url, state, onClose }) {
 
   const nSims = (vl ? 1 : 0) + (ivOn ? 1 : 0);
   const pickedLens = [...picked].map(n => (lite && +simMs > 0 ? Math.min(+simMs / 1000, lenOf[n] ?? 40) : lenOf[n] ?? 40));
-  const est = estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims);
+  // run_all.sh runs both suites at the same time when all their tests fit
+  // the workers (2 x tests <= workers), each with a worker per test, here only
+  const together = nSims > 1 && 2 * picked.size <= w;
+  const est = together ? estimateWall(pickedLens, picked.size) : estimateWall(pickedLens, w + remoteW) * Math.max(1, nSims);
   const simTotal = pickedLens.reduce((a, b) => a + b, 0);
 
   // ── iverilog debug runs: the disk they take ───────────────
@@ -365,7 +368,8 @@ export default function RunAllPanel({ url, state, onClose }) {
               : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
               {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
-              with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}{!lite ? ', plus the CPU regressions and comparison' : ''}
+              {together ? <>with both suites at the same time ({2 * picked.size} of the {w} workers, here only)</>
+                : <>with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}</>}{!lite ? ', plus the CPU regressions and comparison' : ''}
               {showDisk && <span style={{color:C.amber}} title={totalTitle}> · iverilog debug output ({dbgTests.length} test{dbgTests.length === 1 ? '' : 's'}):
                 about {fmtSize(diskTotal)} on disk (+{fmtSize(diskPeak)} while running)</span>}</span>}
             {busy && busy !== 'starting' && busy !== 'stopping' && <span style={{color:C.red,fontSize:'10px'}}>{busy}</span>}
