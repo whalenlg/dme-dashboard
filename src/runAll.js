@@ -60,3 +60,15 @@ export function useRegressHosts(url, open) {
 // The threads the run can count on: the enabled hosts that answered with
 // the same software
 export const usableThreads = h => (h?.hosts ?? []).filter(x => x.enabled && x.status?.ok).reduce((a, x) => a + x.threads, 0);
+
+// The log folder of a ROM pair, $DMEKLR_TMP/dme_klr/<folder>, named as the
+// bridge (dme_klr/live/logdirs.mjs) and paths.sh name it: 89 (the default
+// 1989 pair), 86 (run86.sh), carpokes (run_carpokes.sh), any other pair
+// the DME image's name without its extension
+const NAMED_ROM_FOLDERS = { '89DME_951pin+89KLR_951': '89', '28PIN_86DME+86KLR_951': '86',
+                            '28PIN_DME_PERFORMANCE+87KLR_951': 'carpokes' };
+const romStem = f => String(f).replace(/\\/g, '/').split('/').pop().replace(/\.[^.]*$/, '');
+export function romFolder(dme, klr) {
+  const key = `${romStem(dme || '89DME_951pin.mem')}+${romStem(klr || '89KLR_951.mem')}`;
+  return NAMED_ROM_FOLDERS[key] ?? romStem(dme || '89DME_951pin.mem').replace(/[^A-Za-z0-9_.+-]/g, '_');
+}
