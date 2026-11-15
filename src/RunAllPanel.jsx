@@ -39,7 +39,12 @@ const fmtDur = s => {
 };
 const fmtSim = s => (s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${+s.toFixed(1)} s`);
 const pctOf = (d, t) => (t > 0 ? Math.min(100, (100 * d) / t) : 0);
-const fmtSize = mb => (mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : `${Math.round(mb)} MB`);
+// iv_disk_rates.json is in MiB (du); shown in decimal MB / GB, as Finder and Explorer show file sizes
+const fmtSize = mb => {
+  if (mb == null) return '—';
+  const b = mb * 1048576;
+  return b >= 1e9 ? `${(b / 1e9).toFixed(b >= 1e11 ? 0 : 1)} GB` : `${Math.round(b / 1e6)} MB`;
+};
 
 // The longest-first schedule run_tests.py and run_dashboard_parallel.sh
 // use, as wall seconds at the manuals' rate: a run can't end before its
