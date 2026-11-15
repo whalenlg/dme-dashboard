@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import RegressHosts from "./RegressHosts.jsx";
 import HostTest from "./HostTest.jsx";
-import { useRegressHosts, usableThreads } from "./runAll.js";
+import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  RUN REGRESSIONS: the regression suite from the dashboard
@@ -10,8 +10,11 @@ import { useRegressHosts, usableThreads } from "./runAll.js";
 //                             with their simulated lengths, and the run
 //    POST <url>/runall/start  JSON options (below)
 //    POST <url>/runall/stop
-//    GET  <url>/runall/fqs    the FQS analysis (fqs_analysis.py) of the
-//                             dash logs as they are now (developer install)
+//    GET  <url>/runall/fqs?rom=<folder>  the FQS analysis (fqs_analysis.py)
+//                             of one ROM pair's dash logs as they are now
+//                             (developer install)
+//  Each ROM pair's runs write in its own folder, $DMEKLR_TMP/dme_klr/<rom>
+//  (89, 86, carpokes or <DME>+<KLR>: romFolder in runAll.js)
 //  Developer install: dme_klr/run_all.sh with every option it takes.
 //  Lite package: run_tests.py (Verilator only, so iverilog and the
 //  run_all-only options are greyed out).
@@ -98,6 +101,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [open, setOpen] = useState({});              // group name → expanded
   const [showOut, setShowOut] = useState(false);
   const [fqs, setFqs] = useState(null);              // null = closed; {loading} | {text, at, ...} | {error}
+  const [fqsRom, setFqsRom] = useState(null);        // the FQS analysis' ROM folder; null = the picked pair's
   const [busy, setBusy] = useState(null);
   const hostState = useRegressHosts(url, true);
   const [useHosts, setUseHosts] = useState(true);
@@ -157,6 +161,10 @@ export default function RunAllPanel({ url, state, onClose }) {
   const active = !!run?.running;
   const romSel = (active && run?.opts?.roms) || rom || romInfo?.default || { dme:'', klr:'' };
   const romPreset = romInfo?.presets?.find(p => p.dme === romSel.dme && p.klr === romSel.klr);
+  // the picked pair's log folder, and the ones there are, for FQS ANALYSIS
+  const pickFolder = romFolder(romSel.dme, romSel.klr);
+  const fqsFolder = fqsRom ?? pickFolder;
+  const folders = [...new Set([pickFolder, ...(info?.romFolders ?? [])])];
   const start = async () => {
     setBusy('starting');
     const body = { workers: w, interval_ms: +interval || 100, tests: [...picked] };
@@ -173,10 +181,10 @@ export default function RunAllPanel({ url, state, onClose }) {
     } catch (e) { alertLine(setBusy, `couldn't start: ${e.message}`); }
     refresh();
   };
-  const loadFqs = async () => {
+  const loadFqs = async rom => {
     setFqs(f => ({ ...(f ?? {}), loading: true }));
     try {
-      const r = await fetch(`${url}/runall/fqs`);
+      const r = await fetch(`${url}/runall/fqs?rom=${encodeURIComponent(rom ?? fqsFolder)}`);
       setFqs(r.ok ? await r.json() : { error: `${r.status} ${await r.text()}` });
     } catch (e) { setFqs({ error: e.message }); }
   };
@@ -288,7 +296,8 @@ export default function RunAllPanel({ url, state, onClose }) {
                     </select>
                   </label>
                 ))}
-                <span style={{color:C.textDim,fontSize:'10px'}}>as DME_ROM_FILE / KLR_ROM_FILE; the CPU regressions keep their own images</span>
+                <span style={{color:C.textDim,fontSize:'10px'}}>as DME_ROM_FILE / KLR_ROM_FILE; the CPU regressions keep their own images.
+                  The tests' logs go in this pair's folder, <code style={{color:C.text,background:'transparent',fontSize:'10px',padding:0}}>tmp/dme_klr/{pickFolder}</code></span>
               </div>
             </div>}
             <div>
@@ -368,7 +377,7 @@ export default function RunAllPanel({ url, state, onClose }) {
               : <button style={btn('r', !!busy)} disabled={!!busy} onClick={stop}>{busy === 'stopping' || run.stopping ? 'STOPPING…' : '■ STOP RUN'}</button>}
             {!active && <span style={{color:C.textDim,fontSize:'10px'}}>
               {fmtDur(simTotal)} simulated{nSims > 1 ? ' per simulator' : ''} · about {fmtDur(est)} at {WALL_PER_SIM_S} s per simulated second
-              {together ? <>with both suites at the same time ({2 * picked.size} of the {w} workers, here only)</>
+              {' '}{together ? <>with both suites at the same time ({2 * picked.size} of the {w} workers, here only)</>
                 : <>with {w} at a time{remoteW ? ` here + ${remoteW} on regression hosts` : ''}</>}{!lite ? ', plus the CPU regressions and comparison' : ''}
               {showDisk && <span style={{color:C.amber}} title={totalTitle}> · iverilog debug output ({dbgTests.length} test{dbgTests.length === 1 ? '' : 's'}):
                 about {fmtSize(diskTotal)} on disk (+{fmtSize(diskPeak)} while running)</span>}</span>}
@@ -381,10 +390,15 @@ export default function RunAllPanel({ url, state, onClose }) {
             <div style={{display:'flex',alignItems:'center',gap:'10px',fontSize:'10px',color:C.textDim}}>
               <span style={{color:C.textBright,letterSpacing:'.15em',fontSize:'9px'}}>FQS ANALYSIS</span>
               <span>{fqs.loading ? 'running fqs_analysis.py…' : fqs.error ? <span style={{color:C.red}}>{fqs.error}</span>
-                : `fqs_analysis.py on the logs as of ${new Date(fqs.at).toLocaleTimeString()}${fqs.exit ? ` (exit ${fqs.exit})` : ''}`}</span>
+                : `fqs_analysis.py on the ${fqs.rom ?? fqsFolder} logs as of ${new Date(fqs.at).toLocaleTimeString()}${fqs.exit ? ` (exit ${fqs.exit})` : ''}`}</span>
+              <label style={{display:'flex',alignItems:'center',gap:'5px'}} title="Whose logs: each ROM pair's runs are in its own folder, tmp/dme_klr/<folder>">ROM folder
+                <select value={fqsFolder} disabled={fqs.loading} style={{...inp,fontSize:'10px',padding:'1px 4px'}}
+                  onChange={e => { setFqsRom(e.target.value); loadFqs(e.target.value); }}>
+                  {folders.map(f => <option key={f} value={f}>{f}</option>)}
+                </select></label>
               {active && <span style={{color:C.amber}}>a run is going: tests not done yet show their older logs or none</span>}
               <button style={{...btn('s', fqs.loading),marginLeft:'auto',padding:'2px 8px',fontSize:'9px'}} disabled={fqs.loading}
-                onClick={loadFqs}>REFRESH</button>
+                onClick={() => loadFqs()}>REFRESH</button>
             </div>
             {fqs.text != null && <pre style={{background:'#030803',border:`1px solid ${C.border}`,color:'#00cc66',fontSize:'10px',padding:'8px',
                                               maxHeight:'480px',overflow:'auto',whiteSpace:'pre',lineHeight:1.35,margin:'6px 0 0'}}>{fqs.text}</pre>}
