@@ -9,9 +9,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    POST <url>/restart  fresh sim at t=0
 //    POST <url>/rom?cpu=dme|klr&name=<x.mem>[&reset=1]  load a ROM image
 //                        (body = the .mem text; only while paused)
+//    POST <url>/patch?cpu=dme|klr  {addr, bytes} or {revert: true}: edit bytes
+//                        of the loaded image in place (only while paused)
 //    GET  <url>/asm/dme|klr  disassembly listing; fetched again on
-//                        SIM: [ASM] dme|klr <workbook> match=content|name|none,
+//                        SIM: [ASM] dme|klr <workbook> match=content|name|none [patched=<n>],
 //                        which the bridge sends when that CPU's image changes
+//                        (edited rows carry patched and orig: the bytes as loaded)
 //    GET  <url>/snapshots, /snapshots/<id>[/bundle], POST /snapshots/<id>/load,
 //    POST /snapshots/upload, DELETE /snapshots/<id>: snapshots of the whole
 //                        model, saved by the sim on each warning (or "save");
@@ -73,7 +76,7 @@ export function useLiveSim(url, onLogLines) {
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
-  const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match} each listing came from
+  const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match, patched: bytes edited} each listing came from
   const [snapshots, setSnapshots] = useState([]);   // bridge's list, newest first
   const [snapCfg, setSnapCfg] = useState({ auto: true, brk: false, taken: 0, max: 25 });
   const [loadedSnap, setLoadedSnap] = useState(null);   // id of the snapshot this run started from
@@ -181,9 +184,9 @@ export function useLiveSim(url, onLogLines) {
       } else if (kind === 'ASM') {
         // The bridge switched the listing to the new image's workbook
         const [cpu, workbook] = rest.split(' ');
-        const match = parseKV(rest).match ?? '';
+        const kv = parseKV(rest);
         if (cpu !== 'dme' && cpu !== 'klr') return;
-        setAsmSrc(s => ({ ...s, [cpu]: { workbook, match } }));
+        setAsmSrc(s => ({ ...s, [cpu]: { workbook, match: kv.match ?? '', patched: +(kv.patched ?? 0) } }));
         fetch(`${url}/asm/${cpu}`).then(r => r.ok ? r.json() : null).catch(() => null)
           .then(rows => { if (rows) setAsm(a => ({ ...a, [cpu]: rows })); });
       } else if (kind === 'SNAP') {
@@ -262,6 +265,24 @@ export function useLiveSim(url, onLogLines) {
     }
   }, [url]);
 
+  // Edit bytes of the image in a CPU's EPROM (the code windows' hex column):
+  // applied live by the bridge, which then sends the listing again
+  const patchCall = useCallback(async (cpu, body, what) => {
+    if (!url) return false;
+    try {
+      const r = await fetch(`${url}/patch?cpu=${cpu}`, { method: 'POST', body: JSON.stringify(body) });
+      if (!r.ok) { setError(`${what}: ${(await r.text()) || `HTTP ${r.status}`}`); return false; }
+      setError(null);
+      return true;
+    } catch {
+      setError(`Can't reach the simulator bridge at ${url}`);
+      return false;
+    }
+  }, [url]);
+  const patchRom = useCallback((cpu, addr, bytes) =>
+    patchCall(cpu, { addr, bytes }, `Couldn't edit the ${cpu.toUpperCase()} ROM at ${addr.toString(16).toUpperCase()}h`), [patchCall]);
+  const revertRom = useCallback(cpu => patchCall(cpu, { revert: true }, `Couldn't revert the ${cpu.toUpperCase()} ROM edits`), [patchCall]);
+
   // ── Snapshots ──
   const snapCall = useCallback(async (path, opts, what) => {
     if (!url) return null;
@@ -303,6 +324,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, bpConds, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom,
+  return { connected, sim, inputs, bps, bpConds, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom,
            snapshots, snapCfg, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }

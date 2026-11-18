@@ -146,6 +146,8 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
             <AsmPanel cpu={cpu} name={cpu === 'dme' ? 'DME 8051' : 'KLR 8048'} listing={asm[cpu]} pc={cpu === 'dme' ? sim.dmePc : sim.klrPc}
                       bps={bps[cpu]} conds={bpConds?.[cpu]} reason={sim.reason} trace={trace[cpu]} traceCtx={traceCtx?.[cpu]}
                       ram={mem?.[cpu]} regs={regs?.[cpu]} running={running} stopKey={stopKey} send={send}
+                      paused={connected && sim.state === 'paused'} edited={asmSrc?.[cpu]?.patched ?? 0}
+                      patchRom={live.patchRom} revertRom={live.revertRom}
                       onClose={() => popouts.close(`code_${cpu}`)} />
           </div>
         </Popout>
@@ -645,8 +647,68 @@ function CondEditor({ cpu, addr, cond, ram, onSet, onClear, onCancel }) {
   );
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
+// Hex typed into a bytes cell: "02 10 08", "021008" or "2 10 8"; null if not hex
+function parseBytes(text) {
+  const t = text.trim();
+  if (!t) return null;
+  const toks = /\s/.test(t) ? t.split(/\s+/) : t.match(/.{1,2}/g);
+  if (!toks.every(x => /^[0-9a-f]{1,2}$/i.test(x)) || toks.length > 16) return null;
+  if (!/\s/.test(t) && t.length % 2) return null;
+  return toks.map(x => parseInt(x, 16));
+}
+
+// The instruction bytes of a listing row. Click (while paused) to edit them:
+// the bridge writes them into the image the sim runs and sends the listing
+// decoded again. Edited rows show ✎, their changed bytes amber, and ↶ to put
+// the bytes as loaded back.
+function BytesCell({ cpu, r, editing, canEdit, onEdit, onWrite }) {
+  const [text, setText] = useState(r.bytes);
+  const [was, setWas] = useState(editing);
+  if (editing !== was) { setWas(editing); if (editing) setText(r.bytes); }
+  const parsed = editing ? parseBytes(text) : null;
+  const changed = r.orig != null && r.orig.toLowerCase() !== r.bytes.toLowerCase();
+  const stop = e => e.stopPropagation();
+  if (editing) return (
+    <span onClick={stop} style={{width:'13ch',flex:'none',display:'inline-flex'}}>
+      <input autoFocus value={text} onChange={e => setText(e.target.value)} spellCheck={false}
+             onFocus={e => e.target.select()}
+             onKeyDown={e => {
+               if (e.key === 'Escape') onEdit(false);
+               else if (e.key === 'Enter' && parsed) onWrite(parsed);
+             }}
+             onBlur={() => onEdit(false)}
+             title={`New bytes for ${hx(r.a, cpu === 'dme' ? 4 : 3)}, in hex. Enter writes them into the ${cpu.toUpperCase()} image (live), Esc cancels. More bytes than the instruction has run on over the next ones (up to 16)`}
+             style={{...inp,width:'100%',padding:'0 2px',height:`${ROW_H - 2}px`,fontSize:'10.5px',
+                     borderColor: parsed ? C.amber : C.red, color: parsed ? C.textBright : C.red}} />
+    </span>
+  );
+  const orig = r.orig?.split(/\s+/) ?? [];
+  return (
+    <span style={{width:'13ch',flex:'none',overflow:'hidden',display:'inline-flex',gap:'3px',
+                  cursor: canEdit ? 'text' : 'inherit'}}
+          onClick={e => { if (canEdit) { stop(e); onEdit(true); } }}
+          title={`${r.patched ? `Edited: decoded again from the edited bytes${changed ? `\nAs loaded: ${r.orig}` : ' (bytes as loaded)'}\n\n` : ''}`
+                 + (canEdit ? 'Click to edit these bytes (opcode, operands, address)' : 'Pause the simulation to edit the bytes')}>
+      {r.patched && <span style={{color:C.amber}}>✎</span>}
+      <span style={{color:'#557755'}}>
+        {r.bytes.split(/\s+/).map((b, i) => (
+          <span key={i} style={{color: r.orig != null && orig[i]?.toLowerCase() !== b.toLowerCase() ? C.amber : undefined}}>{i ? ' ' : ''}{b}</span>
+        ))}
+      </span>
+      {changed && canEdit && (
+        <span style={{color:C.amber,cursor:'pointer'}} title={`Put back the bytes as loaded (${r.orig})`}
+              onClick={e => { stop(e); onWrite(r.orig.split(/\s+/).map(b => parseInt(b, 16))); }}>↶</span>
+      )}
+    </span>
+  );
+}
+
+function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose,
+                    paused, edited = 0, patchRom, revertRom }) {
   const [jump, setJump]   = useState('');
+  const [editAt, setEditAt] = useState(null);   // address whose bytes are being edited
+  const canEdit = paused && !!patchRom;
+  if (editAt != null && !canEdit) setEditAt(null);
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
   // Every stop (breakpoint, step, pause) drops a GO pin so the view shows the PC
@@ -760,6 +822,14 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
         <span>{name}</span>
         <span style={{color:C.textBright,letterSpacing:'0.05em'}}>PC {hx(pc, cpu === 'dme' ? 4 : 3)}</span>
         {routine && <span style={{color:C.amber,textTransform:'none',letterSpacing:0}}>in {routine}</span>}
+        {edited > 0 && (
+          <span style={{display:'inline-flex',gap:'4px',alignItems:'center',textTransform:'none',letterSpacing:0}}>
+            <span style={{color:C.amber}} title="Bytes changed from the image as it was loaded (the code column's ✎ rows). The edits are live and stay through RESTART until another image is loaded">
+              ✎ {edited} byte{edited > 1 ? 's' : ''} edited</span>
+            <button style={btn(false, C.amber)} disabled={!canEdit} onClick={() => revertRom(cpu)}
+                    title={canEdit ? 'Put back the image as it was loaded' : 'Pause the simulation to revert'}>REVERT ALL</button>
+          </span>
+        )}
         <span style={{marginLeft:'auto',display:'inline-flex',gap:'4px',textTransform:'none',letterSpacing:0}}>
           <input value={jump} onChange={e => { setJump(e.target.value); setHit(-1); }}
                  onKeyDown={e => e.key === 'Enter' && doJump(onMatch ? (e.shiftKey ? -1 : 1) : 0)}
@@ -855,7 +925,9 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                 <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
                 <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
                       title={val && `${val}  (as this instruction last ran, before it executed)`}>{val}</span>
-                <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
+                <BytesCell cpu={cpu} r={r} editing={editAt === r.a} canEdit={canEdit}
+                           onEdit={on => setEditAt(on ? r.a : null)}
+                           onWrite={bytes => { setEditAt(null); patchRom(cpu, r.a, bytes); }} />
               </div>
             );
           })}
