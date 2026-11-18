@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { MODIFIED, isEdited, shownName, fileOf } from "./romNames.js";
+import { MODIFIED, isEdited, shownName, fileOf, downloadBin } from "./romNames.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  EDITED ROM IMAGES
@@ -67,6 +67,9 @@ export function EditsList({ bridge, cpu, name, onClose }) {
           <span style={{color:MODIFIED}}>{shownName(res?.name ?? name)} (modified)</span>
           {res?.text && <span style={{color:C.textDim}}>{res.bytes} byte{res.bytes !== 1 ? 's' : ''} changed in {res.places} place{res.places !== 1 ? 's' : ''}</span>}
           <span style={{marginLeft:'auto',display:'inline-flex',gap:'6px'}}>
+            <button onClick={e => downloadBin(e, bridge, cpu, res?.name)} disabled={!res?.text}
+                    style={{background:C.panelBg2,border:`1px solid ${C.border}`,color:C.textDim,fontFamily:'inherit',fontSize:'10px',cursor:'pointer',padding:'3px 10px',letterSpacing:'0.08em'}}
+                    title={`Download this edited image as a raw .bin (${cpu === 'dme' ? 8192 : 4096} bytes, in address order) for an EPROM programmer`}>⬇ .bin</button>
             <button onClick={copy} disabled={!res?.text}
                     style={{background:copied ? '#0d4a0d' : C.panelBg2,border:`1px solid ${copied ? C.textBright : C.border}`,color:copied ? C.textBright : C.textDim,
                             fontFamily:'inherit',fontSize:'10px',cursor:'pointer',padding:'3px 10px',letterSpacing:'0.08em'}}
@@ -161,7 +164,11 @@ function SaveAs({ bridge, cpu, from, base }) {
                   title={`Keep these edits as ${name}.mem: it is listed wherever ${CPU} images are (LOAD .mem, COMPARE IMAGES, RUN REGRESSIONS, setups), with this list saved beside it`}>SAVE</button>
         </div>
       ) : (<>
-        <div style={{color:C.textBright}}>✓ Saved as {saved}{use ? ` and loaded into the ${CPU} EPROM` : ''}. It is in every {CPU} image list now.</div>
+        <div style={{color:C.textBright,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+          ✓ Saved as {saved} and {saved.replace(/\.mem$/i, '.bin')}{use ? `, and loaded into the ${CPU} EPROM` : ''}. It is in every {CPU} image list now.
+          <button style={btn(C.textBright)} onClick={e => downloadBin(e, bridge, cpu, saved)}
+                  title="The raw binary for an EPROM programmer (also kept by the bridge in obj/roms)">⬇ {saved.replace(/\.mem$/i, '.bin')}</button>
+        </div>
         {!setupDone ? (
           <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}
                title="A setup is a named DME + KLR pair: LIVE loads it from the ROM IMAGES row (SETUP), and RUN REGRESSIONS lists it with the ROM pairs">

@@ -9,7 +9,7 @@ import { MemSearch } from "./memSearch.jsx";
 import { Popout } from "./popout.jsx";
 import RomCompare from "./RomCompare.jsx";
 import { RomName, EditsList } from "./romEdits.jsx";
-import { MODIFIED } from "./romNames.js";
+import { MODIFIED, downloadBin } from "./romNames.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  LIVE PANEL — controls for a running simulator (see liveSim.js)
@@ -235,6 +235,8 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
                   title={paused ? `Load a .mem image into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
             LOAD .mem
           </button>
+          <button style={btn(false)} disabled={!roms?.[cpu]} onClick={e => downloadBin(e, url, cpu, null)}
+                  title={`Download the image in the ${cpu.toUpperCase()} EPROM (edits included) as a raw .bin for an EPROM programmer`}>⬇ .bin</button>
         </span>
       ))}
       <label style={{color:C.textDim,cursor:'pointer'}}
