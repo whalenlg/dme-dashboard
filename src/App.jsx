@@ -1004,6 +1004,9 @@ export default function DMEDashboard() {
   if (liveUrl && liveUrl !== runAllUrl) setRunAllUrl(liveUrl);
   const runAll = useRunAll(runAllUrl, showRunAll);
   const runAllRun = runAll.info?.run;
+  const runAllLabel = runAllRun?.running
+    ? `RUN REGRESSIONS ${(runAllRun.total_s ? Math.min(99.9, 100 * runAllRun.done_s / runAllRun.total_s) : 0).toFixed(0)}%`
+    : 'RUN REGRESSIONS ▸';
 
   // Playback engine
   useEffect(() => {
@@ -1519,7 +1522,7 @@ export default function DMEDashboard() {
           </button>
           <button style={S.btn(runAllRun?.running ? 'p' : 's')} onClick={()=>setShowRunAll(true)}
             title="Run the regression suite (run_all.sh, or run_tests.py in the lite package) on the bridge, with progress">
-            {runAllRun?.running ? `RUN REGRESSIONS ${(runAllRun.total_s ? Math.min(99.9, 100 * runAllRun.done_s / runAllRun.total_s) : 0).toFixed(0)}%` : 'RUN REGRESSIONS ▸'}
+            {runAllLabel}
           </button>
           <button style={S.btn('s')} onClick={()=>setShowLog(true)}>LOAD LOG ▲</button>
           <a style={{...S.btn('s'),textDecoration:'none',display:'inline-block',lineHeight:'normal'}} href={MANUAL_URL} target="_blank" rel="noopener noreferrer"
@@ -1582,8 +1585,6 @@ export default function DMEDashboard() {
       ))}
 
       {/* ── LOG INPUT MODAL ─────────────────────────────────── */}
-      {showRunAll && <RunAllPanel url={runAllUrl} state={runAll} onClose={()=>setShowRunAll(false)} />}
-
       {showLog && (
         <div style={S.logOverlay}>
           <div style={{...S.logBox,...(logDragOver ? {borderColor:C.textBright} : {})}}
@@ -1624,12 +1625,20 @@ export default function DMEDashboard() {
                 <button style={S.btn('s')} title="Connect to the simulator (dme_klr/live/bridge.mjs)"
                   onClick={()=>setLiveUrl(lastLiveUrl.current || DEFAULT_LIVE_URL)}>LIVE SIM</button>
               )}
+              <button style={S.btn(runAllRun?.running ? 'p' : 's')} onClick={()=>setShowRunAll(true)}
+                title="Run the regression suite (run_all.sh, or run_tests.py in the lite package) on the bridge, with progress">
+                {runAllLabel}
+              </button>
               <button style={S.btn('p')} title="Open a .dash.log file from disk"
                 onClick={()=>logFileRef.current?.click()}>BROWSE…</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* RUN REGRESSIONS: after the LOAD LOG window so it opens on top of it
+          (from the start page too); closing it returns to that window */}
+      {showRunAll && <RunAllPanel url={runAllUrl} state={runAll} onClose={()=>setShowRunAll(false)} />}
 
       {/* ── IRAM TOOLTIP ────────────────────────────────────── */}
       {!liveUrl && tooltip && <IRAMTooltip tip={tooltip} />}

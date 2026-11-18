@@ -79,9 +79,10 @@ export function useLiveSim(url, onLogLines) {
   const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match, patched: bytes edited} each listing came from
   const [snapshots, setSnapshots] = useState([]);   // bridge's list, newest first
   const [snapCfg, setSnapCfg] = useState({ auto: true, brk: false, taken: 0, max: 25 });
+  const [interval, setIntervalMs] = useState(null);   // {ms, def}: DS snapshot interval, from SIM: [INTERVAL] (null: the sim doesn't report one)
   const [loadedSnap, setLoadedSnap] = useState(null);   // id of the snapshot this run started from
-  const [snapBusy, setSnapBusy] = useState(null);
-  const [setupsVer, setSetupsVer] = useState(0);   // bumped on SIM: [SETUPS] (GET <url>/setups)       // a regression test being built for LOAD: its latest progress line
+  const [snapBusy, setSnapBusy] = useState(null);       // a regression test being built for LOAD: its latest progress line
+  const [setupsVer, setSetupsVer] = useState(0);   // bumped on SIM: [SETUPS] (GET <url>/setups)
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -106,7 +107,7 @@ export function useLiveSim(url, onLogLines) {
     let lastLog = 0;
     // Rare control replies (breakpoints, run state, errors) skip the queue
     // so clicks feel immediate; queued lines are handled first to keep order.
-    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM|SNAP|SNAPCFG|SETUPS)\]/;
+    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM|SNAP|SNAPCFG|INTERVAL|SETUPS)\]/;
     const fetchSnaps = () => fetch(`${url}/snapshots`).then(r => r.ok ? r.json() : null).catch(() => null)
       .then(list => { if (list) setSnapshots(list); });
     es.onmessage = ev => {
@@ -204,6 +205,9 @@ export function useLiveSim(url, onLogLines) {
       } else if (kind === 'SNAPCFG') {
         const kv = parseKV(rest);
         setSnapCfg({ auto: kv.auto === 'on', brk: kv.break === 'on', taken: +kv.taken, max: +kv.max });
+      } else if (kind === 'INTERVAL') {
+        const kv = parseKV(rest);
+        setIntervalMs({ ms: +kv.ms, def: +kv.default });
       } else if (kind === 'ERROR') {
         setError(rest);
       } else if (kind === 'EXIT') {
@@ -328,5 +332,5 @@ export function useLiveSim(url, onLogLines) {
   }, [snapCall]);
 
   return { connected, sim, inputs, bps, bpConds, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom, setupsVer,
-           snapshots, snapCfg, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
+           snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }

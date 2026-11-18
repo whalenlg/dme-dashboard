@@ -11,6 +11,10 @@ import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 //                             with their simulated lengths, and the run
 //    POST <url>/runall/start  JSON options (below)
 //    POST <url>/runall/stop
+//    POST <url>/runall/threads  {host: 'local' | <host id>, threads}: while a
+//                             run goes, tests at a time here or on a host
+//    POST <url>/runall/cancel   {sim, rom, tests}: queued tests never start
+//                             (running ones end as they would have)
 //    GET  <url>/runall/fqs?rom=<folder>  the FQS analysis (fqs_analysis.py)
 //                             of one ROM pair's dash logs as they are now
 //                             (developer install)
@@ -208,6 +212,32 @@ export default function RunAllPanel({ url, state, onClose }) {
       setFqs(r.ok ? await r.json() : { error: `${r.status} ${await r.text()}` });
     } catch (e) { setFqs({ error: e.message }); }
   };
+  // ── Changing the run as it goes ───────────────────────────
+  // threads: tests at a time here ('local') or on a regression host
+  const setThreads = async (host, n) => {
+    try {
+      const r = await fetch(`${url}/runall/threads`, { method:'POST', headers:{'Content-Type':'application/json'},
+                                                       body: JSON.stringify({ host, threads: n }) });
+      if (!r.ok) alertLine(setBusy, `threads: ${await r.text() || r.status}`);
+    } catch (e) { alertLine(setBusy, `threads: ${e.message}`); }
+    refresh();
+  };
+  // A cancel can't be taken back, so its button asks once more: the first
+  // click arms it (CONFIRM?) for a few seconds, the second cancels
+  const [armed, setArmed] = useState(null);
+  const cancelQueued = async (key, scope) => {
+    if (armed !== key) {
+      setArmed(key);
+      setTimeout(() => setArmed(a => (a === key ? null : a)), 4000);
+      return;
+    }
+    setArmed(null);
+    try {
+      const r = await fetch(`${url}/runall/cancel`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(scope) });
+      if (!r.ok) alertLine(setBusy, `cancel: ${await r.text() || r.status}`);
+    } catch (e) { alertLine(setBusy, `cancel: ${e.message}`); }
+    refresh();
+  };
   const stop = async () => {
     setBusy('stopping');
     try { await fetch(`${url}/runall/stop`, { method:'POST' }); } catch { /* the next poll says */ }
@@ -238,7 +268,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const testRow = (name, su) => {
     const t = su?.tests?.[name];
     const len = t?.len_s ?? lenOf[name] ?? 40;
-    const p = t ? (t.state === 'done' ? 100 : pctOf(t.t_s, len)) : 0;
+    const p = t ? (t.state === 'done' ? 100 : t.state === 'cancelled' ? 0 : pctOf(t.t_s, len)) : 0;
     const col = t?.verdict ? VERDICT_COL[t.verdict] : t?.state === 'running' ? C.blue : C.grey;
     const state = !t ? '' : t.verdict ?? (t.state === 'running' ? `${fmtSim(t.t_s)} / ${fmtSim(len)}` : t.state);
     return (
@@ -251,6 +281,16 @@ export default function RunAllPanel({ url, state, onClose }) {
               title={t?.host ? `Ran on the regression host ${t.host}` : undefined}>{t?.host ? `@${t.host}` : ''}</span>
         {/* step 5's plots of where iverilog and Verilator differ (on the iverilog line) */}
         <span style={{width:'92px',display:'flex',gap:'3px',flexShrink:0}}>
+          {/* a test not started yet: cancel it in this suite only (asks once more) */}
+          {run?.running && run.cancels && t?.state === 'queued' && (() => {
+            const key = `t:${su.sim}:${su.rom ?? ''}:${name}`;
+            return (
+              <button style={{...btn(armed === key ? 'r' : 's'),padding:'0 5px',fontSize:'9px',lineHeight:'14px',whiteSpace:'nowrap'}}
+                title={`Cancel ${name}${suiteKeys.length > 1 ? ` in ${suiteName(su)} only` : ''}: it never starts`}
+                onClick={() => cancelQueued(key, { sim: su.sim, rom: su.rom, tests: [name] })}>
+                {armed === key ? 'CONFIRM?' : '✕ CANCEL'}</button>
+            );
+          })()}
           {(su?.sim === 'iv' || !hasIv) && (run?.diffs?.[su?.rom ?? run.rom]?.[name] ?? []).map(ecu => (
             <a key={ecu} href={`${url}/runall/diff?rom=${encodeURIComponent(su?.rom ?? run.rom)}&test=${encodeURIComponent(name)}&ecu=${ecu}&run=${run.id}`} target="_blank" rel="noreferrer"
                title={`${name}${runMulti ? ` (${su.rom})` : ''}: where its iverilog and Verilator ${ecu} values differ (${name}_${ecu}_diff.jpg, compare_sim_logs.py --plot)`}
@@ -267,13 +307,37 @@ export default function RunAllPanel({ url, state, onClose }) {
     let inRun = false;
     for (const su of Object.values(suites)) for (const { name } of g.tests) {
       const t = su.tests[name];
-      if (!t) continue;
+      if (!t || t.state === 'cancelled') continue;
       inRun = true;
       tot += t.len_s; d += t.state === 'done' ? t.len_s : t.t_s;
       if (v[t.verdict] != null) v[t.verdict]++;
     }
     return inRun ? { p: pctOf(d, tot), v } : null;
   };
+
+  // the run's tests not started yet: in a group (every suite), or in the suites of one simulator
+  const queuedIn = (names, keep = () => true) => suiteKeys.filter(k => keep(suites[k]))
+    .reduce((a, k) => a + names.filter(n => suites[k].tests[n]?.state === 'queued').length, 0);
+  const queuedOf = keep => suiteKeys.filter(k => keep(suites[k])).reduce((a, k) => a + suites[k].counts.queued, 0);
+  // tests running here (no host) and on each regression host
+  const runningOn = host => suiteKeys.reduce((a, k) => a + Object.values(suites[k].tests)
+    .filter(t => t.state === 'running' && (t.host ?? null) === host).length, 0);
+  const cancelBtn = (key, scope, label, n, title) => (
+    <button key={key} style={{...btn(armed === key ? 'r' : 's', !n),padding:'2px 8px',fontSize:'9px'}} disabled={!n}
+      title={`${title}: ${n} test${n === 1 ? '' : 's'} not started yet never start; running ones end as they would have`}
+      onClick={() => cancelQueued(key, scope)}>{armed === key ? `CONFIRM: CANCEL ${n}?` : `✕ ${label} (${n})`}</button>
+  );
+  const stepper = (host, n, min, max, name, title) => (
+    <span key={host} style={{display:'inline-flex',alignItems:'center',gap:'4px',fontSize:'10px',color:C.textDim}} title={title}>
+      {name}
+      <button style={{...btn('s', n <= min),padding:'0 6px',fontSize:'11px',lineHeight:'14px'}} disabled={n <= min}
+        onClick={() => setThreads(host, n - 1)}>−</button>
+      <span style={{color:C.textBright,minWidth:'18px',textAlign:'center'}}>{n}</span>
+      <button style={{...btn('s', n >= max),padding:'0 6px',fontSize:'11px',lineHeight:'14px'}} disabled={n >= max}
+        onClick={() => setThreads(host, n + 1)}>+</button>
+      <span style={{color:C.grey}}>({runningOn(host === 'local' ? null : host)} running)</span>
+    </span>
+  );
 
   const stepIcon = s => s.state === 'running' ? '◐' : s.state === 'done' ? '●' : s.state === 'skipped' ? '⊘' : s.state === 'stopped' ? '■' : '○';
   const overall = run ? (run.running ? Math.min(99.9, pctOf(run.done_s, run.total_s)) : run.exit === 0 ? 100 : pctOf(run.done_s, run.total_s)) : 0;
@@ -467,6 +531,25 @@ export default function RunAllPanel({ url, state, onClose }) {
                  title={run.command}>{run.command}</div>
             {run.opts?.hosts?.length > 0 && <div style={{color:C.textDim,fontSize:'10px',margin:'2px 0 0 82px'}}>
               also on: {run.opts.hosts.map(h => `${h.name} (${h.threads})`).join(' · ')}</div>}
+            {/* While it runs: tests at a time per machine, and cancelling the tests not started yet */}
+            {run.running && !run.threads && <div style={{color:C.amber,fontSize:'10px',margin:'8px 0 0 82px'}}>
+              THREADS and CANCEL QUEUED need the updated bridge (944turbo_dme_klr): git pull, then restart dme_klr/live/bridge.mjs.
+              A run the old bridge started can't be changed (restarting the bridge stops it).</div>}
+            {run.running && run.threads && <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:'6px 16px',margin:'8px 0 0 82px'}}>
+              <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em'}}
+                title="Tests at a time on each machine, from the next test that starts; a test already running ends as it would have">THREADS</span>
+              {stepper('local', run.threads.local, 1, run.threads.maxLocal, 'here',
+                `Tests at a time on this machine (1 to ${run.threads.maxLocal})${suiteKeys.length > 1 ? ', shared by every suite' : ''}`)}
+              {Object.entries(run.threads.hosts ?? {}).map(([id, n]) => stepper(id, n, 0, 64, id,
+                `Tests at a time on the regression host ${id} (0: no more tests there)`))}
+            </div>}
+            {run.running && run.cancels && <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:'6px 8px',margin:'6px 0 0 82px'}}>
+              <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginRight:'8px'}}>CANCEL QUEUED</span>
+              {suiteKeys.some(k => suites[k].sim === 'vl') && cancelBtn('vl', { sim:'vl' }, 'ALL VERILATOR', queuedOf(su => su.sim === 'vl'), 'Every Verilator suite')}
+              {suiteKeys.some(k => suites[k].sim === 'iv') && cancelBtn('iv', { sim:'iv' }, 'ALL IVERILOG', queuedOf(su => su.sim === 'iv'), 'Every iverilog suite')}
+              {suiteKeys.length > 1 && cancelBtn('all', {}, 'EVERYTHING', queuedOf(() => true), 'Every suite')}
+              <span style={{color:C.grey,fontSize:'10px'}}>or a test group's, on its line below, or one test's, on its line{runMulti ? ", or one suite's, on its bar" : ''}</span>
+            </div>}
             {/* The steps (run_all.sh's 1/6 … 6/6) */}
             <div style={{display:'flex',flexWrap:'wrap',gap:'4px 14px',margin:'8px 0 0 82px',fontSize:'10px'}}>
               {run.steps.map(s => (
@@ -485,12 +568,15 @@ export default function RunAllPanel({ url, state, onClose }) {
                   <span style={{width:runMulti ? '120px' : '72px',textAlign:'right',color:C.textDim,fontSize:'10px',whiteSpace:'nowrap'}}>{suiteName(su)}</span>
                   <Bar pct={pctOf(su.done_s, su.total_s)} color={C.text} height={10} label={`${pctOf(su.done_s, su.total_s).toFixed(1)}%`} />
                   <span style={{width:'210px',fontSize:'10px',color:C.textDim}}>
-                    {su.building ? 'building the testbench… · ' : ''}{su.counts.done}/{Object.keys(su.tests).length} done
+                    {su.building ? 'building the testbench… · ' : ''}{su.counts.done}/{Object.keys(su.tests).length - (su.counts.cancelled ?? 0)} done
+                    {su.counts.cancelled ? <span style={{color:C.grey}}> · {su.counts.cancelled} cancelled</span> : null}
                     {su.counts.running ? ` · ${su.counts.running} running` : ''}
                     {su.counts.PASS ? <span style={{color:VERDICT_COL.PASS}}> · {su.counts.PASS} PASS</span> : null}
                     {su.counts.WARN ? <span style={{color:VERDICT_COL.WARN}}> · {su.counts.WARN} WARN</span> : null}
                     {su.counts.FAIL ? <span style={{color:VERDICT_COL.FAIL}}> · {su.counts.FAIL} FAIL</span> : null}
                   </span>
+                  {run.running && runMulti && <span style={{width:'150px'}}>
+                    {cancelBtn(`su:${k}`, { sim: su.sim, rom: su.rom }, 'CANCEL', su.counts.queued, `${suiteName(su)}`)}</span>}
                 </div>
               );
             })}
@@ -533,6 +619,8 @@ export default function RunAllPanel({ url, state, onClose }) {
                   {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
                      style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
                      title={`What the ${g.name} tests check: the ${lite ? 'user' : 'developer'} manual, Appendix A`}>MANUAL ↗</a>}
+                  {run?.running && run.cancels && queuedIn(names) > 0 && cancelBtn(`g:${g.name}`, { tests: names }, 'CANCEL', queuedIn(names),
+                    `The ${g.name} group${suiteKeys.length > 1 ? ', in every suite' : ''}`)}
                   {gp ? <>
                     <Bar pct={gp.p} color={gp.v.FAIL ? C.red : gp.v.WARN ? C.amber : C.text} height={10} label={`${Math.floor(gp.p)}%`} />
                     <span style={{width:'130px',fontSize:'10px',color:C.textDim}}>
