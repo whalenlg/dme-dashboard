@@ -8,6 +8,8 @@ import { memName } from "./memDefs.js";
 import { MemSearch } from "./memSearch.jsx";
 import { Popout } from "./popout.jsx";
 import RomCompare from "./RomCompare.jsx";
+import { RomName, EditsList } from "./romEdits.jsx";
+import { MODIFIED, downloadBin } from "./romNames.js";
 
 // ─────────────────────────────────────────────────────────────────
 //  LIVE PANEL — controls for a running simulator (see liveSim.js)
@@ -99,9 +101,9 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
         <ResolutionBox interval={live.interval} connected={connected} send={send} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
-      <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
+      <RomRow url={url} setupsVer={live.setupsVer} roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
               comparing={comparing} toggleCompare={toggleCompare} />
-      <SnapshotPanel live={live} running={running} />
+      <SnapshotPanel live={live} running={running} url={url} />
       {error && <div style={{...panel,color:C.red,fontSize:'11px'}}>
         {error}{!connected && <> — start it with <code>node dme_klr/live/bridge.mjs</code> in 944turbo_dme_klr ({url})</>}
       </div>}
@@ -147,6 +149,8 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
             <AsmPanel cpu={cpu} name={cpu === 'dme' ? 'DME 8051' : 'KLR 8048'} listing={asm[cpu]} pc={cpu === 'dme' ? sim.dmePc : sim.klrPc}
                       bps={bps[cpu]} conds={bpConds?.[cpu]} reason={sim.reason} trace={trace[cpu]} traceCtx={traceCtx?.[cpu]}
                       ram={mem?.[cpu]} regs={regs?.[cpu]} running={running} stopKey={stopKey} send={send}
+                      paused={connected && sim.state === 'paused'} edited={asmSrc?.[cpu]?.patched ?? 0} rom={roms?.[cpu]} url={url}
+                      patchRom={live.patchRom} revertRom={live.revertRom}
                       onClose={() => popouts.close(`code_${cpu}`)} />
           </div>
         </Popout>
@@ -231,17 +235,32 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
 }
 
 // ── ROM images: what each EPROM holds, and loading another .mem ──
-function RomRow({ roms, asmSrc, paused, loadRom, comparing, toggleCompare }) {
+function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, toggleCompare }) {
   const [reset, setReset] = useState(true);
   const pick = { dme: useRef(null), klr: useRef(null) };
-  const name = p => p ? p.split(/[\\/]/).pop() : '--';
+  // Image setups (named DME + KLR pairs, GET <bridge>/setups): the
+  // developer scripts' three and the ones saved from a list of edits
+  const [setups, setSetups] = useState([]);
+  const [setupSel, setSetupSel] = useState('');
+  const [setupErr, setSetupErr] = useState(null);
+  const loadSetups = () => url && fetch(`${url}/setups`).then(r => r.ok ? r.json() : []).catch(() => []).then(setSetups);
+  useEffect(() => { loadSetups(); }, [url, roms?.dme, roms?.klr, setupsVer]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const chosen = setups.find(x => x.name === setupSel);
+  const setupCall = async (path, method) => {
+    setSetupErr(null);
+    try {
+      const r = await fetch(`${url}${path}`, { method });
+      if (!r.ok) setSetupErr((await r.text()) || `HTTP ${r.status}`);
+      return r.ok;
+    } catch { setSetupErr(`can't reach the simulator bridge at ${url}`); return false; }
+  };
   return (
     <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',padding:'5px 10px'}}>
       <span style={{...title,marginBottom:0}}>ROM IMAGES</span>
       {['dme', 'klr'].map(cpu => (
         <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
           <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
-          <span style={{color:C.textBright}} title={roms?.[cpu] ?? ''}>{name(roms?.[cpu])}</span>
+          <RomName path={roms?.[cpu]} cpu={cpu} bridge={url} style={{color:C.textBright}} title={roms?.[cpu] ?? ''} />
           {asmSrc?.[cpu] && (asmSrc[cpu].match === 'none'
             ? <span style={{color:'#ccaa44'}} title="This image doesn't match any disassembly workbook, so the debugger listing is the default one and may not line up with the code">ASM: no workbook</span>
             : <span style={{color:C.textDim}} title={`Debugger listing from ${cpu}/disassemble/${asmSrc[cpu].workbook} (image matched by ${asmSrc[cpu].match})`}>ASM: {asmSrc[cpu].workbook}</span>)}
@@ -251,6 +270,8 @@ function RomRow({ roms, asmSrc, paused, loadRom, comparing, toggleCompare }) {
                   title={paused ? `Load a .mem image into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
             LOAD .mem
           </button>
+          <button style={btn(false)} disabled={!roms?.[cpu]} onClick={e => downloadBin(e, url, cpu, null)}
+                  title={`Download the image in the ${cpu.toUpperCase()} EPROM (edits included) as a raw .bin for an EPROM programmer`}>⬇ .bin</button>
         </span>
       ))}
       <label style={{color:C.textDim,cursor:'pointer'}}
@@ -258,6 +279,24 @@ function RomRow({ roms, asmSrc, paused, loadRom, comparing, toggleCompare }) {
         <input type="checkbox" checked={reset} onChange={e => setReset(e.target.checked)} /> RESTART AFTER LOAD
       </label>
       {!paused && <span style={{color:'#779977'}}>pause to load a ROM</span>}
+      <span style={{display:'inline-flex',gap:'6px',alignItems:'center'}}
+            title="A setup is a named DME + KLR pair. Save one from the list of edits (click a red (modified) image name) after SAVE AS">
+        <span style={{color:C.textDim}}>SETUP</span>
+        <select value={setupSel} onChange={e => setSetupSel(e.target.value)} onFocus={loadSetups} style={{...inp,maxWidth:'220px'}}>
+          <option value="">pick…</option>
+          {setups.map(x => <option key={x.name} value={x.name} disabled={!x.ok}>
+            {x.name}{x.builtin ? '' : ' (saved)'} · {x.dme} + {x.klr}{x.ok ? '' : ' (image missing)'}</option>)}
+        </select>
+        <button style={{...btn(false), cursor: paused && chosen ? 'pointer' : 'not-allowed'}} disabled={!paused || !chosen?.ok}
+                onClick={() => setupCall(`/setups/${encodeURIComponent(setupSel)}/load${reset ? '?reset=1' : ''}`, 'POST')}
+                title={chosen ? `Load ${chosen.dme} into the DME and ${chosen.klr} into the KLR${reset ? ', then restart at t=0' : ' in place'}` : 'Pick a setup'}>LOAD SETUP</button>
+        {chosen && !chosen.builtin && (
+          <button style={btn(false, C.red)} title={`Delete the setup ${chosen.name} (the images stay)`}
+                  onClick={async () => confirm(`Delete the setup ${chosen.name}? The images stay.`)
+                    && await setupCall(`/setups/${encodeURIComponent(chosen.name)}`, 'DELETE') && (setSetupSel(''), loadSetups())}>✕</button>
+        )}
+        {setupErr && <span style={{color:C.red}}>{setupErr}</span>}
+      </span>
       <span style={{flex:1}} />
       <button style={btn(comparing, C.blue)} onClick={toggleCompare}
               title="What differs between two DME or two KLR images: maps and tables decoded side by side, and the code that differs with its disassembly">
@@ -680,8 +719,69 @@ function CondEditor({ cpu, addr, cond, ram, onSet, onClear, onCancel }) {
   );
 }
 
-function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose }) {
+// Hex typed into a bytes cell: "02 10 08", "021008" or "2 10 8"; null if not hex
+function parseBytes(text) {
+  const t = text.trim();
+  if (!t) return null;
+  const toks = /\s/.test(t) ? t.split(/\s+/) : t.match(/.{1,2}/g);
+  if (!toks.every(x => /^[0-9a-f]{1,2}$/i.test(x)) || toks.length > 16) return null;
+  if (!/\s/.test(t) && t.length % 2) return null;
+  return toks.map(x => parseInt(x, 16));
+}
+
+// The instruction bytes of a listing row. Click (while paused) to edit them:
+// the bridge writes them into the image the sim runs and sends the listing
+// decoded again. Edited rows show ✎, their changed bytes amber, and ↶ to put
+// the bytes as loaded back.
+function BytesCell({ cpu, r, editing, canEdit, onEdit, onWrite }) {
+  const [text, setText] = useState(r.bytes);
+  const [was, setWas] = useState(editing);
+  if (editing !== was) { setWas(editing); if (editing) setText(r.bytes); }
+  const parsed = editing ? parseBytes(text) : null;
+  const changed = r.orig != null && r.orig.toLowerCase() !== r.bytes.toLowerCase();
+  const stop = e => e.stopPropagation();
+  if (editing) return (
+    <span onClick={stop} style={{width:'13ch',flex:'none',display:'inline-flex'}}>
+      <input autoFocus value={text} onChange={e => setText(e.target.value)} spellCheck={false}
+             onFocus={e => e.target.select()}
+             onKeyDown={e => {
+               if (e.key === 'Escape') onEdit(false);
+               else if (e.key === 'Enter' && parsed) onWrite(parsed);
+             }}
+             onBlur={() => onEdit(false)}
+             title={`New bytes for ${hx(r.a, cpu === 'dme' ? 4 : 3)}, in hex. Enter writes them into the ${cpu.toUpperCase()} image (live), Esc cancels. More bytes than the instruction has run on over the next ones (up to 16)`}
+             style={{...inp,width:'100%',padding:'0 2px',height:`${ROW_H - 2}px`,fontSize:'10.5px',
+                     borderColor: parsed ? C.amber : C.red, color: parsed ? C.textBright : C.red}} />
+    </span>
+  );
+  const orig = r.orig?.split(/\s+/) ?? [];
+  return (
+    <span style={{width:'13ch',flex:'none',overflow:'hidden',display:'inline-flex',gap:'3px',
+                  cursor: canEdit ? 'text' : 'inherit'}}
+          onClick={e => { if (canEdit) { stop(e); onEdit(true); } }}
+          title={`${r.patched ? `Edited: decoded again from the edited bytes${changed ? `\nAs loaded: ${r.orig}` : ' (bytes as loaded)'}\n\n` : ''}`
+                 + (canEdit ? 'Click to edit these bytes (opcode, operands, address)' : 'Pause the simulation to edit the bytes')}>
+      {r.patched && <span style={{color:C.amber}}>✎</span>}
+      <span style={{color:'#557755'}}>
+        {r.bytes.split(/\s+/).map((b, i) => (
+          <span key={i} style={{color: r.orig != null && orig[i]?.toLowerCase() !== b.toLowerCase() ? C.amber : undefined}}>{i ? ' ' : ''}{b}</span>
+        ))}
+      </span>
+      {changed && canEdit && (
+        <span style={{color:C.amber,cursor:'pointer'}} title={`Put back the bytes as loaded (${r.orig})`}
+              onClick={e => { stop(e); onWrite(r.orig.split(/\s+/).map(b => parseInt(b, 16))); }}>↶</span>
+      )}
+    </span>
+  );
+}
+
+function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose,
+                    paused, edited = 0, patchRom, revertRom, rom, url }) {
+  const [showEdits, setShowEdits] = useState(false);
   const [jump, setJump]   = useState('');
+  const [editAt, setEditAt] = useState(null);   // address whose bytes are being edited
+  const canEdit = paused && !!patchRom;
+  if (editAt != null && !canEdit) setEditAt(null);
   const [center, setCenter] = useState(null);   // address pinned by a jump, else follow pc
 
   // Every stop (breakpoint, step, pause) drops a GO pin so the view shows the PC
@@ -795,6 +895,17 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
         <span>{name}</span>
         <span style={{color:C.textBright,letterSpacing:'0.05em'}}>PC {hx(pc, cpu === 'dme' ? 4 : 3)}</span>
         {routine && <span style={{color:C.amber,textTransform:'none',letterSpacing:0}}>in {routine}</span>}
+        {rom && <RomName path={rom} cpu={cpu} bridge={url} style={{color:C.textDim,textTransform:'none',letterSpacing:0}} />}
+        {edited > 0 && (
+          <span style={{display:'inline-flex',gap:'4px',alignItems:'center',textTransform:'none',letterSpacing:0}}>
+            <span style={{color:MODIFIED,cursor:'pointer',textDecoration:'underline dotted'}} onClick={() => setShowEdits(true)}
+                  title="Bytes changed from the image as it was loaded (the code column's ✎ rows). The edits are live and stay through RESTART until another image is loaded.\nClick for the list of edits, to copy">
+              ✎ {edited} byte{edited > 1 ? 's' : ''} edited</span>
+            {showEdits && <EditsList bridge={url} cpu={cpu} name={rom?.split(/[\\/]/).pop()} onClose={() => setShowEdits(false)} />}
+            <button style={btn(false, C.amber)} disabled={!canEdit} onClick={() => revertRom(cpu)}
+                    title={canEdit ? 'Put back the image as it was loaded' : 'Pause the simulation to revert'}>REVERT ALL</button>
+          </span>
+        )}
         <span style={{marginLeft:'auto',display:'inline-flex',gap:'4px',textTransform:'none',letterSpacing:0}}>
           <input value={jump} onChange={e => { setJump(e.target.value); setHit(-1); }}
                  onKeyDown={e => e.key === 'Enter' && doJump(onMatch ? (e.shiftKey ? -1 : 1) : 0)}
@@ -890,7 +1001,9 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                 <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
                 <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
                       title={val && `${val}  (as this instruction last ran, before it executed)`}>{val}</span>
-                <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
+                <BytesCell cpu={cpu} r={r} editing={editAt === r.a} canEdit={canEdit}
+                           onEdit={on => setEditAt(on ? r.a : null)}
+                           onWrite={bytes => { setEditAt(null); patchRom(cpu, r.a, bytes); }} />
               </div>
             );
           })}
@@ -1006,7 +1119,7 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
 const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
 const short = h => h ? h.slice(0, 12) : '--';
 
-function SnapshotPanel({ live, running }) {
+function SnapshotPanel({ live, running, url }) {
   const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState('');
@@ -1084,7 +1197,7 @@ function SnapshotPanel({ live, running }) {
                 <span style={{color:C.textDim,flex:1,minWidth:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}
                       title={s.trigger || s.label || s.id}>{s.trigger || s.label || s.id}</span>
                 <span style={{color:'#779977',whiteSpace:'nowrap'}} title={`DME ${s.roms?.dme?.name} sha256 ${s.roms?.dme?.sha256 ?? '?'}\nKLR ${s.roms?.klr?.name} sha256 ${s.roms?.klr?.sha256 ?? '?'}`}>
-                  {s.roms?.dme?.name ?? '--'} · {s.roms?.klr?.name ?? '--'}
+                  <RomName path={s.roms?.dme?.name} cpu="dme" bridge={url} /> · <RomName path={s.roms?.klr?.name} cpu="klr" bridge={url} />
                 </span>
                 <button style={btn(false, C.amber)} disabled={!connected || !!snapBusy}
                         onClick={() => (!running || confirm('The simulation is running. Restart it from this snapshot?')) && loadSnapshot(s.id)}
@@ -1095,7 +1208,7 @@ function SnapshotPanel({ live, running }) {
                 <button style={btn(false)} onClick={() => downloadSnapshot(s.id)} title="Download as one .dmesnap file to keep or share">⬇</button>
                 <button style={btn(false, C.red)} onClick={() => confirm(`Delete snapshot ${s.id}?`) && deleteSnapshot(s.id)} title="Delete">✕</button>
               </div>
-              {detail?.id === s.id && (detail.data.kind === 'test' ? <TestSnapshotDetail d={detail.data} /> : <SnapshotDetail d={detail.data} />)}
+              {detail?.id === s.id && (detail.data.kind === 'test' ? <TestSnapshotDetail d={detail.data} url={url} /> : <SnapshotDetail d={detail.data} url={url} />)}
             </div>
           ))}
         </div>
@@ -1105,7 +1218,7 @@ function SnapshotPanel({ live, running }) {
 }
 
 // A regression test's warning (test_snap.py): what LOAD will build and run
-function TestSnapshotDetail({ d }) {
+function TestSnapshotDetail({ d, url }) {
   const row = (k, v) => (
     <div style={{display:'flex',gap:'8px',lineHeight:1.4}}>
       <span style={{color:C.textDim,minWidth:'90px'}}>{k}</span>
@@ -1119,15 +1232,15 @@ function TestSnapshotDetail({ d }) {
       {row('trigger', d.trigger)}
       {row('runs to', `${fmtMs(d.t_ns)} ms`)}
       {row('defines', (d.defines ?? []).join(' '))}
-      {row('DME ROM', d.roms?.dme ?? '--')}
-      {row('KLR ROM', d.roms?.klr ?? '--')}
+      {row('DME ROM', d.roms?.dme ? <RomName path={d.roms.dme} cpu="dme" bridge={url} title={d.roms.dme} /> : '--')}
+      {row('KLR ROM', d.roms?.klr ? <RomName path={d.roms.klr} cpu="klr" bridge={url} title={d.roms.klr} /> : '--')}
       {row('log', d.log ?? '--')}
       {row('build', d.built ? 'ready (obj/tests/' + d.test + ')' : 'not built yet: LOAD builds it first')}
     </div>
   );
 }
 
-function SnapshotDetail({ d }) {
+function SnapshotDetail({ d, url }) {
   const kv = obj => Object.entries(obj ?? {}).map(([k, v]) => `${k}=${v}`).join('  ');
   // The debugger's own register lines, as the testbench printed them at that moment
   const regsLine = cpu => {
@@ -1142,7 +1255,7 @@ function SnapshotDetail({ d }) {
   );
   const rom = cpu => {
     const m = d.manifest?.roms?.[cpu], r = d.roms?.[cpu];
-    return `${m?.name ?? r?.path ?? '--'}  sha256 ${short(m?.sha256)}…  crc32 ${r?.crc32 ?? '--'}  ${m?.workbook ? `listing ${m.workbook}` : 'no workbook'}`;
+    return <><RomName path={m?.name ?? r?.path} cpu={cpu} bridge={url} />{`  sha256 ${short(m?.sha256)}…  crc32 ${r?.crc32 ?? '--'}  ${m?.workbook ? `listing ${m.workbook}` : 'no workbook'}`}</>;
   };
   return (
     <div style={{padding:'4px 0 4px 56px',display:'flex',flexDirection:'column',gap:'2px'}}>

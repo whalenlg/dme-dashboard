@@ -142,7 +142,8 @@ export default function RunAllPanel({ url, state, onClose }) {
 
   const nSims = (vl ? 1 : 0) + (ivOn ? 1 : 0);
   // The named ROM pairs ticked (developer install); a custom pair is one
-  const presets = romInfo?.presets ?? [];
+  // (setups saved from the dashboard come as custom presets: a pair to pick, not a run_all.sh --roms pair)
+  const presets = (romInfo?.presets ?? []).filter(p => !p.custom);
   const pairList = !lite && !rom ? presets.map(p => p.folder).filter(f => pairs.has(f)) : [];
   const nPairs = Math.max(1, pairList.length);
   const multi = pairList.length > 1;
@@ -387,7 +388,8 @@ export default function RunAllPanel({ url, state, onClose }) {
                 <select value={romPreset ? romPreset.name : 'custom'} disabled={locked} style={inp}
                   title="A DME + KLR pair the developer scripts use (run89.sh, run86.sh, run_carpokes.sh), or any two images"
                   onChange={e => { const p = romInfo.presets.find(x => x.name === e.target.value);
-                                   if (p) { setRom(null); setPairs(new Set([p.folder ?? romFolder(p.dme, p.klr)])); } }}>
+                                   if (p?.custom) setRom({ dme: p.dme, klr: p.klr });
+                                   else if (p) { setRom(null); setPairs(new Set([p.folder ?? romFolder(p.dme, p.klr)])); } }}>
                   {romInfo.presets.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
                   <option value="custom" disabled={!!romPreset}>custom pair</option>
                 </select>

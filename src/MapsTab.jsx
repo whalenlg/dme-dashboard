@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, memo } from "react";
+import { RomName } from "./romEdits.jsx";
 import {
   ComposedChart, Line, Scatter, Cell, XAxis, ZAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
@@ -328,7 +329,7 @@ function RomGraph({ def, bridge, logRom, onClose, cpu = 'dme' }) {
           <span style={{color:C.textBright,fontSize:'13px',letterSpacing:'0.1em'}}>{def.title}</span>
           <span style={{color:C.blue,fontSize:'12px'}}>{def.name}</span>
           {info?.rom && <span style={{color:C.textDim,fontSize:'10px'}}>
-            ROM {info.rom}{info.sha ? ` · ${info.sha}` : ''}{entry ? ` · ${entry.addr ? `${entry.addr}h · ` : ''}${entry.bytes} bytes` : ''}</span>}
+            ROM <RomName path={info.rom} cpu={cpu} bridge={bridge} />{info.sha ? ` · ${info.sha}` : ''}{entry ? ` · ${entry.addr ? `${entry.addr}h · ` : ''}${entry.bytes} bytes` : ''}</span>}
           <button onClick={onClose} style={{marginLeft:'auto',background:C.panelBg2,border:`1px solid ${C.border}`,color:C.textDim,
                                             fontFamily:'inherit',fontSize:'11px',cursor:'pointer',padding:'2px 10px'}}>CLOSE ✕</button>
         </div>
