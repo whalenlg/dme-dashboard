@@ -142,7 +142,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
                 sub={`live simulation · ${!connected ? 'OFFLINE' : sim.state} · t=${tMs} ms`}>
           {/* Fills the window: the listing and the trace share its height */}
           <div style={{textAlign:'left',display:'flex',flexDirection:'column',gap:'8px',height:'100%',minHeight:'520px'}}>
-            <RunBar cpu={cpu} sim={sim} connected={connected} running={running} send={send} />
+            <RunBar cpu={cpu} sim={sim} connected={connected} running={running} send={send} restart={restart} />
             <AsmPanel cpu={cpu} name={cpu === 'dme' ? 'DME 8051' : 'KLR 8048'} listing={asm[cpu]} pc={cpu === 'dme' ? sim.dmePc : sim.klrPc}
                       bps={bps[cpu]} conds={bpConds?.[cpu]} reason={sim.reason} trace={trace[cpu]} traceCtx={traceCtx?.[cpu]}
                       ram={mem?.[cpu]} regs={regs?.[cpu]} running={running} stopKey={stopKey} send={send}
@@ -167,8 +167,8 @@ function StopReason({ reason }) {
   );
 }
 
-// ── Run / pause / step / run-to, at the top of each code window ──
-function RunBar({ cpu, sim, connected, running, send }) {
+// ── Run / pause / step / run-to / restart, at the top of each code window ──
+function RunBar({ cpu, sim, connected, running, send, restart }) {
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const CPU = cpu.toUpperCase();
@@ -190,6 +190,7 @@ function RunBar({ cpu, sim, connected, running, send }) {
              onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
       <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}
               title="Run until this sim time (ms), then pause">RUN TO</button>
+      <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
     </div>
   );
 }
