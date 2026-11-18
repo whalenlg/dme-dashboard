@@ -280,6 +280,16 @@ export default function RunAllPanel({ url, state, onClose }) {
               title={t?.host ? `Ran on the regression host ${t.host}` : undefined}>{t?.host ? `@${t.host}` : ''}</span>
         {/* step 5's plots of where iverilog and Verilator differ (on the iverilog line) */}
         <span style={{width:'92px',display:'flex',gap:'3px',flexShrink:0}}>
+          {/* a test not started yet: cancel it in this suite only (asks once more) */}
+          {run?.running && run.cancels && t?.state === 'queued' && (() => {
+            const key = `t:${su.sim}:${su.rom ?? ''}:${name}`;
+            return (
+              <button style={{...btn(armed === key ? 'r' : 's'),padding:'0 5px',fontSize:'9px',lineHeight:'14px',whiteSpace:'nowrap'}}
+                title={`Cancel ${name}${suiteKeys.length > 1 ? ` in ${suiteName(su)} only` : ''}: it never starts`}
+                onClick={() => cancelQueued(key, { sim: su.sim, rom: su.rom, tests: [name] })}>
+                {armed === key ? 'CONFIRM?' : '✕ CANCEL'}</button>
+            );
+          })()}
           {(su?.sim === 'iv' || !hasIv) && (run?.diffs?.[su?.rom ?? run.rom]?.[name] ?? []).map(ecu => (
             <a key={ecu} href={`${url}/runall/diff?rom=${encodeURIComponent(su?.rom ?? run.rom)}&test=${encodeURIComponent(name)}&ecu=${ecu}&run=${run.id}`} target="_blank" rel="noreferrer"
                title={`${name}${runMulti ? ` (${su.rom})` : ''}: where its iverilog and Verilator ${ecu} values differ (${name}_${ecu}_diff.jpg, compare_sim_logs.py --plot)`}
@@ -520,6 +530,9 @@ export default function RunAllPanel({ url, state, onClose }) {
             {run.opts?.hosts?.length > 0 && <div style={{color:C.textDim,fontSize:'10px',margin:'2px 0 0 82px'}}>
               also on: {run.opts.hosts.map(h => `${h.name} (${h.threads})`).join(' · ')}</div>}
             {/* While it runs: tests at a time per machine, and cancelling the tests not started yet */}
+            {run.running && !run.threads && <div style={{color:C.amber,fontSize:'10px',margin:'8px 0 0 82px'}}>
+              THREADS and CANCEL QUEUED need the updated bridge (944turbo_dme_klr): git pull, then restart dme_klr/live/bridge.mjs.
+              A run the old bridge started can't be changed (restarting the bridge stops it).</div>}
             {run.running && run.threads && <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:'6px 16px',margin:'8px 0 0 82px'}}>
               <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em'}}
                 title="Tests at a time on each machine, from the next test that starts; a test already running ends as it would have">THREADS</span>
@@ -533,7 +546,7 @@ export default function RunAllPanel({ url, state, onClose }) {
               {suiteKeys.some(k => suites[k].sim === 'vl') && cancelBtn('vl', { sim:'vl' }, 'ALL VERILATOR', queuedOf(su => su.sim === 'vl'), 'Every Verilator suite')}
               {suiteKeys.some(k => suites[k].sim === 'iv') && cancelBtn('iv', { sim:'iv' }, 'ALL IVERILOG', queuedOf(su => su.sim === 'iv'), 'Every iverilog suite')}
               {suiteKeys.length > 1 && cancelBtn('all', {}, 'EVERYTHING', queuedOf(() => true), 'Every suite')}
-              <span style={{color:C.grey,fontSize:'10px'}}>or a test group's, on its line below{runMulti ? ", or one suite's, on its bar" : ''}</span>
+              <span style={{color:C.grey,fontSize:'10px'}}>or a test group's, on its line below, or one test's, on its line{runMulti ? ", or one suite's, on its bar" : ''}</span>
             </div>}
             {/* The steps (run_all.sh's 1/6 … 6/6) */}
             <div style={{display:'flex',flexWrap:'wrap',gap:'4px 14px',margin:'8px 0 0 82px',fontSize:'10px'}}>
@@ -604,7 +617,7 @@ export default function RunAllPanel({ url, state, onClose }) {
                   {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
                      style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
                      title={`What the ${g.name} tests check: the ${lite ? 'user' : 'developer'} manual, Appendix A`}>MANUAL ↗</a>}
-                  {run?.running && queuedIn(names) > 0 && cancelBtn(`g:${g.name}`, { tests: names }, 'CANCEL', queuedIn(names),
+                  {run?.running && run.cancels && queuedIn(names) > 0 && cancelBtn(`g:${g.name}`, { tests: names }, 'CANCEL', queuedIn(names),
                     `The ${g.name} group${suiteKeys.length > 1 ? ', in every suite' : ''}`)}
                   {gp ? <>
                     <Bar pct={gp.p} color={gp.v.FAIL ? C.red : gp.v.WARN ? C.amber : C.text} height={10} label={`${Math.floor(gp.p)}%`} />
