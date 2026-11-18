@@ -1,4 +1,5 @@
 import { Footer } from "./footer.jsx";
+import { RomName } from "./romEdits.jsx";
 import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition, useContext } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
@@ -1499,7 +1500,8 @@ export default function DMEDashboard() {
               📄 {logFileName}
               {!liveUrl && data.rom && <span style={{color:C.textDim,marginLeft:'10px'}}
                 title={Object.entries(data.rom).map(([c, r]) => `${c.toUpperCase()} ${r.file} sha=${r.sha}`).join('\n')}>
-                ROM: {[data.rom.dme && `DME ${data.rom.dme.file}`, data.rom.klr && `KLR ${data.rom.klr.file}`].filter(Boolean).join(' · ')}
+                ROM: {['dme', 'klr'].filter(c => data.rom[c]).map((c, i) => <span key={c}>{i ? ' · ' : ''}{c.toUpperCase()}{' '}
+                  <RomName path={data.rom[c].file} cpu={c} bridge={DEFAULT_LIVE_URL} title={`${data.rom[c].file} sha=${data.rom[c].sha}`} /></span>)}
               </span>}
             </div>
           )}

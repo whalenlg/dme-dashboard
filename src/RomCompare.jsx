@@ -10,6 +10,8 @@
 //  marked; every other run of differing bytes (code, constants, index
 //  tables) comes with the nearest label and the disassembly around it.
 // ════════════════════════════════════════════════════════════════════
+import { RomName } from "./romEdits.jsx";
+import { isEdited, nameText, MODIFIED } from "./romNames.js";
 import { useEffect, useState } from "react";
 
 const C = {
@@ -247,7 +249,8 @@ export default function RomCompare({ url, roms, onClose }) {
   };
   const setSide = (k, v) => setPick(p => ({ ...p, [cpu]: { ...p[cpu], [k]: v } }));
   const list = images[cpu] ?? [];
-  const opt = i => <option key={`${i.src}:${i.name}`} value={i.name}>{i.name}{i.src === 'upload' ? ' (uploaded)' : ''}</option>;
+  const opt = i => <option key={`${i.src}:${i.name}`} value={i.name} style={isEdited(i.name) ? {color:MODIFIED} : undefined}>
+    {isEdited(i.name) ? `${nameText(i.name)} ${i.name.match(/patch-(\w+)/)[1]}` : i.name}{i.src === 'upload' ? ' (uploaded)' : ''}</option>;
   const changed = res?.calib.filter(e => e.changed) ?? [];
 
   return (
@@ -258,9 +261,11 @@ export default function RomCompare({ url, roms, onClose }) {
         <button style={btn(mode === 'pair', C.blue)} onClick={() => setMode('pair')} title="Two images side by side">TWO IMAGES</button>
         <button style={btn(mode === 'variants', C.blue)} onClick={() => setMode('variants')} title="Every image against one reference, map by map">ALL VARIANTS</button>
         <span style={{color:A_COL}}>{mode === 'pair' ? 'A' : 'REF'}</span>
-        <select style={sel} value={a} onChange={e => setSide('a', e.target.value)}>{list.map(opt)}</select>
+        <select style={{...sel, ...(isEdited(a) ? {color:MODIFIED} : {})}} value={a} onChange={e => setSide('a', e.target.value)}>{list.map(opt)}</select>
+        {isEdited(a) && <RomName path={a} cpu={cpu} bridge={url} style={{fontSize:'9px'}} />}
         {mode === 'pair' && <><span style={{color:B_COL}}>B</span>
-        <select style={sel} value={b} onChange={e => setSide('b', e.target.value)}>{list.map(opt)}</select></>}
+        <select style={{...sel, ...(isEdited(b) ? {color:MODIFIED} : {})}} value={b} onChange={e => setSide('b', e.target.value)}>{list.map(opt)}</select>
+        {isEdited(b) && <RomName path={b} cpu={cpu} bridge={url} style={{fontSize:'9px'}} />}</>}
         <label style={{color:C.textDim,cursor:'pointer'}} title="List every map and table, not only the ones that differ">
           <input type="checkbox" checked={all} onChange={e => setAll(e.target.checked)} /> ALL MAPS
         </label>
@@ -274,8 +279,8 @@ export default function RomCompare({ url, roms, onClose }) {
       {mode === 'pair' && res && (
         <div style={{marginTop:'8px'}}>
           <div style={{color:C.textDim,marginBottom:'6px'}}>
-            <span style={{color:A_COL}}>A</span> {res.a.name} <span style={{color:'#557755'}}>sha {res.a.sha}</span>
-            {'  ·  '}<span style={{color:B_COL}}>B</span> {res.b.name} <span style={{color:'#557755'}}>sha {res.b.sha}</span>
+            <span style={{color:A_COL}}>A</span> <RomName path={res.a.name} cpu={cpu} bridge={url} /> <span style={{color:'#557755'}}>sha {res.a.sha}</span>
+            {'  ·  '}<span style={{color:B_COL}}>B</span> <RomName path={res.b.name} cpu={cpu} bridge={url} /> <span style={{color:'#557755'}}>sha {res.b.sha}</span>
             {'  ·  '}
             {res.identical
               ? <span style={{color:C.textBright}}>identical</span>
