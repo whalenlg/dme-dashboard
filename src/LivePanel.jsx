@@ -96,6 +96,7 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
         <label style={{color:C.textDim,fontSize:'10px',cursor:'pointer'}}>
           <input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> FOLLOW
         </label>
+        <ResolutionBox interval={live.interval} connected={connected} send={send} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
       <RomRow roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
@@ -164,6 +165,40 @@ function StopReason({ reason }) {
       stopped: bp {h.cpu} {h.pc} · <span style={{color:C.blue}}>{hitText(h)}</span>
       <span style={{color:C.textDim}}> (condition {h.op} {h.bit != null ? h.val : `${hx(h.val)}h`})</span>
     </span>
+  );
+}
+
+// ── Resolution: simulated ms between DS snapshots (the points of the
+// live stats and charts), sim_main's "interval" command. 1 ms minimum;
+// applied on Enter or when the box loses focus. The bridge keeps it
+// across restarts and snapshot loads.
+const RES_MIN = 1, RES_MAX = 10000;
+function ResolutionBox({ interval, connected, send }) {
+  const [text, setText] = useState('');
+  const [editing, setEditing] = useState(false);
+  const cur = interval?.ms;
+  const shown = editing ? text : (cur ?? '');
+  const n = Math.round(+text);
+  const bad = editing && text !== '' && !(Number.isFinite(+text) && n >= RES_MIN && n <= RES_MAX);
+  const apply = () => {
+    setEditing(false);
+    if (text === '' || bad || n === cur) return;
+    send(`interval ${n}`);
+  };
+  const off = !connected || !interval;
+  return (
+    <label style={{color:C.textDim,fontSize:'10px',display:'inline-flex',alignItems:'center',gap:'4px'}}
+           title={!interval ? 'This simulator build has no resolution setting: rebuild it (dme_klr/live/build_live.sh)'
+             : `Simulated time between snapshots (the points of the live stats and charts), ${RES_MIN} to ${RES_MAX} ms; `
+               + `build default ${interval.def} ms. Smaller is finer but slows the sim and keeps less history.`}>
+      RESOLUTION
+      <input type="number" min={RES_MIN} max={RES_MAX} step={1} value={shown} disabled={off}
+             onFocus={() => { setText(String(cur ?? '')); setEditing(true); }}
+             onChange={e => setText(e.target.value)} onBlur={apply}
+             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setEditing(false); e.currentTarget.blur(); } }}
+             title={bad ? `${RES_MIN} to ${RES_MAX} ms` : undefined}
+             style={{...inp,width:'52px',borderColor: bad ? C.red : C.border}} /> ms
+    </label>
   );
 }
 
