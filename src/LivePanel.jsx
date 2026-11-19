@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useLayoutEffect, useRef, memo } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback, memo } from "react";
 import { fmtBoost, boostParts } from "./boost.js";
 import { thin, syncNearest, inRange } from "./thin.js";
 import { useZoom, zoomHandlers, ZoomBox, DragArea, ZoomBar } from "./zoom.jsx";
@@ -775,6 +775,75 @@ function BytesCell({ cpu, r, editing, canEdit, onEdit, onWrite }) {
   );
 }
 
+// Operand symbols: names in an instruction's operand text (code labels, RAM
+// and bit names, SFRs), skipping the CPU's own registers and #immediates
+const OP_REGS = /^(a|ab|b|c|dptr|pc|r[0-7]|p[12]|f[01]|mb[01]|rb[01]|i|t|tcnt|tcnti|bus)$/i;
+function opSymbols(ops) {
+  const out = [];
+  for (const m of (ops || '').matchAll(/(?<![#\w])[A-Za-z_]\w*/g))
+    if (!OP_REGS.test(m[0])) out.push({ i: m.index, s: m[0] });
+  return out;
+}
+const MARK = {background:'#ffcc00',color:'#000',padding:0};
+// Text with every occurrence of q (lower case) marked
+function marked(text, q) {
+  const i = q && text ? text.toLowerCase().indexOf(q) : -1;
+  if (i < 0) return text;
+  return <>{text.slice(0, i)}<mark style={MARK}>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</>;
+}
+// An operand field: code labels are links to their row, and symbols
+// matching the label search are marked
+function OpsText({ ops, q, labelAt, onLabel }) {
+  const syms = opSymbols(ops);
+  if (!syms.length) return ops;
+  const out = [];
+  let at = 0;
+  for (const { i, s } of syms) {
+    if (i > at) out.push(ops.slice(at, i));
+    const text = marked(s, q);
+    out.push(labelAt?.has(s) && onLabel
+      ? <span key={i} style={{color:'#7fb8e8',textDecoration:'underline dotted',cursor:'pointer'}}
+              title={`Go to ${s} (${hx(labelAt.get(s), 4)})`}
+              onClick={e => { e.stopPropagation(); onLabel(s); }}>{text}</span>
+      : <span key={i}>{text}</span>);
+    at = i + s.length;
+  }
+  if (at < ops.length) out.push(ops.slice(at));
+  return out;
+}
+
+// Hex <-> decimal converter: type in either box and the other follows.
+// A negative decimal shows as 8-bit (or 16-bit) two's complement.
+function HexDec() {
+  const [hex, setHex] = useState('');
+  const [dec, setDec] = useState('');
+  const onHex = t => {
+    setHex(t);
+    const m = t.trim().replace(/^0x/i, '').replace(/h$/i, '');
+    const n = /^[0-9a-f]+$/i.test(m) ? parseInt(m, 16) : NaN;
+    setDec(isNaN(n) ? '' : String(n));
+  };
+  const onDec = t => {
+    setDec(t);
+    const n = /^\s*-?\d+\s*$/.test(t) ? parseInt(t, 10) : NaN;
+    if (isNaN(n) || n < -32768) return setHex('');
+    setHex((n < 0 ? (n >= -128 ? n & 0xff : n & 0xffff) : n).toString(16).toUpperCase());
+  };
+  const n = dec !== '' ? parseInt(dec, 10) : NaN;
+  const tip = isNaN(n) ? 'Hex / decimal converter: type in either box'
+    : `${hex}h = ${n}` + (n >= 0 && n < 0x10000 ? `\nbinary ${n.toString(2).padStart(n < 0x100 ? 8 : 16, '0')}` : '')
+      + (n >= 0x80 && n < 0x100 ? `\nsigned 8-bit ${n - 0x100}` : n >= 0x8000 && n < 0x10000 ? `\nsigned 16-bit ${n - 0x10000}` : '');
+  const box = {...inp,width:'6ch',textAlign:'right'};
+  return (
+    <span style={{display:'inline-flex',gap:'3px',alignItems:'center',color:C.textDim,paddingLeft:'6px',borderLeft:`1px solid ${C.border}`}} title={tip}>
+      <input value={hex} onChange={e => onHex(e.target.value)} placeholder="hex" style={box} spellCheck={false} />
+      <span>h =</span>
+      <input value={dec} onChange={e => onDec(e.target.value)} placeholder="dec" style={box} spellCheck={false} />
+      {(hex || dec) && <span style={{cursor:'pointer'}} title="Clear" onClick={() => { setHex(''); setDec(''); }}>×</span>}
+    </span>
+  );
+}
+
 function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose,
                     paused, edited = 0, patchRom, revertRom, rom, url }) {
   const [showEdits, setShowEdits] = useState(false);
@@ -861,8 +930,18 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
   // type; GO / Enter goes to the exact label (else the first match), and
   // ◀ ▶ (or Enter / Shift+Enter again) step through the matches by address
   const q = jump.trim().toLowerCase();
-  const matches = useMemo(() => q ? listing.filter(r => r.label && r.label.toLowerCase().includes(q)).map(r => r.a) : [],
-                          [listing, q]);
+  // Operand symbols of each row, and where each code label is defined
+  const rowSyms = useMemo(() => listing.map(r => opSymbols(r.ops)), [listing]);
+  const labelAt = useMemo(() => {
+    const m = new Map();
+    for (const r of listing) if (r.label && !m.has(r.label)) m.set(r.label, r.a);
+    return m;
+  }, [listing]);
+  // Rows whose label, or a symbol in whose operands, contains the text
+  const matchesFor = useCallback(t => t ? listing.filter((r, k) =>
+      (r.label && r.label.toLowerCase().includes(t)) || rowSyms[k].some(x => x.s.toLowerCase().includes(t))).map(r => r.a) : [],
+    [listing, rowSyms]);
+  const matches = useMemo(() => matchesFor(q), [matchesFor, q]);
   const matchSet = useMemo(() => new Set(matches), [matches]);
   const [hit, setHit] = useState(-1);   // index in matches of the one shown
   const onMatch = hit >= 0 && matches[hit] === center;
@@ -882,11 +961,14 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     const a = parseInt(q, 16);
     if (!isNaN(a)) setCenter(a);
   };
-  // The matched part of a label, marked
-  const markLabel = label => {
-    const i = q && label ? label.toLowerCase().indexOf(q) : -1;
-    if (i < 0) return label;
-    return <>{label.slice(0, i)}<mark style={{background:'#ffcc00',color:'#000',padding:0}}>{label.slice(i, i + q.length)}</mark>{label.slice(i + q.length)}</>;
+  // Clicking a label in an operand goes to where it is defined, with the
+  // search set to it so ◀ ▶ step through the places that use it
+  const goLabel = name => {
+    const a = labelAt.get(name);
+    if (a == null) return;
+    setJump(name);
+    setHit(matchesFor(name.toLowerCase()).indexOf(a));
+    setCenter(a);
   };
 
   return (
@@ -910,7 +992,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
           <input value={jump} onChange={e => { setJump(e.target.value); setHit(-1); }}
                  onKeyDown={e => e.key === 'Enter' && doJump(onMatch ? (e.shiftKey ? -1 : 1) : 0)}
                  placeholder="label or hex" style={{...inp,width:'110px'}}
-                 title="Type part of a label to highlight every match. Enter goes to the next match, Shift+Enter the previous one; or type a hex address" />
+                 title="Type part of a label to highlight every row that defines or uses one that matches (labels and operands). Enter goes to the next match, Shift+Enter the previous one; or type a hex address" />
           <button style={btn(false)} onClick={() => doJump()}>GO</button>
           <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(-1)} title="Previous match (Shift+Enter)">◀</button>
           <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(1)} title="Next match (Enter)">▶</button>
@@ -918,6 +1000,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
             ? <span style={{color:C.amber,alignSelf:'center',minWidth:'6ch'}}>{onMatch ? `${hit + 1}/${matches.length}` : `${matches.length} match${matches.length > 1 ? 'es' : ''}`}</span>
             : isNaN(parseInt(q, 16)) && <span style={{color:C.red,alignSelf:'center'}}>no match</span>)}
           {center != null && <button style={btn(false)} onClick={() => { setCenter(null); setJump(''); }}>PC</button>}
+          <HexDec />
           <button style={btn(false)} onClick={onClose}
                   title={`Close this window (reopen it with ${cpu.toUpperCase()} CODE on the main page)`}>✕</button>
         </span>
@@ -996,9 +1079,10 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                            borderLeft: `2px solid ${isPc ? C.textBright : isHit ? '#ffcc00' : 'transparent'}`}}>
                 <span style={{width:'10px',color: hasBp ? (conds[r.a] ? C.amber : C.red) : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
-                <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{isMatch ? markLabel(r.label) : r.label}</span>
+                <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{isMatch ? marked(r.label, q) : r.label}</span>
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
-                <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
+                <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>
+                  <OpsText ops={r.ops} q={isMatch ? q : ''} labelAt={labelAt} onLabel={goLabel} /></span>
                 <span style={{color: running ? '#557799' : C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
                       title={val && `${val}  (as this instruction last ran, before it executed)`}>{val}</span>
                 <BytesCell cpu={cpu} r={r} editing={editAt === r.a} canEdit={canEdit}
@@ -1010,6 +1094,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
         </div>
       )}
       <TraceList cpu={cpu} trace={running ? [] : trace} traceCtx={traceCtx} listing={listing} colW={colW} running={running}
+                 labelAt={labelAt} onLabel={goLabel}
                  onJump={a => { setCenter(a); setJump(hx(a, cpu === 'dme' ? 4 : 3)); }} />
     </div>
   );
@@ -1040,7 +1125,7 @@ function compactTrace(steps) {
   }
   return out;
 }
-function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
+function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump, labelAt, onLabel }) {
   const [open, setOpen] = useState(true);
   const steps = useMemo(() => trace.map((a, i) => {
     const row = listing.length ? listing[rowFor(listing, a)] : null;
@@ -1096,7 +1181,8 @@ function TraceList({ cpu, trace, traceCtx, listing, colW, running, onJump }) {
                 {r ? (<>
                   <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{r.label}</span>
                   <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>
-                  <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>{r.ops}</span>
+                  <span style={{color:C.textDim,width:`${colW.ops}ch`,flex:'none'}}>
+                    <OpsText ops={r.ops} labelAt={labelAt} onLabel={onLabel} /></span>
                   <span style={{color:C.blue,width:'22ch',flex:'none',overflow:'hidden',textOverflow:'ellipsis'}}
                         title={val && `${val}  (as this execution saw them, before it ran)`}>{val}</span>
                   <span style={{color:'#557755',width:'9ch',flex:'none',overflow:'hidden'}}>{r.bytes}</span>
