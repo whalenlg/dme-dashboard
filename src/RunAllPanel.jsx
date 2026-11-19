@@ -101,7 +101,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [workers, setWorkers] = useState(null);
   const [perTest, setPerTest] = useState(false);
   const [debug, setDebug] = useState({});             // test → iverilog debug flags (step 4)
-  const [macos, setMacos] = useState('both');
+  const [macos, setMacos] = useState('none');   // step 6 is opt-in
   const [pull, setPull] = useState(true);
   const [plot, setPlot] = useState(true);             // step 5's difference plots (off: --no-plot)
   const [interval, setIntervalMs] = useState(100);
