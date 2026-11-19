@@ -26,7 +26,7 @@ export function useRunAll(url, open) {
         ? `no bridge at ${url}: start it (dme_klr/live/bridge.mjs, or run_lite.sh in the lite package)` : e.message);
     }
   }, [url]);
-  const running = !!info?.run?.running;
+  const running = !!info?.run?.running || !!info?.installRun?.running;
   useEffect(() => {
     if (!url) return;
     if (!open && !seen.current) return;
