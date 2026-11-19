@@ -12,9 +12,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    POST <url>/patch?cpu=dme|klr  {addr, bytes} or {revert: true}: edit bytes
 //                        of the loaded image in place (only while paused)
 //    GET  <url>/asm/dme|klr  disassembly listing; fetched again on
-//                        SIM: [ASM] dme|klr <workbook> match=content|name|none [patched=<n>],
+//                        SIM: [ASM] dme|klr <workbook> match=content|name|none [patched=<n> [saved=<x.mem>]],
 //                        which the bridge sends when that CPU's image changes
 //                        (edited rows carry patched and orig: the bytes as loaded)
+//                        (saved: the edits were kept as that image with SAVE AS)
 //    GET  <url>/snapshots, /snapshots/<id>[/bundle], POST /snapshots/<id>/load,
 //    POST /snapshots/upload, DELETE /snapshots/<id>: snapshots of the whole
 //                        model, saved by the sim on each warning (or "save");
@@ -76,7 +77,7 @@ export function useLiveSim(url, onLogLines) {
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
-  const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match, patched: bytes edited} each listing came from
+  const [asmSrc, setAsmSrc] = useState({ dme: null, klr: null });   // {workbook, match, patched: bytes edited, saved: kept as} each listing came from
   const [snapshots, setSnapshots] = useState([]);   // bridge's list, newest first
   const [snapCfg, setSnapCfg] = useState({ auto: true, brk: false, taken: 0, max: 25 });
   const [interval, setIntervalMs] = useState(null);   // {ms, def}: DS snapshot interval, from SIM: [INTERVAL] (null: the sim doesn't report one)
@@ -188,7 +189,7 @@ export function useLiveSim(url, onLogLines) {
         const [cpu, workbook] = rest.split(' ');
         const kv = parseKV(rest);
         if (cpu !== 'dme' && cpu !== 'klr') return;
-        setAsmSrc(s => ({ ...s, [cpu]: { workbook, match: kv.match ?? '', patched: +(kv.patched ?? 0) } }));
+        setAsmSrc(s => ({ ...s, [cpu]: { workbook, match: kv.match ?? '', patched: +(kv.patched ?? 0), saved: kv.saved ?? null } }));
         fetch(`${url}/asm/${cpu}`).then(r => r.ok ? r.json() : null).catch(() => null)
           .then(rows => { if (rows) setAsm(a => ({ ...a, [cpu]: rows })); });
       } else if (kind === 'SNAP') {

@@ -167,7 +167,7 @@ function SaveAs({ bridge, cpu, from, base }) {
         <div style={{color:C.textBright,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
           ✓ Saved as {saved} and {saved.replace(/\.mem$/i, '.bin')}{use ? `, and loaded into the ${CPU} EPROM` : ''}. It is in every {CPU} image list now.
           <button style={btn(C.textBright)} onClick={e => downloadBin(e, bridge, cpu, saved)}
-                  title="The raw binary for an EPROM programmer (also kept by the bridge in obj/roms)">⬇ {saved.replace(/\.mem$/i, '.bin')}</button>
+                  title={`The raw binary for an EPROM programmer (also kept in bin_images/${cpu}/edited/${saved.replace(/\.mem$/i, '')}/, with its .xlsx workbook)`}>⬇ {saved.replace(/\.mem$/i, '.bin')}</button>
         </div>
         {!setupDone ? (
           <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}
