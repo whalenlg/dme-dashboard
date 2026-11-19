@@ -233,6 +233,24 @@ function parseDsLine(line) {
   return snap;
 }
 
+// DME: [SER] <ms>,<tester on>,<peek addr asked>,<frames>,<rpm><adv><fuel><peek>,
+//   <7Ah for that peek>,<next slot>,<slot 0..5 bytes>,<hellos>,<replies>
+// (dme_klr_dashboard_tb's serial diagnostic tester / TXD decoder)
+function parseSerLine(line) {
+  const p = line.replace(/^DME:\s*\[SER\]\s*/, '').trim().split(',');
+  if (p.length < 10) return null;
+  const hx = (str, i) => parseInt(str.slice(i * 2, i * 2 + 2), 16);
+  const t = parseInt(p[0]);
+  if (isNaN(t)) return null;
+  return {
+    t, tester: p[1] === '1', peekReq: parseInt(p[2], 16), frames: parseInt(p[3]),
+    rpm: hx(p[4], 0), adv: hx(p[4], 1), fuel: hx(p[4], 2), peek: hx(p[4], 3),
+    peekAddr: parseInt(p[5], 16), slot: parseInt(p[6]),
+    slots: Array.from({ length: 6 }, (_, i) => hx(p[7], i)),
+    hellos: parseInt(p[8]), replies: parseInt(p[9]),
+  };
+}
+
 function parseStatusLine(line) {
   const snap = { iram: {}, raw: line };
   const tm = line.match(/t=(\d+)\s*ms/);
@@ -408,6 +426,12 @@ function dmeLogParser(max = {}) {
         else if (t.startsWith('[STATUS]'))                                  addSnap(parseStatusLine(t));
         else if (t.startsWith('[PHASE]') || t.startsWith('DME: [PHASE]'))  { const p = parsePhaseLine(t); if (p) { insertByT(phases, p); out = null; } }
         else if (t.startsWith('DME: [STATUS]'))                            addSnap(parseStatusLine(t.replace(/^DME: /,'')));
+        else if (t.startsWith('DME: [SER]')) {
+          // the serial diag frames at this snapshot: on the DS snapshot of the same time
+          const r = parseSerLine(t);
+          const last = r && snapshots.findLast(x => x.t === r.t && !x.raw?.includes('[STATUS]'));
+          if (last) { last.ser = r; out = null; }
+        }
         else if (t.startsWith('REPLAY: [EXPECT]'))                         { const e = parseExpectLine(t); if (e) { insertByT(expect, e); out = null; } }
         else if (t.startsWith('DME: [ROM]') || t.startsWith('KLR: [ROM]')) {
           const m = t.match(/^(DME|KLR): \[ROM\] (\S+) sha=(\S+)/);
@@ -1356,7 +1380,7 @@ export default function DMEDashboard() {
     {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
     <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
       {t==='diag'     && <DiagTab iram={iram} snap={snap} snapshots={feed.data.snapshots}
-          onSeek={seekTo} range={zoom} setRange={setZoom} />}
+          onSeek={seekTo} range={zoom} setRange={setZoom} live={liveUrl ? live : null} />}
       {t==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
           onSeek={seekTo} range={zoom} setRange={setZoom} />}
       {t==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
@@ -2740,7 +2764,7 @@ const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }
   );
 });
 
-function DiagTab({ iram, snap, snapshots, onSeek, range, setRange }) {
+function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live }) {
   const ir = iram || {};
 
   // Use the authoritative RPM from the DS header (refRpm) rather than
@@ -2907,6 +2931,174 @@ function DiagTab({ iram, snap, snapshots, onSeek, range, setRange }) {
             </div>
           ))}
         </div>
+      </div>
+      <SerialDiagPane ir={ir} snap={snap} snapshots={snapshots} live={live} />
+    </div>
+  );
+}
+
+// ── SerialDiagPane ────────────────────────────────────────────────
+// The DME's polled serial diagnostics (0x1E6D, from the main loop via
+// 0x101A), as the testbench's tester model decodes them from TXD
+// (DME: [SER] lines). init_serial sends FF with the 9th bit set; a tester
+// that answers FF before the first poll gets streaming mode, else 23h.7 is
+// set and TXD carries the lambda bit. Each poll sends RPM, advance, fuel,
+// RAM[7Ah] and one slot byte (9th bit set); a byte sent back after slot k
+// is stored at 11DAh[k] on the next poll (0x1EA7). The tester answers
+// slots 0 and 3 with the peek address, so 7Ah picks the fourth byte.
+const SER_SLOTS = [
+  { src:0x13, name:'COOLANT',     store:0x7A },
+  { src:0x12, name:'AIR TEMP',    store:0x26 },
+  { src:0x11, name:'SYS VOLTAGE', store:0x28 },
+  { src:0x49, name:'LOAD INDEX',  store:0x7A },
+  { src:0x2F, name:'DWELL',       store:0x26 },
+  { src:0x10, name:'AFM RAW',     store:0x28 },
+];
+function serSlotDecode(i, v) {
+  if (v == null) return '';
+  switch (SER_SLOTS[i].src) {
+    case 0x13: case 0x12: return `${ntcLinToC(v)}°C`;
+    case 0x11: return `${battRawToV(v).toFixed(1)} V`;
+    case 0x2F: return `${v} half-teeth = ${(v * 360 / 264).toFixed(1)}°`;
+    default:   return `${v}d`;
+  }
+}
+function SerialDiagPane({ ir, snap, snapshots, live }) {
+  const ser = useMemo(() => {
+    const t = snap?.t ?? Infinity;
+    return (snapshots ?? []).findLast(s => s.ser && s.t <= t)?.ser ?? null;
+  }, [snapshots, snap?.t]);
+  const [draft, setDraft] = useState('');
+  const b23 = ir[0x23] ?? 0, b25 = ir[0x25] ?? 0;
+  const mode = ir[0x23] == null ? { l:'--', col:C.textDim, d:'No RAM snapshot yet.' }
+             : (b23 & 0x80) ? { l:'LAMBDA ON TXD', col:C.amber,
+                                d:'No tester answered the boot hello, so 23h.7 is set: serial diagnostics are off until reset and TXD (P3.1) carries the O2 bit (0x0BA5).' }
+             : (b23 & 0x40) ? { l:'PEEK MODE (EE)', col:'#cc66ff',
+                                d:'The tester answered EE: 23h.6 is set and the serial interrupt (0x0023) returns RAM at each address it receives.' }
+             : (b25 & 0x08) ? { l:'WAITING FOR FIRST POLL', col:C.textDim,
+                                d:'25h.3 set by init_serial: the first poll checks for an answer to the hello.' }
+             : { l:'STREAMING', col:C.textBright,
+                 d:'Each poll sends a frame; replies after slots 0..5 are stored at 11DAh[slot] (0x1EA7).' };
+  const tester = live ? live.inputs?.ser_tester === 1 : !!ser?.tester;
+  const peekReq = live?.inputs?.ser_peek ?? ser?.peekReq ?? 0x37;
+  const canSet = live && live.connected !== false && typeof live.inputs?.ser_peek === 'number';
+  const setPeek = () => {
+    const v = parseInt(draft.replace(/^0x/i, '').replace(/h$/i, ''), 16);
+    if (isNaN(v) || v < 0 || v > 0x7F) return;
+    live.send(`set ser_peek 0x${h2(v)}`);
+    setDraft('');
+  };
+  const peekReady = ser && ser.frames > 0 && ser.peekAddr === peekReq;
+  const memName = a => { const n = IRAM_MAP.find(m => m.a === a)?.n; return n && !/^r[0-9a-f]{2}$/i.test(n) ? n : ''; };
+  const cell = { padding:'2px 6px', borderBottom:`1px solid ${C.border}`, fontSize:'10px', textAlign:'left' };
+  const lbl = { color:C.textDim, fontSize:'8px', letterSpacing:'.1em' };
+  const btnS = on => ({ padding:'3px 10px', background: on ? '#0d4a0d' : C.panelBg2, border:`1px solid ${on ? C.textBright : C.border}`,
+                        color: on ? C.textBright : C.textDim, fontFamily:'inherit', fontSize:'10px', cursor:'pointer' });
+  return (
+    <div style={{...S.panel, marginTop:'8px'}}>
+      <div style={S.panelTitle}>SERIAL DIAGNOSTICS — RXD / TXD  (ROM 0x1E6D, store at 0x1EA7)</div>
+      <div style={{display:'flex', flexWrap:'wrap', gap:'8px 18px', alignItems:'center', marginBottom:'8px', fontSize:'10px'}}>
+        <div>
+          <div style={lbl}>TESTER ON RXD</div>
+          {live
+            ? <button style={btnS(tester)} disabled={!canSet}
+                      title="Connect the testbench's diagnostic tester to the DME's RXD. The stock ROM only listens for it at boot, so restart after turning it on."
+                      onClick={() => live.send(`set ser_tester ${tester ? 0 : 1}`)}>{tester ? '● CONNECTED' : '○ OFF'}</button>
+            : <span style={{color: tester ? C.textBright : C.textDim}}>{ser ? (tester ? 'connected' : 'off') : '--'}</span>}
+        </div>
+        <div>
+          <div style={lbl}>FIRMWARE MODE  (23h.7 / 23h.6 / 25h.3)</div>
+          <span style={{color:mode.col, fontWeight:'bold'}}>{mode.l}</span>
+        </div>
+        <div>
+          <div style={lbl}>SLOT  (29h)</div>
+          <span style={{color:C.textBright}}>{ir[0x29] == null ? '--' : ir[0x29] === 0xFF ? 'FF (end)' : ir[0x29]}</span>
+        </div>
+        <div>
+          <div style={lbl}>FRAMES · HELLOS · REPLIES</div>
+          <span style={{color:C.textBright}}>{ser ? `${ser.frames} · ${ser.hellos} · ${ser.replies}` : '--'}</span>
+        </div>
+      </div>
+      <div style={{color:C.textDim, fontSize:'9px', marginBottom:'8px', lineHeight:'1.5'}}>
+        {mode.d}
+        {tester && (b23 & 0x80) ? <span style={{color:C.amber}}> The tester is on but the DME stopped listening at boot: press ↺ RESTART (it stays on).</span> : null}
+        {!ser && <span> No serial frames in {live ? 'this run' : 'this log'} yet{live ? ': connect the tester and restart' : ''}.</span>}
+      </div>
+
+      {/* Peek: the tester writes the address to 7Ah (slots 0 and 3), the 4th byte of each frame is RAM[7Ah] */}
+      <div style={{background:C.panelBg2, border:`1px solid ${C.border2}`, borderLeft:`3px solid #44dddd`, padding:'6px 10px',
+                   display:'flex', flexWrap:'wrap', gap:'8px 18px', alignItems:'center', marginBottom:'8px', fontSize:'10px'}}>
+        <div>
+          <div style={lbl}>PEEK ADDRESS → 7Ah</div>
+          {live
+            ? <span style={{display:'inline-flex', gap:'4px', alignItems:'center'}}>
+                <span style={{color:C.textBright}}>{h2(peekReq)}h</span>
+                <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="00-7F"
+                       onKeyDown={e => e.key === 'Enter' && setPeek()} disabled={!canSet}
+                       style={{width:'48px', background:'#030803', border:`1px solid ${C.border}`, color:C.textBright,
+                               fontFamily:'inherit', fontSize:'10px', padding:'2px 4px'}} />
+                <button style={btnS(false)} onClick={setPeek} disabled={!canSet || !draft}>SET</button>
+              </span>
+            : <span style={{color:C.textBright}}>{ser ? `${h2(peekReq)}h` : '--'}</span>}
+        </div>
+        <div>
+          <div style={lbl}>RETURNED  (frame byte 4 = RAM[7Ah])</div>
+          {ser && ser.frames > 0
+            ? <span style={{color: peekReady ? '#44dddd' : C.amber, fontSize:'12px'}}>
+                RAM[{h2(ser.peekAddr)}h] = 0x{h2(ser.peek)} ({ser.peek}d){memName(ser.peekAddr) ? `  ${memName(ser.peekAddr)}` : ''}
+                {!peekReady && <span style={{fontSize:'9px'}}>  — waiting for 7Ah = {h2(peekReq)}h (the tester sends it after slots 0 and 3)</span>}
+              </span>
+            : <span style={{color:C.textDim}}>--</span>}
+        </div>
+        <div>
+          <div style={lbl}>RAM NOW (snapshot)</div>
+          <span style={{color:C.textDim}}>[{h2(peekReq)}h] = 0x{h2(ir[peekReq])}</span>
+        </div>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1.4fr)', gap:'10px'}}>
+        <table style={{borderCollapse:'collapse', width:'100%'}}>
+          <thead><tr>{['FRAME BYTE','SOURCE','VALUE','DECODED'].map(h => <th key={h} style={{...cell, ...lbl}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {[
+              ['1 RPM',     '37h',             ser?.rpm,  v => `${prpmToRpm(v)} rpm`],
+              ['2 ADVANCE', '31h',             ser?.adv,  v => `${v} half-teeth = ${(v * 360 / 264).toFixed(1)}° BTDC`],
+              ['3 FUEL',    '4B:4A >> 5',      ser?.fuel, v => v === 0 ? '0 (fuel cut or none)' : `${(v * 0.064).toFixed(2)} ms`],
+              ['4 PEEK',    ser ? `[7Ah] = ${h2(ser.peekAddr)}h` : '[7Ah]', ser?.peek, v => `${v}d`],
+            ].map(([n, src, v, dec]) => (
+              <tr key={n}>
+                <td style={{...cell, color:C.textDim}}>{n}</td>
+                <td style={{...cell, color:C.textDim}}>{src}</td>
+                <td style={{...cell, color:C.textBright}}>{v == null || !ser?.frames ? '--' : `0x${h2(v)}`}</td>
+                <td style={{...cell, color:C.text}}>{v == null || !ser?.frames ? '' : dec(v)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <table style={{borderCollapse:'collapse', width:'100%'}}>
+          <thead><tr>{['SLOT','SENDS (11D4h)','LAST','DECODED','REPLY STORED AT (11DAh)'].map(h => <th key={h} style={{...cell, ...lbl}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {SER_SLOTS.map((sl, i) => {
+              const v = ser?.slots?.[i];
+              const answered = sl.store === 0x7A;
+              return (
+                <tr key={i} style={{background: ser && ser.slot === i ? '#0d2e0d' : undefined}}>
+                  <td style={{...cell, color:C.textBright}}>{i}</td>
+                  <td style={{...cell, color:C.textDim}}>{h2(sl.src)}h {sl.name}</td>
+                  <td style={{...cell, color:C.textBright}}>{ser?.frames ? `0x${h2(v)}` : '--'}</td>
+                  <td style={{...cell, color:C.text}}>{ser?.frames ? serSlotDecode(i, v) : ''}</td>
+                  <td style={{...cell, color: answered ? '#44dddd' : C.textDim}}>
+                    {h2(sl.store)}h{answered ? ' ← peek address' : ' (tester stays quiet)'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{color:C.textDim, fontSize:'9px', marginTop:'6px', lineHeight:'1.5'}}>
+        A real-data FF in a slot is sent as FE so FF stays the end marker. Slots 1, 2, 4 and 5 store into 26h and 28h, which only unused code
+        (0x1F21 / 0x1F2D) reads as trims, so the tester never answers them.
       </div>
     </div>
   );
