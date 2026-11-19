@@ -560,6 +560,27 @@ export default function RunAllPanel({ url, state, onClose }) {
                 </span>
               ))}
             </div>
+            {/* What step 5's Plot Differences did, per ROM pair (run_all.sh's "Plot Differences (<rom>): ..." line) */}
+            {(() => {
+              const notes = Object.entries(run.plotNotes ?? {});
+              const nPlots = Object.values(run.diffs ?? {}).reduce((a, t) => a + Object.values(t).reduce((b, l) => b + l.length, 0), 0);
+              const step5 = run.steps.find(s => s.n === 5);
+              // a bridge from before plotNotes: say only what the run's diffs show, once step 5 is over
+              if (!notes.length && run.opts?.plot && step5 && step5.state === 'done' && !run.running)
+                notes.push([null, nPlots ? `${nPlots} plot(s), the ◪ icons on the iverilog lines below`
+                  : 'nothing to plot, no test differed between iverilog and Verilator (only DIFF tests are plotted, not NOTE)']);
+              if (!notes.length) return null;
+              return (
+                <div style={{margin:'4px 0 0 82px',fontSize:'10px',color:C.textDim,display:'flex',flexDirection:'column',gap:'2px'}}
+                     title="run_all.sh step 5: compare_sim_logs.py --plot on each test whose iverilog and Verilator logs differ (DIFF or NOTE)">
+                  {notes.map(([rom, txt]) => (
+                    <span key={rom ?? '-'}>
+                      <span style={{color:C.amber}}>◪</span> PLOT DIFFERENCES{rom && (runMulti || notes.length > 1) ? ` · ${rom}` : ''}: {txt}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
             {/* One bar per dashboard suite */}
             {suiteKeys.map(k => {
               const su = suites[k];
