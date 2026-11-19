@@ -589,11 +589,33 @@ export default function RunAllPanel({ url, state, onClose }) {
               return (
                 <div style={{margin:'4px 0 0 82px',fontSize:'10px',color:C.textDim,display:'flex',flexDirection:'column',gap:'2px'}}
                      title="run_all.sh step 5: compare_sim_logs.py --plot on each test whose iverilog and Verilator logs differ (DIFF or NOTE)">
-                  {notes.map(([rom, txt]) => (
-                    <span key={rom ?? '-'}>
-                      <span style={{color:C.amber}}>◪</span> PLOT DIFFERENCES{rom && (runMulti || notes.length > 1) ? ` · ${rom}` : ''}: {txt}
-                    </span>
-                  ))}
+                  {notes.map(([rom, txt]) => {
+                    // every plot step 5 made for this pair, as links: step 5 compares every
+                    // log in the pair's folder, so a plotted test may not be one this run ran
+                    const r = rom ?? run.rom;
+                    const plots = Object.entries(run.diffs?.[r] ?? {}).sort(([a], [b]) => a.localeCompare(b));
+                    return (
+                      <span key={rom ?? '-'} style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:'3px 6px'}}>
+                        <span><span style={{color:C.amber}}>◪</span> PLOT DIFFERENCES{rom && (runMulti || notes.length > 1) ? ` · ${rom}` : ''}: {txt}</span>
+                        {plots.map(([test, ecus]) => {
+                          const inRun = suiteKeys.some(k => suites[k].tests?.[test]);
+                          return (
+                          <span key={test} style={{display:'inline-flex',alignItems:'center',gap:'3px',whiteSpace:'nowrap'}}>
+                            <span style={{color:inRun ? C.text : C.textDim}}
+                                  title={inRun ? undefined : `${test} wasn't in this run: step 5 compared its logs from an earlier run`}>{test}{inRun ? '' : ' (earlier run)'}</span>
+                            {ecus.map(ecu => (
+                              <a key={ecu} href={`${url}/runall/diff?rom=${encodeURIComponent(r)}&test=${encodeURIComponent(test)}&ecu=${ecu}&run=${run.id}`}
+                                 target="_blank" rel="noreferrer"
+                                 title={`${test}: where its iverilog and Verilator ${ecu} values differ (${test}_${ecu}_diff.jpg)`}
+                                 style={{padding:'0 4px',fontSize:'9px',lineHeight:'14px',border:`1px solid ${C.amber}`,color:C.amber,textDecoration:'none'}}>
+                                ◪ {ecu}</a>
+                            ))}
+                          </span>
+                          );
+                        })}
+                      </span>
+                    );
+                  })}
                 </div>
               );
             })()}
