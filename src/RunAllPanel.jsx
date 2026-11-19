@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import RegressHosts from "./RegressHosts.jsx";
 import HostTest from "./HostTest.jsx";
+import InstallTestsPanel from "./InstallTestsPanel.jsx";
 import RomVariants from "./RomVariants.jsx";
 import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 
@@ -31,6 +32,8 @@ import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 //  run_all-only options are greyed out).
 //  Progress is simulated time against each test's length; the run keeps
 //  going on the bridge when this panel is closed.
+//  The OS installer tests have their own page, INSTALLER TESTS
+//  (InstallTestsPanel.jsx), from the button in the title bar.
 // ─────────────────────────────────────────────────────────────────
 
 const C = {
@@ -101,7 +104,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [workers, setWorkers] = useState(null);
   const [perTest, setPerTest] = useState(false);
   const [debug, setDebug] = useState({});             // test → iverilog debug flags (step 4)
-  const [itests, setItests] = useState(() => new Set());   // step 6's install tests: none by default
+  const [page, setPage] = useState('regressions');   // or 'installer': the INSTALLER TESTS page
   const [pull, setPull] = useState(true);
   const [plot, setPlot] = useState(true);             // step 5's difference plots (off: --no-plot)
   const [interval, setIntervalMs] = useState(100);
@@ -196,9 +199,8 @@ export default function RunAllPanel({ url, state, onClose }) {
     else if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
-                               perTestBuild: perTest, installTests: installList.filter(t => itests.has(t.id) && t.available).map(t => t.id),
-                               // an older bridge knows only the two macOS ones
-                               macosTest: itests.has('macos-install') ? (itests.has('macos-lite') ? 'both' : 'install') : itests.has('macos-lite') ? 'lite' : 'none',
+                               // the installer tests run from their own page (INSTALLER TESTS), not as step 6
+                               perTestBuild: perTest, installTests: [], macosTest: 'none',
                                pull, plot,
                                ...(ivOn && dbgTests.length ? { debug: Object.fromEntries(dbgTests.map(t => [t, debug[t]])) } : {}) });
     try {
@@ -260,13 +262,6 @@ export default function RunAllPanel({ url, state, onClose }) {
                        cursor:dis?'not-allowed':'pointer',fontSize:'11px'});
   const inp = {background:'#030803',border:`1px solid ${C.border2}`,color:C.textBright,fontFamily:'inherit',fontSize:'11px',padding:'3px 5px'};
   const locked = active;
-  // Step 6's install tests, as the bridge lists them with whether this
-  // machine can run each; an older bridge lists none (only macOS, by Tart)
-  const installList = info?.installTests ?? [
-    { id: 'macos-install', label: 'macOS, developer install (clean VM)' },
-    { id: 'macos-lite', label: 'macOS, lite package built here (clean VM)' },
-  ].map(t => ({ ...t, available: !!(info?.platform === 'darwin' && info?.tart), why: 'needs macOS with Tart' }));
-
   // ── Progress views ────────────────────────────────────────
   const suites = run?.suites ?? {};
   const suiteKeys = Object.keys(suites);
@@ -352,6 +347,11 @@ export default function RunAllPanel({ url, state, onClose }) {
   const overall = run ? (run.running ? Math.min(99.9, pctOf(run.done_s, run.total_s)) : run.exit === 0 ? 100 : pctOf(run.done_s, run.total_s)) : 0;
   const runCol = !run ? C.grey : run.running ? C.blue : run.exit === 0 ? C.textBright : run.stopping ? C.amber : C.red;
 
+  // The INSTALLER TESTS page, in place of this one
+  const ir = info?.installRun;
+  if (page === 'installer') return <InstallTestsPanel url={url} state={state} onBack={() => setPage('regressions')} onClose={onClose} />;
+  const irDone = (ir?.tests ?? []).filter(t => !['queued', 'running'].includes(t.state)).length;
+
   return (
     <div style={{position:'fixed',inset:0,background:'#020502ee',zIndex:100,display:'flex',justifyContent:'center',overflow:'auto'}}>
       <div style={{background:C.bg,border:`1px solid #0d4a0d`,borderRadius:'4px',padding:'16px',width:'1100px',maxWidth:'96vw',
@@ -362,7 +362,12 @@ export default function RunAllPanel({ url, state, onClose }) {
           {mode && <span style={{color:'#66ddaa',fontSize:'10px'}}>
             {lite ? 'lite package · run_tests.py' : 'developer install · dme_klr/run_all.sh'} · {url}
           </span>}
-          <button style={{...btn('s'),marginLeft:'auto',padding:'3px 10px'}} onClick={onClose}
+          {mode && <button style={{...btn('s'),marginLeft:'auto',padding:'3px 10px',
+                                   ...(ir?.running ? {borderColor:C.blue,color:C.blue} : {})}}
+            onClick={() => setPage('installer')}
+            title="The OS installer tests (clean macOS / Windows VMs, an Arch container), on their own page">
+            {ir?.running ? `◐ INSTALLER TESTS (${irDone}/${ir.tests.length})` : 'INSTALLER TESTS ▶'}</button>}
+          <button style={{...btn('s'),marginLeft:mode ? 0 : 'auto',padding:'3px 10px'}} onClick={onClose}
             title="Close; a run keeps going on the bridge">CLOSE ✕</button>
         </div>
         {err && <div style={{...box,color:C.amber}}>{err}</div>}
@@ -457,22 +462,6 @@ export default function RunAllPanel({ url, state, onClose }) {
                     + 'A ◪ DME / ◪ KLR icon on the test\'s line opens its plot'}>
                 <input type="checkbox" checked={plot && !lite} disabled={locked || lite} onChange={e=>setPlot(e.target.checked)} />Plot Differences
               </label>
-            </div>
-            <div>
-              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}
-                title="Step 6: each ticked test installs from scratch in a clean VM or container, one after another, once steps 1-5 pass (run_all.sh --install-tests)">INSTALL TESTS (STEP 6)</div>
-              {installList.map(t => {
-                const dis = locked || lite || !t.available;
-                return (
-                  <label key={t.id} style={lbl(dis)}
-                    title={lite ? 'run_all.sh only' : t.available ? `--install-tests ${t.id}` : `Can't run on this machine: ${t.why}`}>
-                    <input type="checkbox" checked={!lite && t.available && itests.has(t.id)} disabled={dis}
-                      onChange={e => setItests(s => { const n = new Set(s); e.target.checked ? n.add(t.id) : n.delete(t.id); return n; })} />
-                    {t.label}
-                  </label>);
-              })}
-              {!lite && installList.some(t => !t.available) &&
-                <div style={{color:C.textDim,fontSize:'10px',marginTop:'3px'}}>Grayed: can't run on this machine (hover for why)</div>}
             </div>
             <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?1:.55}}>QUICK CHECK (LITE)</div>
