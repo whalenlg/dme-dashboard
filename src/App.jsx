@@ -2982,6 +2982,11 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
   const tester = live ? live.inputs?.ser_tester === 1 : !!ser?.tester;
   const peekReq = live?.inputs?.ser_peek ?? ser?.peekReq ?? 0x37;
   const canSet = live && live.connected !== false && typeof live.inputs?.ser_peek === 'number';
+  // Why the controls are off, when they are: no bridge, or a sim built before
+  // the ser_tester / ser_peek inputs existed (the bridge doesn't rebuild it)
+  const whyOff = !live || canSet ? ''
+    : live.connected === false ? 'Not connected to the live bridge.'
+    : 'This live sim has no ser_tester / ser_peek inputs: it was built before they were added. Rebuild it (dme_klr/live/build_live.sh) and restart the bridge.';
   const setPeek = () => {
     const v = parseInt(draft.replace(/^0x/i, '').replace(/h$/i, ''), 16);
     if (isNaN(v) || v < 0 || v > 0x7F) return;
@@ -3002,7 +3007,7 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
           <div style={lbl}>TESTER ON RXD</div>
           {live
             ? <button style={btnS(tester)} disabled={!canSet}
-                      title="Connect the testbench's diagnostic tester to the DME's RXD. The stock ROM only listens for it at boot, so restart after turning it on."
+                      title={whyOff || "Connect the testbench's diagnostic tester to the DME's RXD. The stock ROM only listens for it at boot, so restart after turning it on."}
                       onClick={() => live.send(`set ser_tester ${tester ? 0 : 1}`)}>{tester ? '● CONNECTED' : '○ OFF'}</button>
             : <span style={{color: tester ? C.textBright : C.textDim}}>{ser ? (tester ? 'connected' : 'off') : '--'}</span>}
         </div>
@@ -3023,6 +3028,7 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
         {mode.d}
         {tester && (b23 & 0x80) ? <span style={{color:C.amber}}> The tester is on but the DME stopped listening at boot: press ↺ RESTART (it stays on).</span> : null}
         {!ser && <span> No serial frames in {live ? 'this run' : 'this log'} yet{live ? ': connect the tester and restart' : ''}.</span>}
+        {whyOff && <div style={{color:C.amber}}>{whyOff}</div>}
       </div>
 
       {/* Peek: the tester writes the address to 7Ah (slots 0 and 3), the 4th byte of each frame is RAM[7Ah] */}
@@ -3034,7 +3040,7 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
             ? <span style={{display:'inline-flex', gap:'4px', alignItems:'center'}}>
                 <span style={{color:C.textBright}}>{h2(peekReq)}h</span>
                 <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="00-7F"
-                       onKeyDown={e => e.key === 'Enter' && setPeek()} disabled={!canSet}
+                       onKeyDown={e => e.key === 'Enter' && setPeek()} disabled={!canSet} title={whyOff || 'Hex address, 00-7F; Enter or SET'}
                        style={{width:'48px', background:'#030803', border:`1px solid ${C.border}`, color:C.textBright,
                                fontFamily:'inherit', fontSize:'10px', padding:'2px 4px'}} />
                 <button style={btnS(false)} onClick={setPeek} disabled={!canSet || !draft}>SET</button>
