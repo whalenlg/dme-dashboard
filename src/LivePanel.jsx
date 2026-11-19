@@ -270,8 +270,21 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
                   title={paused ? `Load a .mem image into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
             LOAD .mem
           </button>
-          <button style={btn(false)} disabled={!roms?.[cpu]} onClick={e => downloadBin(e, url, cpu, null)}
-                  title={`Download the image in the ${cpu.toUpperCase()} EPROM (edits included) as a raw .bin for an EPROM programmer`}>⬇ .bin</button>
+          {(() => {
+            // Only for code edits not saved yet: a saved image's .bin is on
+            // disk with it (bin_images/<cpu>/edited/<name>/), and an unedited
+            // image's is the one it was loaded from
+            const unsaved = !!roms?.[cpu] && asmSrc?.[cpu]?.patched > 0 && !asmSrc[cpu].saved;
+            return (
+              <button style={{...btn(false), cursor: unsaved ? 'pointer' : 'not-allowed', opacity: unsaved ? 1 : 0.4}}
+                      disabled={!unsaved} onClick={e => downloadBin(e, url, cpu, null)}
+                      title={unsaved
+                        ? `Download the image in the ${cpu.toUpperCase()} EPROM (edits included) as a raw .bin for an EPROM programmer`
+                        : asmSrc?.[cpu]?.saved
+                          ? `These edits are saved as ${asmSrc[cpu].saved} (with its .bin, in bin_images/${cpu}/edited/)`
+                          : `No unsaved code edits in the ${cpu.toUpperCase()} EPROM`}>⬇ .bin</button>
+            );
+          })()}
         </span>
       ))}
       <label style={{color:C.textDim,cursor:'pointer'}}
