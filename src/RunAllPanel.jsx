@@ -101,7 +101,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [workers, setWorkers] = useState(null);
   const [perTest, setPerTest] = useState(false);
   const [debug, setDebug] = useState({});             // test → iverilog debug flags (step 4)
-  const [macos, setMacos] = useState('none');   // step 6 is opt-in
+  const [itests, setItests] = useState(() => new Set());   // step 6's install tests: none by default
   const [pull, setPull] = useState(true);
   const [plot, setPlot] = useState(true);             // step 5's difference plots (off: --no-plot)
   const [interval, setIntervalMs] = useState(100);
@@ -196,7 +196,10 @@ export default function RunAllPanel({ url, state, onClose }) {
     else if (romInfo) body.roms = { dme: romSel.dme, klr: romSel.klr };
     if (lite) { if (+simMs > 0) body.sim_ms = +simMs; }
     else Object.assign(body, { sims: [vl && 'verilator', ivOn && 'iverilog'].filter(Boolean),
-                               perTestBuild: perTest, macosTest: macos, pull, plot,
+                               perTestBuild: perTest, installTests: installList.filter(t => itests.has(t.id) && t.available).map(t => t.id),
+                               // an older bridge knows only the two macOS ones
+                               macosTest: itests.has('macos-install') ? (itests.has('macos-lite') ? 'both' : 'install') : itests.has('macos-lite') ? 'lite' : 'none',
+                               pull, plot,
                                ...(ivOn && dbgTests.length ? { debug: Object.fromEntries(dbgTests.map(t => [t, debug[t]])) } : {}) });
     try {
       const r = await fetch(`${url}/runall/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -257,6 +260,12 @@ export default function RunAllPanel({ url, state, onClose }) {
                        cursor:dis?'not-allowed':'pointer',fontSize:'11px'});
   const inp = {background:'#030803',border:`1px solid ${C.border2}`,color:C.textBright,fontFamily:'inherit',fontSize:'11px',padding:'3px 5px'};
   const locked = active;
+  // Step 6's install tests, as the bridge lists them with whether this
+  // machine can run each; an older bridge lists none (only macOS, by Tart)
+  const installList = info?.installTests ?? [
+    { id: 'macos-install', label: 'macOS, developer install (clean VM)' },
+    { id: 'macos-lite', label: 'macOS, lite package built here (clean VM)' },
+  ].map(t => ({ ...t, available: !!(info?.platform === 'darwin' && info?.tart), why: 'needs macOS with Tart' }));
 
   // ── Progress views ────────────────────────────────────────
   const suites = run?.suites ?? {};
@@ -450,13 +459,20 @@ export default function RunAllPanel({ url, state, onClose }) {
               </label>
             </div>
             <div>
-              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}>MACOS INSTALL TEST (STEP 6)</div>
-              <select value={lite ? 'none' : macos} disabled={locked || lite} style={{...inp,opacity:lite?.55:1}} onChange={e=>setMacos(e.target.value)}
-                title={lite ? 'run_all.sh only' : '--macos-test: a clean macOS VM (Tart), after steps 1-5 pass'}>
-                {['both','install','lite','none'].map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-              {!lite && macos !== 'none' && !(info.platform === 'darwin' && info.tart) &&
-                <div style={{color:C.textDim,fontSize:'10px',marginTop:'3px'}}>Skipped on this machine: needs macOS with Tart</div>}
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?.55:1}}
+                title="Step 6: each ticked test installs from scratch in a clean VM or container, one after another, once steps 1-5 pass (run_all.sh --install-tests)">INSTALL TESTS (STEP 6)</div>
+              {installList.map(t => {
+                const dis = locked || lite || !t.available;
+                return (
+                  <label key={t.id} style={lbl(dis)}
+                    title={lite ? 'run_all.sh only' : t.available ? `--install-tests ${t.id}` : `Can't run on this machine: ${t.why}`}>
+                    <input type="checkbox" checked={!lite && t.available && itests.has(t.id)} disabled={dis}
+                      onChange={e => setItests(s => { const n = new Set(s); e.target.checked ? n.add(t.id) : n.delete(t.id); return n; })} />
+                    {t.label}
+                  </label>);
+              })}
+              {!lite && installList.some(t => !t.available) &&
+                <div style={{color:C.textDim,fontSize:'10px',marginTop:'3px'}}>Grayed: can't run on this machine (hover for why)</div>}
             </div>
             <div>
               <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px',opacity:lite?1:.55}}>QUICK CHECK (LITE)</div>
