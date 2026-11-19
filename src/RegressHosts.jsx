@@ -48,9 +48,13 @@ export default function RegressHosts({ url, state, locked, useHosts, setUseHosts
           <input type="checkbox" checked={useHosts} disabled={locked} onChange={e=>setUseHosts(e.target.checked)} />
           spread the tests over these hosts too
         </label>
-        <span style={{color:C.textDim,fontSize:'10px'}}>
+        <span style={{color:C.textDim,fontSize:'10px'}}
+          title={hosts?.local?.srchash ? `srchash ${hosts.local.srchash}: a host runs tests only when its bridge has the same` : undefined}>
           here: {hosts?.local ? `${hosts.local.version} · ${hosts.local.cpus} CPUs` : '…'}
         </span>
+        {hosts?.local?.restart && <span style={{color:C.amber,fontSize:'10px'}}
+          title="This bridge started before the files were updated (git pull): restart it so it runs the new code">
+          ⚠ this bridge still runs {hosts.local.running}: restart it</span>}
         <button style={{...small(false),marginLeft:'auto'}} onClick={()=>load(true)} title="Ask every host again">CHECK AGAIN</button>
       </div>
       {err && <div style={{color:C.amber,fontSize:'10px'}}>{err}</div>}
@@ -68,7 +72,7 @@ export default function RegressHosts({ url, state, locked, useHosts, setUseHosts
             </label>
             <span style={{color:col,fontSize:'10px',flex:1,minWidth:'200px'}}>
               {!st ? 'checking…' : st.ok
-                ? `✓ same software · ${st.info?.cpus ?? '?'} CPUs · ${Object.entries(st.info?.sims ?? {}).filter(([, v]) => v).map(([k]) => k).join(' + ') || 'no simulators'}${st.info?.jobs ? ` · ${st.info.jobs} job(s) running` : ''}`
+                ? `✓ same software (${st.info?.version ?? '?'}) · ${st.info?.cpus ?? '?'} CPUs · ${Object.entries(st.info?.sims ?? {}).filter(([, v]) => v).map(([k]) => k).join(' + ') || 'no simulators'}${st.info?.jobs ? ` · ${st.info.jobs} job(s) running` : ''}`
                 : `✗ ${st.why}`}
             </span>
             <button style={small(locked)} disabled={locked} onClick={()=>remove(h.id)} title="Forget this host">✕</button>
