@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import RegressHosts from "./RegressHosts.jsx";
 import HostTest from "./HostTest.jsx";
 import InstallTestsPanel from "./InstallTestsPanel.jsx";
@@ -230,6 +230,10 @@ export default function RunAllPanel({ url, state, onClose }) {
   // A cancel can't be taken back, so its button asks once more: the first
   // click arms it (CONFIRM?) for a few seconds, the second cancels
   const [armed, setArmed] = useState(null);
+  // the PLOT DIFFERENCES box: its ROM pair tab (null = the first) and a test group filter (null = all)
+  const [plotTab, setPlotTab] = useState(null);
+  const [plotGroup, setPlotGroup] = useState(null);
+  const plotBox = useRef(null);
   const cancelQueued = async (key, scope) => {
     if (armed !== key) {
       setArmed(key);
@@ -269,6 +273,39 @@ export default function RunAllPanel({ url, state, onClose }) {
   const runMulti = (run?.roms?.length ?? 1) > 1;
   // "Verilator", or "Verilator · 86" when the run has several ROM pairs
   const suiteName = su => (runMulti && su?.rom ? `${su.label} · ${su.rom}` : su?.label ?? '');
+  // step 5's plots, per ROM pair: run_all.sh's line for each pair (plotNotes) and the plots it made (diffs)
+  const plotPairs = (() => {
+    if (!run) return [];
+    const notes = { ...(run.plotNotes ?? {}) };
+    for (const r of Object.keys(run.diffs ?? {})) notes[r] ??= '';
+    const step5 = run.steps?.find(s => s.n === 5);
+    // a bridge from before plotNotes: say only what the run's diffs show, once step 5 is over
+    if (!Object.keys(notes).length && run.opts?.plot && step5?.state === 'done' && !run.running)
+      notes[run.rom] = 'nothing to plot, no test differed between iverilog and Verilator';
+    // in the run's order of ROM pairs (89, 86, carpokes), not the keys' order
+    const order = run.roms ?? [];
+    const rank = r => (order.includes(r) ? order.indexOf(r) : order.length);
+    return Object.entries(notes).sort(([a], [b]) => rank(a) - rank(b)).map(([rom, note]) => {
+      const plots = run.diffs?.[rom] ?? {};
+      return { rom, note, plots, n: Object.values(plots).reduce((a, l) => a + l.length, 0) };
+    });
+  })();
+  const plotTabCur = plotPairs.find(p => p.rom === plotTab) ?? plotPairs[0];
+  // a group's tests with a DME / KLR plot, in any ROM pair: {DME: [[rom, test]], KLR: [...]}
+  const groupPlots = g => {
+    const out = { DME: [], KLR: [] };
+    for (const { rom, plots } of plotPairs)
+      for (const t of g.tests) for (const ecu of plots[t.name] ?? []) out[ecu]?.push([rom, t.name]);
+    return out;
+  };
+  const plotHref = (rom, test, ecu) =>
+    `${url}/runall/diff?rom=${encodeURIComponent(rom)}&test=${encodeURIComponent(test)}&ecu=${ecu}&run=${run?.id}`;
+  const plotIcon = (rom, test, ecu) => (
+    <a key={ecu} href={plotHref(rom, test, ecu)} target="_blank" rel="noreferrer"
+       title={`${test}${plotPairs.length > 1 ? ` (${rom})` : ''}: where its iverilog and Verilator ${ecu} values differ (${test}_${ecu}_diff.jpg)`}
+       style={{padding:'0 4px',fontSize:'9px',lineHeight:'14px',border:`1px solid ${C.amber}`,color:C.amber,textDecoration:'none',whiteSpace:'nowrap'}}>
+      ◪ {ecu}</a>
+  );
   const testRow = (name, su) => {
     const t = su?.tests?.[name];
     const len = t?.len_s ?? lenOf[name] ?? 40;
@@ -565,46 +602,56 @@ export default function RunAllPanel({ url, state, onClose }) {
                 </span>
               ))}
             </div>
-            {/* What step 5's Plot Differences did, per ROM pair (run_all.sh's "Plot Differences (<rom>): ..." line) */}
-            {(() => {
-              const notes = Object.entries(run.plotNotes ?? {});
-              const nPlots = Object.values(run.diffs ?? {}).reduce((a, t) => a + Object.values(t).reduce((b, l) => b + l.length, 0), 0);
-              const step5 = run.steps.find(s => s.n === 5);
-              // a bridge from before plotNotes: say only what the run's diffs show, once step 5 is over
-              if (!notes.length && run.opts?.plot && step5 && step5.state === 'done' && !run.running)
-                notes.push([null, nPlots ? `${nPlots} plot(s), the ◪ icons on the iverilog lines below`
-                  : 'nothing to plot, no test differed between iverilog and Verilator (only DIFF tests are plotted, not NOTE)']);
-              if (!notes.length) return null;
+            {/* What step 5's Plot Differences did: a tab per ROM pair, its plots listed by test group */}
+            {plotPairs.length > 0 && plotTabCur && (() => {
+              const cur = plotTabCur;
+              const tabBtn = (on, label, onClick, title) => (
+                <button key={label} onClick={onClick} title={title}
+                  style={{...btn(on ? 'p' : 's'),padding:'1px 8px',fontSize:'10px',letterSpacing:'.05em'}}>{label}</button>
+              );
+              // the plotted tests in Appendix A's groups (a test in none of them goes under "Other")
+              const plotted = new Set(Object.keys(cur.plots));
+              const byGroup = groups.map(g => [g.name, g.tests.map(t => t.name).filter(n => plotted.has(n))]);
+              const inGroups = new Set(byGroup.flatMap(([, l]) => l));
+              const other = [...plotted].filter(n => !inGroups.has(n)).sort();
+              if (other.length) byGroup.push(['Other', other]);
+              const shown = byGroup.filter(([name, l]) => l.length && (!plotGroup || name === plotGroup));
               return (
-                <div style={{margin:'4px 0 0 82px',fontSize:'10px',color:C.textDim,display:'flex',flexDirection:'column',gap:'2px'}}
+                <div ref={plotBox} style={{margin:'8px 0 0 82px',fontSize:'10px',color:C.textDim,border:`1px solid ${C.border}`,padding:'6px 8px'}}
                      title="run_all.sh step 5: compare_sim_logs.py --plot on each test whose iverilog and Verilator logs differ (DIFF or NOTE)">
-                  {notes.map(([rom, txt]) => {
-                    // every plot step 5 made for this pair, as links: step 5 compares every
-                    // log in the pair's folder, so a plotted test may not be one this run ran
-                    const r = rom ?? run.rom;
-                    const plots = Object.entries(run.diffs?.[r] ?? {}).sort(([a], [b]) => a.localeCompare(b));
-                    return (
-                      <span key={rom ?? '-'} style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:'3px 6px'}}>
-                        <span><span style={{color:C.amber}}>◪</span> PLOT DIFFERENCES{rom && (runMulti || notes.length > 1) ? ` · ${rom}` : ''}: {txt}</span>
-                        {plots.map(([test, ecus]) => {
-                          const inRun = suiteKeys.some(k => suites[k].tests?.[test]);
-                          return (
-                          <span key={test} style={{display:'inline-flex',alignItems:'center',gap:'3px',whiteSpace:'nowrap'}}>
-                            <span style={{color:inRun ? C.text : C.textDim}}
-                                  title={inRun ? undefined : `${test} wasn't in this run: step 5 compared its logs from an earlier run`}>{test}{inRun ? '' : ' (earlier run)'}</span>
-                            {ecus.map(ecu => (
-                              <a key={ecu} href={`${url}/runall/diff?rom=${encodeURIComponent(r)}&test=${encodeURIComponent(test)}&ecu=${ecu}&run=${run.id}`}
-                                 target="_blank" rel="noreferrer"
-                                 title={`${test}: where its iverilog and Verilator ${ecu} values differ (${test}_${ecu}_diff.jpg)`}
-                                 style={{padding:'0 4px',fontSize:'9px',lineHeight:'14px',border:`1px solid ${C.amber}`,color:C.amber,textDecoration:'none'}}>
-                                ◪ {ecu}</a>
-                            ))}
-                          </span>
-                          );
-                        })}
-                      </span>
-                    );
-                  })}
+                  <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:'4px 6px'}}>
+                    <span style={{marginRight:'6px'}}><span style={{color:C.amber}}>◪</span> PLOT DIFFERENCES</span>
+                    {plotPairs.length > 1 && plotPairs.map(p => tabBtn(p.rom === cur.rom, `${p.rom} · ${p.n}`,
+                      () => setPlotTab(p.rom), `The ${p.rom} pair: ${p.n} plot(s)`))}
+                    {plotGroup && <span style={{display:'inline-flex',alignItems:'center',gap:'4px',marginLeft:'6px'}}>
+                      group: <span style={{color:C.textBright}}>{plotGroup}</span>
+                      <button style={{...btn('s'),padding:'0 5px',fontSize:'9px'}} onClick={() => setPlotGroup(null)} title="Show every group's plots">✕ ALL GROUPS</button>
+                    </span>}
+                  </div>
+                  <div style={{margin:'4px 0'}}>{plotPairs.length > 1 || cur.rom !== run.rom ? `${cur.rom}: ` : ''}{cur.note || `${cur.n} plot(s)`}</div>
+                  {shown.length > 0 && <div style={{maxHeight:'240px',overflowY:'auto',display:'flex',flexDirection:'column',gap:'4px',paddingRight:'4px'}}>
+                    {shown.map(([name, tests]) => (
+                      <div key={name} style={{display:'flex',alignItems:'flex-start',gap:'8px'}}>
+                        <span style={{width:'240px',flexShrink:0,color:C.textBright,cursor:'pointer',lineHeight:'16px'}}
+                              title={`Only ${name}'s plots`} onClick={() => setPlotGroup(g => (g === name ? null : name))}>{name}
+                          <span style={{color:C.textDim}}> · {tests.length}</span></span>
+                        <div style={{display:'flex',flexWrap:'wrap',gap:'3px 10px'}}>
+                          {tests.map(test => {
+                            const inRun = suiteKeys.some(k => suites[k].tests?.[test]);
+                            return (
+                              <span key={test} style={{display:'inline-flex',alignItems:'center',gap:'3px',whiteSpace:'nowrap'}}>
+                                <span style={{color:inRun ? C.text : C.textDim}}
+                                      title={inRun ? undefined : `${test} wasn't in this run: step 5 compared its logs from an earlier run`}>
+                                  {test}{inRun ? '' : ' (earlier run)'}</span>
+                                {cur.plots[test].map(ecu => plotIcon(cur.rom, test, ecu))}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>}
+                  {plotGroup && !shown.length && <div>No plots in {plotGroup} for {cur.rom}.</div>}
                 </div>
               );
             })()}
@@ -652,6 +699,7 @@ export default function RunAllPanel({ url, state, onClose }) {
             const sim = g.tests.reduce((a, t) => a + t.sim_s, 0);
             const gDbg = names.filter(x => dbgTests.includes(x));
             const gDisk = gDbg.reduce((a, x) => a + (diskOf(x) ?? 0), 0);
+            const gPlots = groupPlots(g);
             return (
               <div key={g.name} style={{borderTop:`1px solid ${C.border}`,padding:'4px 0'}}>
                 <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
@@ -664,6 +712,17 @@ export default function RunAllPanel({ url, state, onClose }) {
                     {gDbg.length > 0 && <span style={{color:C.amber,fontSize:'10px'}} title={totalTitle}> · {gDbg.length} with iverilog debug
                       {showDisk ? ` · ~${fmtSize(gDisk)}` : ''}</span>}
                   </span>
+                  {/* the group's step 5 plots: opens them in the PLOT DIFFERENCES box above */}
+                  {Object.entries(gPlots).filter(([, l]) => l.length).map(([ecu, l]) => (
+                    <button key={ecu} onClick={() => { setPlotGroup(g.name);
+                                                       if (l.length && !l.some(([r]) => r === plotTabCur?.rom)) setPlotTab(l[0][0]);
+                                                       plotBox.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }}
+                      title={`${new Set(l.map(([, t]) => t)).size} ${g.name} test(s) with a ${ecu} difference plot${plotPairs.length > 1
+                        ? ` (${[...new Set(l.map(([r]) => r))].join(', ')})` : ''}: show them in PLOT DIFFERENCES`}
+                      style={{background:'transparent',padding:'0 4px',fontSize:'9px',lineHeight:'14px',border:`1px solid ${C.amber}`,
+                              color:C.amber,cursor:'pointer',fontFamily:'inherit',flexShrink:0,whiteSpace:'nowrap'}}>
+                      ◪ {ecu} {new Set(l.map(([, t]) => t)).size}</button>
+                  ))}
                   {g.anchor && <a href={`${DOCS_URL}/${info.manual ?? 'docs/USER_MANUAL.md'}#${g.anchor}`} target="_blank" rel="noopener noreferrer"
                      style={{...btn('s'),padding:'2px 8px',fontSize:'9px',textDecoration:'none',flexShrink:0,display:'inline-block',lineHeight:'normal'}}
                      title={`What the ${g.name} tests check: the ${lite ? 'user' : 'developer'} manual, Appendix A`}>MANUAL ↗</a>}
