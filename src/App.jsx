@@ -2969,6 +2969,7 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
     return (snapshots ?? []).findLast(s => s.ser && s.t <= t)?.ser ?? null;
   }, [snapshots, snap?.t]);
   const [draft, setDraft] = useState('');
+  const [draftW, setDraftW] = useState({ 0x26: '', 0x28: '' });
   const b23 = ir[0x23] ?? 0, b25 = ir[0x25] ?? 0;
   const mode = ir[0x23] == null ? { l:'--', col:C.textDim, d:'No RAM snapshot yet.' }
              : (b23 & 0x80) ? { l:'LAMBDA ON TXD', col:C.amber,
@@ -2979,7 +2980,10 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
                                 d:'25h.3 set by init_serial: the first poll checks for an answer to the hello.' }
              : { l:'STREAMING', col:C.textBright,
                  d:'Each poll sends a frame; replies after slots 0..5 are stored at 11DAh[slot] (0x1EA7).' };
-  const tester = live ? live.inputs?.ser_tester === 1 : !!ser?.tester;
+  // ser_tester: bit 0 = connected, bit 1 = also write 26h / 28h
+  const testerBits = live?.inputs?.ser_tester ?? 0;
+  const tester = live ? (testerBits & 1) === 1 : !!ser?.tester;
+  const wrOn = (testerBits & 2) !== 0;
   const peekReq = live?.inputs?.ser_peek ?? ser?.peekReq ?? 0x37;
   const canSet = live && live.connected !== false && typeof live.inputs?.ser_peek === 'number';
   // Why the controls are off, when they are: no bridge, or a sim built before
@@ -2987,6 +2991,16 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
   const whyOff = !live || canSet ? ''
     : live.connected === false ? 'Not connected to the live bridge.'
     : 'This live sim has no ser_tester / ser_peek inputs: it was built before they were added. Rebuild it (dme_klr/live/build_live.sh) and restart the bridge.';
+  // 26h / 28h writes: inputs ser_w26 / ser_w28, only in a sim built with them
+  const canW = canSet && typeof live.inputs?.ser_w26 === 'number';
+  const whyOffW = !live || canW ? '' : whyOff ||
+    'This live sim has no ser_w26 / ser_w28 inputs: it was built before they were added. Rebuild it (dme_klr/live/build_live.sh) and restart the bridge.';
+  const setW = a => {
+    const v = parseInt(draftW[a].replace(/^0x/i, '').replace(/h$/i, ''), 16);
+    if (isNaN(v) || v < 0 || v > 0xFF) return;
+    live.send(`set ser_w${a.toString(16)} 0x${h2(v)}`);
+    setDraftW(d => ({ ...d, [a]: '' }));
+  };
   const setPeek = () => {
     const v = parseInt(draft.replace(/^0x/i, '').replace(/h$/i, ''), 16);
     if (isNaN(v) || v < 0 || v > 0x7F) return;
@@ -3008,7 +3022,7 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
           {live
             ? <button style={btnS(tester)} disabled={!canSet}
                       title={whyOff || "Connect the testbench's diagnostic tester to the DME's RXD. The stock ROM only listens for it at boot, so restart after turning it on."}
-                      onClick={() => live.send(`set ser_tester ${tester ? 0 : 1}`)}>{tester ? '● CONNECTED' : '○ OFF'}</button>
+                      onClick={() => live.send(`set ser_tester ${tester ? testerBits & ~1 : testerBits | 1}`)}>{tester ? '● CONNECTED' : '○ OFF'}</button>
             : <span style={{color: tester ? C.textBright : C.textDim}}>{ser ? (tester ? 'connected' : 'off') : '--'}</span>}
         </div>
         <div>
@@ -3060,6 +3074,43 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
           <div style={lbl}>RAM NOW (snapshot)</div>
           <span style={{color:C.textDim}}>[{h2(peekReq)}h] = 0x{h2(ir[peekReq])}</span>
         </div>
+      </div>
+
+      {/* 26h / 28h: the tester's replies after slots 1/4 and 2/5 (11DAh). Nothing in the 86/89 ROMs reads them */}
+      <div style={{background:C.panelBg2, border:`1px solid ${C.border2}`, borderLeft:`3px solid ${C.textDim}`, padding:'6px 10px',
+                   marginBottom:'8px', fontSize:'10px'}}>
+        <div style={{display:'flex', flexWrap:'wrap', gap:'8px 18px', alignItems:'center'}}>
+          <div>
+            <div style={lbl}>WRITE 26h / 28h  (slots 1,4 / 2,5)</div>
+            {live
+              ? <button style={btnS(wrOn)} disabled={!canW}
+                        title={whyOffW || 'Also answer slots 1/4 with the 26h byte and 2/5 with the 28h byte; the DME stores them on its next poll (0x1EAE).'}
+                        onClick={() => live.send(`set ser_tester ${wrOn ? testerBits & ~2 : testerBits | 2}`)}>{wrOn ? '● ON' : '○ OFF'}</button>
+              : <span style={{color:C.textDim}}>--</span>}
+          </div>
+          {[[0x26, 'ADVANCE TRIM → 26h', 'ser_w26'], [0x28, 'FUEL TRIM → 28h', 'ser_w28']].map(([a, name, key]) => (
+            <div key={a}>
+              <div style={lbl}>{name}</div>
+              <span style={{display:'inline-flex', gap:'4px', alignItems:'center'}}>
+                {live && <>
+                  <span style={{color:C.textBright}}>{live.inputs?.[key] == null ? '--' : `${h2(live.inputs[key])}h`}</span>
+                  <input value={draftW[a]} onChange={e => setDraftW(d => ({ ...d, [a]: e.target.value }))} placeholder="00-FF"
+                         onKeyDown={e => e.key === 'Enter' && setW(a)} disabled={!canW} title={whyOffW || 'Hex byte, 00-FF; Enter or SET'}
+                         style={{width:'48px', background:'#030803', border:`1px solid ${C.border}`, color:C.textBright,
+                                 fontFamily:'inherit', fontSize:'10px', padding:'2px 4px'}} />
+                  <button style={btnS(false)} onClick={() => setW(a)} disabled={!canW || !draftW[a]}>SET</button>
+                </>}
+                <span style={{color:C.textDim}}>RAM 0x{ir[a] == null ? '--' : h2(ir[a])}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+        <div style={{color:C.amber, fontSize:'9px', marginTop:'4px', lineHeight:'1.5'}}>
+          Probably ignored: in the 86 and 89 ROMs nothing reads 26h or 28h. The code that would add 26h to the advance (0x1F21)
+          and scale the fuel time by 28h (0x1F2D) is bypassed by the hooks at 0x104A / 0x1050, so the DME just stores them
+          (init_serial sets 26h = 00h, 28h = 80h).
+        </div>
+        {whyOffW && whyOffW !== whyOff && <div style={{color:C.amber, fontSize:'9px'}}>{whyOffW}</div>}
       </div>
 
       <div style={{display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1.4fr)', gap:'10px'}}>
