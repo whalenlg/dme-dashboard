@@ -1361,7 +1361,7 @@ export default function DMEDashboard() {
     );
     return (
       <button key={name} style={(cpu === 'dme' ? S.tab : S.tabKlr)(on)}
-        onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} CODE — DME 951 live`, 980, 1080)}
+        onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} CODE — DME 951 live`, 1100, 1080)}
         title={on ? `Close the ${cpu.toUpperCase()} code debugger window` : `Open the ${cpu.toUpperCase()} code debugger in its own window`}>
         {cpu.toUpperCase()} CODE ↗
       </button>

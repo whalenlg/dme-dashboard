@@ -939,6 +939,29 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     return () => ro.disconnect();
   }, [listing.length > 0]);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Once the listing first shows, widen this window if a row's bytes
+  // (opcode) column is cut off: the columns are sized to the workbook's
+  // longest label and operand, and the browser zoom or font can make them
+  // wider than the window opened. Only grows, and only the once, so a
+  // window the user makes narrower afterwards stays that way.
+  const fitted = useRef(false);
+  useEffect(() => {
+    const el = codeRef.current, row = el?.firstElementChild, last = row?.lastElementChild;
+    if (fitted.current || !last) return;
+    fitted.current = true;
+    const win = el.ownerDocument.defaultView;
+    if (win === window) return;   // in the main page: nothing to resize
+    const pane = el.getBoundingClientRect();
+    // the bytes cell's right edge (with no horizontal scroll), the row's
+    // right padding, the pane's scrollbar, and the margins outside the pane
+    const need = last.getBoundingClientRect().right + el.scrollLeft + 12
+               + (el.offsetWidth - el.clientWidth) + (win.innerWidth - pane.right);
+    const frame = Math.max(0, win.outerWidth - win.innerWidth);
+    const room = (win.screen?.availWidth ?? need) - frame - Math.max(0, win.screenX - (win.screen?.availLeft ?? 0));
+    const grow = Math.min(need, room) - win.innerWidth;
+    if (grow > 0) try { win.resizeBy(Math.ceil(grow), 0); } catch { /* the browser may refuse */ }
+  }, [listing.length > 0]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   // Label search: every label containing the text is highlighted as you
   // type; GO / Enter goes to the exact label (else the first match), and
   // ◀ ▶ (or Enter / Shift+Enter again) step through the matches by address
