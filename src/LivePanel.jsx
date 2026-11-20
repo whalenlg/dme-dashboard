@@ -954,7 +954,7 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     const pane = el.getBoundingClientRect();
     // the bytes cell's right edge (with no horizontal scroll), the row's
     // right padding, the pane's scrollbar, and the margins outside the pane
-    const need = last.getBoundingClientRect().right + el.scrollLeft + 12
+    const need = last.getBoundingClientRect().right + el.scrollLeft + 24
                + (el.offsetWidth - el.clientWidth) + (win.innerWidth - pane.right);
     const frame = Math.max(0, win.outerWidth - win.innerWidth);
     const room = (win.screen?.availWidth ?? need) - frame - Math.max(0, win.screenX - (win.screen?.availLeft ?? 0));
