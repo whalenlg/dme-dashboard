@@ -3144,8 +3144,10 @@ function SerialDiagPane({ ir, snap, snapshots, live }) {
                   <td style={{...cell, color:C.textDim}}>{h2(sl.src)}h {sl.name}</td>
                   <td style={{...cell, color:C.textBright}}>{ser?.frames ? `0x${h2(v)}` : '--'}</td>
                   <td style={{...cell, color:C.text}}>{ser?.frames ? serSlotDecode(i, v) : ''}</td>
-                  <td style={{...cell, color: answered ? '#44dddd' : C.textDim}}>
-                    {h2(sl.store)}h{answered ? ' ← peek address' : ' (tester stays quiet)'}
+                  <td style={{...cell, color: answered || (tester && wrOn) ? '#44dddd' : C.textDim}}>
+                    {h2(sl.store)}h{answered ? ' ← peek address'
+                      : tester && wrOn ? ` ← 0x${h2((sl.store === 0x26 ? live?.inputs?.ser_w26 : live?.inputs?.ser_w28) ?? 0)} written`
+                      : ' (tester stays quiet)'}
                   </td>
                 </tr>
               );
