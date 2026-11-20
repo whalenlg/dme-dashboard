@@ -1,5 +1,6 @@
 import { Footer } from "./footer.jsx";
 import { RomName } from "./romEdits.jsx";
+import { shownName } from "./romNames.js";
 import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition, useContext } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
@@ -1380,7 +1381,8 @@ export default function DMEDashboard() {
     {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
     <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
       {t==='diag'     && <DiagTab iram={iram} snap={snap} snapshots={feed.data.snapshots}
-          onSeek={seekTo} range={zoom} setRange={setZoom} live={liveUrl ? live : null} />}
+          onSeek={seekTo} range={zoom} setRange={setZoom} live={liveUrl ? live : null}
+          logRom={liveUrl ? null : feed.data.rom?.dme} />}
       {t==='charts'   && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
           onSeek={seekTo} range={zoom} setRange={setZoom} />}
       {t==='rpm_charts' && <ChartsTab chartData={feed.chartData} expect={feed.data.expect}
@@ -2661,54 +2663,80 @@ function PhaseTab({ phases, currentT }) {
 }
 
 // ── DiagTab ───────────────────────────────────────────────────────
-// Reconstructs the send_diag_p2 diagnostic stream from current iram
-// values, showing what the DME would output on each P2 page.
+// Reconstructs the bytes the diag routine at 0x1E00 writes with MOVX @R0
+// (P2 = page, R0 = low address, data on the external bus at /WR) from
+// current iram values. Which part of it runs depends on the ROM, through
+// the ljmp at 0x105F:
+//   89 / performance (ljmp 1E00): the cjne at 1E07 always falls through,
+//     so it writes the lambda byte (1E3B-1E4C) on page 19h, then
+//     P2=1Bh (iram[31h]+0Ah)<<1 advance, 1Ch iram[37h] RPM,
+//     1Dh iram[49h] load, 1Eh iram[10h] AFM, 1Fh iram[13h] coolant
+//     (R0 = 31h for these five).
+//   86 (ljmp 1E36): P2=98h, F0 clear, the lambda byte only, then return.
+// The paths at 1E0E (raw iram[1Bh]) and 1E1E never run.
 //
-// Routine at 0x1E00 — confirmed from ROM disassembly:
-//   P2=0x19  MOVX @R0, iram[0x1B]              → LMB_LO raw
-//   P2=0x1B  MOVX @R0, (iram[0x31]+0x0A)<<1    → IGN_ADV transformed
-//   P2=0x1C  MOVX @R0, iram[0x37]              → PRPM
-//   P2=0x1D  MOVX @R0, iram[0x49]              → LOAD_IX
-//   P2=0x1E  MOVX @R0, iram[0x10]              → AFM_RAW
-//   P2=0x1F  MOVX @R0, iram[0x13]              → COOLANT
-//   P2=0x98  MOVX @R0, lambda_state_2bit        → computed
-//
-// The bytes send_diag_p2 transmits for one iram image (see the table above)
+// Lambda byte, 1E3B-1E4C, from the integrator 1Bh:1Ch (1Bh high):
+//   A = iram[1Bh] - 60h; rl; rl; R0 = A       (also the low address)
+//   A = iram[1Ch]; rlc x3; anl #3              (iram[1Ch] >> 6, C = 1Ch.5)
+//   addc A,R0                                  (byte sent)
+// For integrators 6000h..9FFFh that is (1B:1C - 6000h) / 64, rounded,
+// so 80h = 8000h = no correction.
+function diagLambda(ir) {
+  const hi = ir[0x1B] ?? 0, lo = ir[0x1C] ?? 0;
+  const a = (hi + 0xA0) & 0xFF;
+  const r0 = ((a << 2) | (a >> 6)) & 0xFF;
+  return { r0, tx: (r0 + (lo >> 6) + ((lo >> 5) & 1)) & 0xFF };
+}
+// Where 0x105F jumps: 0x1E00 (89, performance), 0x1E36 (86), null if unknown.
+// Live: from the loaded image's listing. Log: from the DME ROM file name.
+function diagEntry(live, logRom) {
+  const j = live?.asm?.dme?.find?.(r => r.a === 0x105F)?.bytes;
+  const m = j && /^02\s*1e\s*([0-9a-f]{2})/i.exec(j);
+  if (m) return parseInt(m[1], 16) === 0x36 ? 0x1E36 : 0x1E00;
+  const f = logRom?.file ? shownName(logRom.file) : '';
+  if (!f) return null;
+  return /86/.test(f) ? 0x1E36 : 0x1E00;
+}
+// The bytes the routine writes for one iram image (see above)
 function diagTx(ir) {
-  const lmb16 = ((ir[0x1C] ?? 0) << 8) | (ir[0x1B] ?? 0);
   return {
-    lmbLo: ir[0x1B] ?? 0,
+    lmb: diagLambda(ir).tx,
     ignAdv: ((( ir[0x31] ?? 0) + 0x0A) << 1) & 0xFF,
     prpm: ir[0x37] ?? 0,
     loadIdx: ir[0x49] ?? 0,
     afmRaw: ir[0x10] ?? 0,
     coolant: ir[0x13] ?? 0,
-    lmbState: (((lmb16 - 0x60) & 0xFFFF) >> 6) & 0x03,
   };
 }
 // One distinct colour per channel, shared by the table and the chart
-const DIAG_SERIES = [
-  { k:'lmbLo',    p2:'0x19', name:'LAMBDA INTEGRATOR', col:'#cc66ff' },
+const DIAG_SERIES_ALL = [
+  { k:'lmb',      p2:'0x19', name:'LAMBDA CORRECTION', col:'#cc66ff' },
   { k:'ignAdv',   p2:'0x1B', name:'IGNITION ADVANCE',  col:'#ff8844' },
   { k:'prpm',     p2:'0x1C', name:'ENGINE SPEED',      col:'#66ff66' },
   { k:'loadIdx',  p2:'0x1D', name:'LOAD INDEX',        col:'#ffee44' },
   { k:'afmRaw',   p2:'0x1E', name:'AFM RAW',           col:'#44dddd' },
   { k:'coolant',  p2:'0x1F', name:'COOLANT',           col:'#4488ff' },
-  { k:'lmbState', p2:'0x98', name:'LAMBDA STATE',      col:'#ff4488', right:true },
+  { k:'lmb98',    p2:'0x98', name:'LAMBDA CORRECTION', col:'#ff4488' },
 ];
-const DIAG_COL = Object.fromEntries(DIAG_SERIES.map(d => [d.p2, d.col]));
+const DIAG_COL = Object.fromEntries(DIAG_SERIES_ALL.map(d => [d.p2, d.col]));
+// The pages a ROM writes: 86 only 98h, 89 / performance the other six,
+// unknown ROM all seven
+const diagPages = entry => entry === 0x1E36 ? ['0x98']
+  : entry === 0x1E00 ? ['0x19','0x1B','0x1C','0x1D','0x1E','0x1F'] : DIAG_SERIES_ALL.map(d => d.p2);
 
 // The transmitted diag bytes over the log, one row per snapshot time.
 // Snapshots at the same time (DS + STATUS) are overlaid, and each one
 // starts from the previous image, so a partial dump keeps earlier values.
-const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }) {
+const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange, entry }) {
+  const series = useMemo(() => DIAG_SERIES_ALL.filter(d => diagPages(entry).includes(d.p2)), [entry]);
   const rows = useMemo(() => {
     const out = [];
     let ir = {};
     for (const s of snapshots ?? []) {
       if (!s.iram) continue;
       ir = { ...ir, ...s.iram };
-      const row = { t: s.t, ...diagTx(ir) };
+      const tx = diagTx(ir);
+      const row = { t: s.t, ...tx, lmb98: tx.lmb };
       if (out.length && out[out.length - 1].t === s.t) out[out.length - 1] = row;
       else out.push(row);
     }
@@ -2719,7 +2747,7 @@ const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }
   const zoom = useZoom(range, setRange, full, onSeek);
   const [hidden, setHidden] = useState(() => new Set());
   // Few enough points that each one gets a dot
-  const shown = useMemo(() => thin(inRange(rows, range, 't'), DIAG_SERIES.map(d => d.k), 400), [rows, range]);
+  const shown = useMemo(() => thin(inRange(rows, range, 't'), series.map(d => d.k), 400), [rows, range, series]);
   if (!rows.length) return (
     <div style={{...S.panel, color:C.textDim, textAlign:'center', padding:'24px', fontSize:'11px', marginBottom:'8px'}}>
       No snapshot data loaded — load a log (or go live) to chart the diagnostic stream over time
@@ -2729,9 +2757,9 @@ const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }
   const toggle = k => setHidden(h => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
     <div style={{...S.panel, marginBottom:'8px'}}>
-      <div style={S.panelTitle}>DIAG STREAM OVER TIME — TX BYTES  (lambda state on the right axis)</div>
+      <div style={S.panelTitle}>DIAG STREAM OVER TIME — TX BYTES</div>
       <div style={{display:'flex', flexWrap:'wrap', gap:'6px 14px', justifyContent:'center', marginBottom:'6px', fontSize:'10px'}}>
-        {DIAG_SERIES.map(d => (
+        {series.map(d => (
           <button key={d.k} onClick={() => toggle(d.k)} title="show / hide"
             style={{background:'none', border:'none', cursor:'pointer', fontFamily:'inherit', fontSize:'10px',
                     color: hidden.has(d.k) ? C.textDim : d.col, opacity: hidden.has(d.k) ? 0.5 : 1,
@@ -2747,14 +2775,13 @@ const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }
           <CartesianGrid strokeDasharray="2 4" stroke="#0d2e0d" />
           <XAxis dataKey="t" type="number" domain={range ?? full} allowDataOverflow tick={ax} tickFormatter={v=>`${v}ms`} stroke={C.textDim} />
           <YAxis yAxisId="left" tick={ax} domain={[0,255]} ticks={[0,64,128,192,255]} stroke={C.textDim} />
-          <YAxis yAxisId="right" orientation="right" tick={ax} domain={[0,3]} ticks={[0,1,2,3]} width={24} stroke={DIAG_COL['0x98']} />
           <Tooltip contentStyle={{background:'#060e06',border:`1px solid ${C.border}`,fontSize:'11px',fontFamily:'inherit'}}
             labelFormatter={v=>`t=${v} ms`}
-            formatter={(v,n,p)=>[p.dataKey==='lmbState' ? `${v}` : `0x${h2(v)} (${v}d)`, n]} />
+            formatter={(v,n)=>[`0x${h2(v)} (${v}d)`, n]} />
           <CursorLine stroke={C.textDim} strokeDasharray="3 3" />
           <DragArea zoom={zoom} fill={C.textBright} />
-          {DIAG_SERIES.filter(d => !hidden.has(d.k)).map(d => (
-            <Line key={d.k} yAxisId={d.right ? 'right' : 'left'} type="linear" dataKey={d.k} name={`${d.p2} ${d.name}`}
+          {series.filter(d => !hidden.has(d.k)).map(d => (
+            <Line key={d.k} yAxisId="left" type="linear" dataKey={d.k} name={`${d.p2} ${d.name}`}
                   stroke={d.col} strokeWidth={1.2} dot={{ r:2, fill:d.col, stroke:'none' }} activeDot={{ r:4 }}
                   isAnimationActive={false} />
           ))}
@@ -2764,8 +2791,9 @@ const DiagChart = memo(function DiagChart({ snapshots, onSeek, range, setRange }
   );
 });
 
-function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live }) {
+function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live, logRom }) {
   const ir = iram || {};
+  const entry = diagEntry(live, logRom);
 
   // Use the authoritative RPM from the DS header (refRpm) rather than
   // iram[0x37] raw — PRPM gets updated mid-crank-cycle so the 100ms
@@ -2776,9 +2804,11 @@ function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live }) {
   const prpmTx   = prpm;
 
   // Compute transmitted byte for each channel exactly as firmware does
-  const lmbLo   = ir[0x1B] ?? 0;
-  const lmbHi   = ir[0x1C] ?? 0;
+  // Lambda integrator 1Bh:1Ch (1Bh the high byte), 8000h = no correction
+  const lmbHi   = ir[0x1B] ?? 0;
+  const lmbLo   = ir[0x1C] ?? 0;
   const lmb16   = (lmbHi << 8) | lmbLo;
+  const lmb     = diagLambda(ir);
   const ignAdv  = ir[0x31] ?? 0;
   const loadIdx = ir[0x49] ?? 0;
   const afmRaw  = ir[0x10] ?? 0;
@@ -2787,29 +2817,23 @@ function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live }) {
   // P2=0x1B: ADD A,#0x0A then RL A (rotate left = ×2, wrapping 8-bit)
   const ignAdvTx = ((ignAdv + 0x0A) << 1) & 0xFF;
 
-  // P2=0x98: CPL A, INC A, ADD A,iram[1B], RL, RL, MOV R0,A
-  //          MOV A,iram[1C], RLC, RLC, RLC, ANL #0x03
-  // This encodes the lambda integrator as a 2-bit state:
-  //   offset = -(0x60) + lmb16, shift left 2, take bits[7:6] → 2-bit value
-  const lmbOffset = (lmb16 - 0x60) & 0xFFFF;
-  const lmbState  = (lmbOffset >> 6) & 0x03;
-  const LMBD_STATES = ['Stoich / closed-loop centre', 'Lean correction active', 'Rich correction active', 'Max correction'];
-
   // Coolant decode (linearised → °C approx)
   const coolC = ntcLinToC(coolant);
 
-  // Lambda integrator decode (0x80 = stoich centre)
-  const lmbSigned = lmbLo - 0x80;
-  const lmbPct = (lmbSigned / 0x80 * 100).toFixed(1);
+  // Lambda correction, the same value and sign as the LAMBDA CORR tile
+  const lmbPct = ((lmb16 - 0x8000) / 0x8000 * 100).toFixed(1);
+  const lmbOut = lmb16 < 0x6000 || lmb16 > 0x9FFF;
+  const lmbChannel = p2 => ({
+    p2, name: 'LAMBDA CORRECTION', src: 'f(iram[0x1B:0x1C])  1E3B-1E4C',
+    raw: lmbHi, tx: lmb.tx,
+    decode: `${lmb.tx === 0x80 ? 'No correction' : lmb.tx > 0x80 ? `+${lmb.tx - 0x80}` : `${lmb.tx - 0x80}`}  (0x80 = integrator 8000h)  |  correction: ${lmbPct}%`
+      + (lmbOut ? '  |  integrator outside 6000h-9FFFh: the byte wraps' : ''),
+    col: DIAG_COL[p2],
+    detail: `integrator 0x${h2(lmbHi)}${h2(lmbLo)}  →  (0x${h2(lmbHi)}${h2(lmbLo)} − 6000h) / 64, rounded  |  low address R0 = 0x${h2(lmb.r0)}`,
+  });
 
   const CHANNELS = [
-    {
-      p2: '0x19', name: 'LAMBDA INTEGRATOR', src: 'iram[0x1B]  LMB_LO',
-      raw: lmbLo, tx: lmbLo,
-      decode: `${lmbLo === 0x80 ? 'Stoich (centred)' : lmbLo > 0x80 ? `Rich offset +${(lmbLo-0x80)}` : `Lean offset ${lmbLo-0x80}`}  (0x80=λ1.0)`,
-      col: DIAG_COL['0x19'],
-      detail: `16-bit integrator: 0x${h2(lmbHi)}:${h2(lmbLo)} = ${lmb16}  |  correction: ${lmbPct}%`,
-    },
+    lmbChannel('0x19'),
     {
       p2: '0x1B', name: 'IGNITION ADVANCE', src: 'iram[0x31]  IGN_ADV',
       raw: ignAdv, tx: ignAdvTx,
@@ -2847,24 +2871,20 @@ function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live }) {
       col: DIAG_COL['0x1F'],
       detail: `Cold start enrich: ${(ir[0x25]??0)>>5&1?'ACTIVE':'off'}  cold timing: ${(ir[0x25]??0)>>4&1?'ACTIVE':'off'}`,
     },
-    {
-      p2: '0x98', name: 'LAMBDA STATE (computed)', src: 'f(iram[0x1C:0x1B])',
-      raw: lmb16, tx: lmbState,
-      decode: `${lmbState} — ${LMBD_STATES[lmbState]}`,
-      col: DIAG_COL['0x98'],
-      detail: `Derived: (0x${lmb16.toString(16).padStart(4,'0').toUpperCase()} − 0x60) << 2, bits[7:6]`,
-    },
-  ];
+    lmbChannel('0x98'),
+  ].filter(ch => diagPages(entry).includes(ch.p2));
 
   return (
     <div>
-      <DiagChart snapshots={snapshots} onSeek={onSeek} range={range} setRange={setRange} />
+      <DiagChart snapshots={snapshots} onSeek={onSeek} range={range} setRange={setRange} entry={entry} />
       <div style={{...S.panel, marginBottom:'8px'}}>
-        <div style={S.panelTitle}>SEND_DIAG_P2 — DIAGNOSTIC STREAM  (ROM 0x1E00)</div>
+        <div style={S.panelTitle}>SEND_DIAG_P2 — DIAGNOSTIC STREAM  ({entry === 0x1E36 ? 'ENTRY 0x1E36, 86 ROM' : entry === 0x1E00 ? 'ENTRY 0x1E00' : 'ROM UNKNOWN'})</div>
         <div style={{color:C.textDim, fontSize:'9px', marginBottom:'8px', lineHeight:'1.5'}}>
-          Reconstructed from current iram values. P2 = diagnostic channel address.
-          On real hardware this stream is output via MOVX @R0 on the external data bus
-          and captured by the test equipment at the DME diagnostic connector.
+          Reconstructed from current iram values. Each byte is written with MOVX @R0: P2 is the page, R0 the low
+          address, and the data is on the external bus only during /WR (in the sim: xaddr / xdata / xwr_n; the P0
+          latch stays FFh). The ljmp at 0x105F picks the entry: 0x1E00 (89, performance) writes pages 19h and
+          1Bh–1Fh; 0x1E36 (86) writes only 98h.
+          {entry == null && <span style={{color:C.amber}}> The ROM isn't known here, so all seven pages are shown.</span>}
         </div>
         <div style={{display:'flex', flexDirection:'column', gap:'4px'}}>
           {CHANNELS.map(ch => (
@@ -2920,7 +2940,7 @@ function DiagTab({ iram, snap, snapshots, onSeek, range, setRange, live }) {
         <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'4px'}}>
           {[
             [0x10,'AFM_RAW'], [0x13,'COOLANT'], [0x16,'TPS'],
-            [0x1B,'LMB_LO'],  [0x1C,'LMB_HI'], [0x19,'LMB_ADJ_LN'],
+            [0x1B,'LMB_HI'],  [0x1C,'LMB_LO'], [0x19,'LMB_ADJ_LN'],
             [0x31,'IGN_ADV'], [0x30,'IGN_DUR'], [0x37,'PRPM'],
             [0x49,'LOAD_IX'], [0x4B,'FUEL_HB'], [0x4A,'FUEL_LB'],
           ].map(([a,n])=>(
