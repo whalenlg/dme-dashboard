@@ -25,7 +25,7 @@ const C = {
 const COL = { PASS: C.textBright, FAIL: C.red, SKIP: C.amber };
 // About how long each takes (the scripts' --help), for the page only
 const TYPICAL = { 'macos-install': '30-60 min', 'macos-lite': '15-25 min', 'windows-lite': 'about 10 min',
-                  'windows-dev': '30-60 min', 'arch-install': '20-40 min' };
+                  'windows-dev': '30-60 min', 'arch-install': '20-40 min', 'arch-vm': 'about 5 min' };
 const fmt = s => {
   if (s == null || !isFinite(s)) return '—';
   s = Math.max(0, Math.round(s));
