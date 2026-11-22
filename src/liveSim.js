@@ -259,13 +259,15 @@ export function useLiveSim(url, onLogLines) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
-  // Load a .mem image into the DME or KLR EPROM; reset restarts the sim on it
+  // Load a ROM image into the DME or KLR EPROM; reset restarts the sim on it.
+  // A raw .bin or Intel HEX image is sent as its bytes: the bridge saves it
+  // as the .mem the sim loads
   const loadRom = useCallback(async (cpu, file, reset) => {
     if (!url || !file) return;
-    if (!/\.mem$/i.test(file.name)) { setError(`${file.name}: ROM images must be .mem files`); return; }
+    if (!/\.(mem|bin|hex|ihx)$/i.test(file.name)) { setError(`${file.name}: ROM images must be .mem, .bin or Intel HEX (.hex) files`); return; }
     try {
       const q = new URLSearchParams({ cpu, name: file.name, ...(reset ? { reset: '1' } : {}) });
-      const r = await fetch(`${url}/rom?${q}`, { method: 'POST', body: await file.text() });
+      const r = await fetch(`${url}/rom?${q}`, { method: 'POST', body: await file.arrayBuffer() });
       if (!r.ok) setError(`Couldn't load ${file.name}: ${(await r.text()) || `HTTP ${r.status}`}`);
       else setError(null);
     } catch {
