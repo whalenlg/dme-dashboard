@@ -264,10 +264,10 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
           {asmSrc?.[cpu] && (asmSrc[cpu].match === 'none'
             ? <span style={{color:'#ccaa44'}} title="This image doesn't match any disassembly workbook, so the debugger listing is the default one and may not line up with the code">ASM: no workbook</span>
             : <span style={{color:C.textDim}} title={`Debugger listing from ${cpu}/disassemble/${asmSrc[cpu].workbook} (image matched by ${asmSrc[cpu].match})`}>ASM: {asmSrc[cpu].workbook}</span>)}
-          <input ref={pick[cpu]} type="file" accept=".mem" style={{display:'none'}}
+          <input ref={pick[cpu]} type="file" accept=".mem,.bin,.hex,.ihx" style={{display:'none'}}
                  onChange={e => { const f = e.target.files[0]; e.target.value = ''; loadRom(cpu, f, reset); }} />
           <button style={{...btn(paused), cursor: paused ? 'pointer' : 'not-allowed'}} disabled={!paused} onClick={() => pick[cpu].current.click()}
-                  title={paused ? `Load a .mem image into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
+                  title={paused ? `Load a ROM image (.mem, .bin or Intel HEX) into the ${cpu.toUpperCase()} EPROM` : 'Pause the simulation to load a ROM'}>
             LOAD .mem
           </button>
           {(() => {
