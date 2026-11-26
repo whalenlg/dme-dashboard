@@ -1440,7 +1440,7 @@ const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
 const short = h => h ? h.slice(0, 12) : '--';
 
 function SnapshotPanel({ live, running, url }) {
-  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
+  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState('');
   const [testName, setTestName] = useState('');
@@ -1466,6 +1466,15 @@ function SnapshotPanel({ live, running, url }) {
   };
   const badge = r => ({ warn: C.red, fail: C.red, manual: C.blue, upload: C.amber, test: '#cc88ff' }[r] ?? C.textDim);
   const loadedTest = snapshots.find(s => s.id === loadedSnap && s.kind === 'test');
+  // CLEAR TESTS: every regression-test (TEST) row, after an "are you sure"
+  const tests = snapshots.filter(s => s.kind === 'test');
+  const clearTests = async () => {
+    const n = tests.length;
+    if (!n || !confirm(`Are you sure? This deletes all ${n} regression test snapshot${n === 1 ? '' : 's'} (TEST rows) and can't be undone.\n\n`
+                       + 'Your other snapshots (warnings, SAVE NOW, uploads) stay.')) return;
+    if (detail && tests.some(t => t.id === detail.id)) setDetail(null);
+    await deleteSnapshots(tests.map(t => t.id));
+  };
   return (
     <div style={{...panel,fontSize:'10px',padding:'5px 10px'}}>
       <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
@@ -1489,6 +1498,9 @@ function SnapshotPanel({ live, running, url }) {
                onChange={e => { const f = e.target.files[0]; e.target.value = ''; uploadSnapshot(f); setOpen(true); }} />
         <button style={btn(false)} disabled={!connected} onClick={() => pick.current.click()}
                 title="Add a snapshot saved earlier with ⬇ (.dmesnap)">UPLOAD .dmesnap</button>
+        <button style={btn(false, C.red)} disabled={!connected || !tests.length} onClick={clearTests}
+                title="Delete every regression test snapshot (the TEST rows); asks first. The other snapshots stay">
+          ✕ CLEAR TESTS ({tests.length})</button>
         {loadedSnap && !loadedTest && <span style={{color:C.amber}} title={loadedSnap}>running from snapshot {loadedSnap}</span>}
         {loadedTest && <span style={{color:'#cc88ff'}} title={loadedSnap}>
           regression test {loadedTest.test}: inputs follow its script (the controls do nothing) · RESTART returns to the live sim</span>}
