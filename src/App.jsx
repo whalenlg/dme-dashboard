@@ -1141,6 +1141,15 @@ export default function DMEDashboard() {
   }, [openLogFile]);
 
   const snap     = data.snapshots[idx] || { iram:{} };
+  // T0 (P3.4) from the latest snapshot that logged the ports (the [DS]
+  // lines; STATUS snapshots in between carry none): 1 = no cat
+  const noCat = useMemo(() => {
+    for (let i = idx; i >= 0; i--) {
+      const p3 = data.snapshots[i]?.p3;
+      if (p3 != null) return ((p3 >> 4) & 1) === 1;
+    }
+    return false;
+  }, [data.snapshots, idx]);
   // Move the scrubber to the snapshot nearest time t (Timeline tab clicks)
   // Stable (reads the snapshots through a ref) so it doesn't re-render the
   // memoized Timeline on every live update
@@ -1372,7 +1381,7 @@ export default function DMEDashboard() {
   // One tab's content: below the header (log), or in its own window (live)
   const renderTab = t => (
     <>
-    {t==='overview' && <OverviewTab snap={snap} iram={iram} isLive={!!liveUrl}
+    {t==='overview' && <OverviewTab snap={snap} iram={iram} isLive={!!liveUrl} noCat={noCat}
       fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
       minmax={minmax} clEverActive={clEverActive} />}
     {t==='ports'    && <PortsTab snap={snap}
@@ -1675,7 +1684,7 @@ export default function DMEDashboard() {
 // ─────────────────────────────────────────────────────────────────
 //  OVERVIEW TAB
 // ─────────────────────────────────────────────────────────────────
-function OverviewTab({ snap, iram, isLive, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
+function OverviewTab({ snap, iram, isLive, noCat, fuelMsV, fuelNext, load16, wu16, lmbd16, minmax, clEverActive }) {
   const f20=iram[0x20]??0, f21=iram[0x21]??0, f22=iram[0x22]??0, f23=iram[0x23]??0,
         f24=iram[0x24]??0, f25=iram[0x25]??0;
 
@@ -1789,7 +1798,12 @@ function OverviewTab({ snap, iram, isLive, fuelMsV, fuelNext, load16, wu16, lmbd
   const metricsRow3 = [
     { lbl:'LOAD (49h)',    val:h2(iram[0x49]),                       unit:`map row ${iram[0x49]??'--'}`, col:'#88ccff', mmk:'load', addr:0x49 },
     { lbl:'ISV STEP',      val:h2(iram[0x7F]),                       unit:'hex',         col:'#ff44aa', mmk:'isv', addr:0x7F     },
-    { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
+    // T0 (P3.4) = 1: no cat. A non-cat car has no O2 sensor, so the sim
+    // holds both O2 pins (P1.6/P1.7) at 0, the o2_disconnected state.
+    noCat ? { lbl:'EST. AFR',  val:estAFR ?? afrLabel, unit:'NO CAT · O2 DISCONNECTED', col:C.red, mmk:null, addr:null,
+              tip:'CAT not fitted (T0 / P3.4 = 1): a non-cat car has no O2 sensor, so both O2 pins ' +
+                  '(P1.6 / P1.7) are held at 0, the same state as the o2_disconnected test.' }
+          : { lbl:'EST. AFR',      val:estAFR ?? afrLabel,
                            unit:clActive ? `${afrLabel}  O2:${o2Lean?'LEAN':'RICH'}` : 'narrowband NB',
                            col:afrCol, mmk:null, addr:null },
     (() => {

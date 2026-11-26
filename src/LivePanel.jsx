@@ -48,9 +48,9 @@ const INPUTS = [
   { k:'ac',        label:'AC (T1)',      positions:[0,1], names:['off','on'],
     hint:'DME T1 (P3.5): AC compressor; the closed-loop model adds its load and the ISV should catch it' },
   { k:'cat',       label:'CAT (T0)',     positions:[0,1], names:['fitted','not fitted'],
-    hint:'DME T0 (P3.4): the firmware\'s has-cat flag (0 = fitted)' },
+    hint:'DME T0 (P3.4): the firmware\'s has-cat flag (0 = fitted). Not fitted: no O2 sensor, both O2 pins held at 0' },
   { k:'o2',        label:'O2 SENSOR',    positions:['auto',0,1,3], names:['auto','lean','cross','rich'],
-    hint:'auto follows the model\'s mixture; lean / cross / rich pin the comparator outputs (P1.6/P1.7)' },
+    hint:'auto follows the model\'s mixture; lean / cross / rich pin the comparator outputs (P1.6/P1.7). CAT not fitted overrides: both pins 0' },
 ];
 
 const btn = (on, col = C.textBright) => ({
@@ -538,6 +538,9 @@ function InputsPanel({ inputs, send }) {
                    style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto || scripted ? 0.5 : 1}} />
             )}
             {d.hint && !scripted && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
+            {(d.k === 'cat' || d.k === 'o2') && inputs.cat === 1 &&
+              <div style={{color:C.red,fontSize:'9px'}}>
+                NO CAT: O2 disconnected (both O2 pins held at 0, as in o2_disconnected)</div>}
           </div>
         );
       })}
