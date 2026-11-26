@@ -1624,7 +1624,8 @@ function TestSnapshotDetail({ d, url }) {
   );
   return (
     <div style={{padding:'4px 0 4px 56px',display:'flex',flexDirection:'column',gap:'2px'}}>
-      {row('test', `${d.test}  (${d.script ?? 'run_dashboard_tests.sh'})`)}
+      {/* (no script: the lite package, whose tests' settings are in tests.json) */}
+      {row('test', `${d.test}  (${d.script ?? 'tests.json'})`)}
       {row('recorded', `${d.created ?? '--'}  (${d.id})`)}
       {row('trigger', d.trigger)}
       {row('runs to', `${fmtMs(d.t_ns)} ms`)}
