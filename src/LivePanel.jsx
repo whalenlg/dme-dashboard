@@ -44,7 +44,7 @@ const INPUTS = [
   // RoW plug adds a 1.8k resistor, which puts ch4 at ~3V (99) at sea level.
   { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00,0x99,0x56],
     names:['US under 1000 m','US over 1000 m','RoW under 1000 m','RoW over 1000 m'],
-    hint:'ch4 raw F8 ≈4.9V / 00 0V (US, as TEST_IDLE_HIGH_ALT) · 99 ≈3.0V / 56 ≈1.7V (RoW plug, 1.8k) → 25h.7:6 = 00 / 01 / 10 / 11' },
+    hint:'ch4 raw F8 ≈4.9V / 00 0V (US, as TEST_IDLE_HIGH_ALT) · 99 ≈3.0V / 56 ≈1.7V (RoW plug, 1.8k) → 25h.7:6 = 00 / 10 / 01 / 11 · RoW (25h.6 = 1) runs open loop: LAMBDA_ENABLE 20h.7 off' },
   { k:'ac',        label:'AC (T1)',      positions:[0,1], names:['off','on'],
     hint:'DME T1 (P3.5): AC compressor; the closed-loop model adds its load and the ISV should catch it' },
   { k:'cat',       label:'CAT (T0)',     positions:[0,1], names:['fitted','not fitted'],
