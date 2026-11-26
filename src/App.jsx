@@ -2143,15 +2143,15 @@ const IRAM_SUBTABS = [
   { key:'flags',   label:'FLAGS',      groups: ['flags'] },
   { key:'rpm',     label:'RPM/CRANK',  groups: ['rpm','timer'] },
   { key:'enrich',  label:'ENRICH/ISV', groups: ['enrich','isv'] },
-  { key:'sys',     label:'SYSTEM',     groups: ['sys','reg'] },
-  { key:'misc',    label:'WORK AREA',  groups: ['misc'] },
 ];
 
 function IRAMTab({ iram, tooltip, setTooltip }) {
   const [sub, setSub] = useState('all');
   const subDef  = IRAM_SUBTABS.find(t=>t.key===sub) || IRAM_SUBTABS[0];
+  // FLAGS: only the bit-flag bytes 20h-25h; 26h-29h are reserved/diag
+  // bytes, not flags, so their bits are left out
   const entries = subDef.groups
-    ? IRAM_MAP.filter(e => subDef.groups.includes(e.g))
+    ? IRAM_MAP.filter(e => subDef.groups.includes(e.g) && !(sub === 'flags' && e.a >= 0x26))
     : IRAM_MAP;
 
   const isAll = sub === 'all';
