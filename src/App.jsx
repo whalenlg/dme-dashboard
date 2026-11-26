@@ -16,6 +16,7 @@ import { Popout } from "./popout.jsx";
 import { usePopouts } from "./popouts.js";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
+import { useSimVersion, versionLabel } from "./version.js";
 import LogList from "./LogList.jsx";
 import { thin, extent, inRange } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
@@ -842,6 +843,9 @@ const S = {
   title:{fontFamily:"'Orbitron','Courier New',monospace",fontSize:'15px',fontWeight:900,
          color:C.textBright,letterSpacing:'0.08em',textShadow:`0 0 12px ${C.textBright}66`,margin:0},
   sub:{color:'#88bb88',fontSize:'9px',letterSpacing:'0.2em',marginTop:'1px'},
+  version:{color:'#88bb88',fontSize:'10px',fontWeight:400,letterSpacing:'0.05em',marginLeft:'10px',
+           fontFamily:"'Courier New',monospace",border:'1px solid #3a5a3a',borderRadius:'3px',padding:'0 5px',
+           verticalAlign:'middle',cursor:'default',textShadow:'none'},
   tabBar:{background:C.panelBg,borderBottom:`1px solid ${C.border}`,flexShrink:0},
   tabRow:{display:'flex',gap:'2px',padding:'4px 10px 0'},
   tabRowKlr:{display:'flex',gap:'2px',padding:'2px 10px 0',borderTop:`1px solid #0a2a0a`},
@@ -1026,6 +1030,8 @@ export default function DMEDashboard() {
   const [showRunAll, setShowRunAll] = useState(false);
   // (the bridge last used for LIVE, or the default one)
   const [runAllUrl, setRunAllUrl] = useState(liveUrl || DEFAULT_LIVE_URL);
+  // The version in the banner: the bridge's (the simulator's release), else this build's
+  const simVersion = useSimVersion(liveUrl ?? DEFAULT_LIVE_URL);
   if (liveUrl && liveUrl !== runAllUrl) setRunAllUrl(liveUrl);
   const runAll = useRunAll(runAllUrl, showRunAll);
   const runAllRun = runAll.info?.run;
@@ -1524,13 +1530,15 @@ export default function DMEDashboard() {
       </div>
   );
   const scrubber = t => KLR_TABS.includes(t) ? klrScrubber() : dmeScrubber();
+  const version = versionLabel(simVersion);
 
   return (
     <div style={S.root}>
       {/* ── HEADER ─────────────────────────────────────────── */}
       <div style={S.hdr}>
         <div>
-          <div style={S.title}>▶ PORSCHE 951 DME AND KLR — SIMULATION DEBUG CONSOLE</div>
+          <div style={S.title}>▶ PORSCHE 951 DME AND KLR — SIMULATION DEBUG CONSOLE
+            <span style={S.version} title={version.tip}>{version.label}</span></div>
           <div style={S.sub}>BOSCH MOTRONIC · INTEL 8051 + 8048 · PORSCHE 944 TURBO</div>
           {logFileName && (
             <div style={{color:'#66ddaa',fontSize:'10px',marginTop:'3px',
