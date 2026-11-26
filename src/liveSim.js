@@ -146,6 +146,10 @@ export function useLiveSim(url, onLogLines) {
         lines.current = []; reset.current = true; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
         setWarnings([]);
+        // The new sim starts with none of its own: its [BP] line (the bridge
+        // adds the old ones again) says which are set, so the code windows
+        // never list a breakpoint the sim doesn't have
+        setBps({ dme: [], klr: [] }); setBpConds({ dme: {}, klr: {} });
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
