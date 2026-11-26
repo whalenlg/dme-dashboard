@@ -89,3 +89,58 @@ export function NewSetupForm({ url, start, onSaved, onCancel, style }) {
     </div>
   );
 }
+
+// The SETUP row as the live ROM IMAGES row has it: SETUP, the picker
+// (pick…, the setups from GET <bridge>/setups, ＋ New setup…), ＋ NEW, LOAD
+// SETUP and ✕ for a saved one; the NEW SETUP form opens under it.
+// onLoad(setup): LOAD SETUP with the setup picked ({name, dme, klr, ...});
+// loadTitle(setup): its tooltip; start: the images the form starts from
+export function SetupPicker({ url, disabled, onLoad, loadTitle, start, reloadKey }) {
+  const [setups, setSetups] = useState([]);
+  const [sel, setSel] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState(null);
+  const load = () => url && fetch(`${url}/setups`).then(r => r.ok ? r.json() : []).catch(() => []).then(setSetups);
+  useEffect(() => { load(); }, [url, reloadKey]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const chosen = setups.find(x => x.name === sel);
+  const del = async () => {
+    if (!confirm(`Delete the setup ${chosen.name}? The images stay.`)) return;
+    setErr(null);
+    try {
+      const r = await fetch(`${url}/setups/${encodeURIComponent(chosen.name)}`, { method: 'DELETE' });
+      if (!r.ok) { setErr((await r.text()) || `HTTP ${r.status}`); return; }
+      setSel(''); load();
+    } catch { setErr(`can't reach the simulator bridge at ${url}`); }
+  };
+  const off = { cursor:'not-allowed', opacity:0.5 };
+  return (<>
+    <span style={{display:'inline-flex',gap:'6px',alignItems:'center',flexWrap:'wrap',fontSize:'10px'}}
+          title="A setup is a named DME + KLR pair">
+      <span style={{color:C.textDim}}>SETUP</span>
+      <select value={sel} onFocus={load} disabled={disabled} style={{...inp,maxWidth:'220px'}}
+              onChange={e => { if (e.target.value === '\u0000new') { setErr(null); setAdding(true); } else setSel(e.target.value); }}>
+        <option value="">pick…</option>
+        {setups.map(x => <option key={x.name} value={x.name} disabled={!x.ok}>
+          {x.name}{x.builtin ? '' : ' (saved)'} · {x.dme} + {x.klr}{x.ok ? '' : ' (image missing)'}</option>)}
+        <option value={'\u0000new'}>＋ New setup…</option>
+      </select>
+      <button style={{...btn(adding), ...(disabled ? off : {})}} disabled={disabled}
+              onClick={() => { setErr(null); setAdding(a => !a); }}
+              title="Make a new setup: name it and pick the DME and KLR images">＋ NEW</button>
+      <button style={{...btn(false), ...(disabled || !chosen?.ok ? off : {})}} disabled={disabled || !chosen?.ok}
+              onClick={() => onLoad?.(chosen)} title={chosen ? loadTitle?.(chosen) : 'Pick a setup'}>LOAD SETUP</button>
+      {chosen && !chosen.builtin && !disabled && (
+        <button style={btn(false, C.red)} title={`Delete the setup ${chosen.name} (the images stay)`} onClick={del}>✕</button>
+      )}
+      {err && <span style={{color:C.red}}>{err}</span>}
+    </span>
+    {adding && !disabled && <NewSetupForm url={url} start={chosen ?? start}
+      style={{flexBasis:'100%',borderTop:`1px solid ${C.border}`,paddingTop:'5px',marginTop:'4px'}}
+      onCancel={() => setAdding(false)}
+      onSaved={async (name, list) => {
+        setAdding(false);
+        if (Array.isArray(list)) setSetups(list); else await load();
+        setSel(name);
+      }} />}
+  </>);
+}
