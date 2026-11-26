@@ -434,8 +434,7 @@ export default function RunAllPanel({ url, state, onClose }) {
           <div style={ttl}>Options{locked && <span style={{color:C.amber,letterSpacing:0,textTransform:'none'}}>(fixed while a run is going)</span>}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:'10px 18px'}}>
             {romInfo && <div style={{gridColumn:'1 / -1'}}>
-              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>ROM IMAGES (EVERY TEST)</div>
-              {/* the SETUP row, as in the live ROM IMAGES row: LOAD SETUP picks its pair for the run */}
+              {/* the SETUP row first, as in the live ROM IMAGES row: LOAD SETUP picks its pair for the run */}
               <div style={{display:'flex',flexWrap:'wrap',gap:'6px',alignItems:'center',marginBottom:'6px'}}>
                 <SetupPicker url={url} disabled={locked} start={romSel} reloadKey={info?.roms?.presets?.length}
                   loadTitle={x => `Run every test on ${x.dme} (DME) + ${x.klr} (KLR)`}
@@ -445,6 +444,7 @@ export default function RunAllPanel({ url, state, onClose }) {
                     refresh?.();
                   }} />
               </div>
+              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>ROM IMAGES (EVERY TEST)</div>
               {!lite && presets.length > 0 && <div style={{display:'flex',flexWrap:'wrap',gap:'4px 16px',alignItems:'center',marginBottom:'5px'}}>
                 <span style={{color:C.textDim,fontSize:'10px'}} title="Each test runs once per ticked pair and simulator (run_all.sh --roms), each pair in its own folder">ROM pairs:</span>
                 {presets.map(p => {

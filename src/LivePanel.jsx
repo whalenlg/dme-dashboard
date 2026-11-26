@@ -271,8 +271,36 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
   const [adding, setAdding] = useState(false);
   const openNew = () => { setSetupErr(null); setAdding(true); };
   return (
-    <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',padding:'5px 10px'}}>
+    <div style={{...panel,display:'flex',gap:'14px',rowGap:'3px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',padding:'5px 10px'}}>
       <span style={{...title,marginBottom:0}}>ROM IMAGES</span>
+      {/* the SETUP line first, then the images in each EPROM */}
+      <span style={{display:'inline-flex',gap:'6px',alignItems:'center'}}
+            title="A setup is a named DME + KLR pair. Save one from the list of edits (click a red (modified) image name) after SAVE AS">
+        <span style={{color:C.textDim}}>SETUP</span>
+        <select value={setupSel} onFocus={loadSetups} style={{...inp,maxWidth:'220px'}}
+                onChange={e => e.target.value === '\u0000new' ? openNew() : setSetupSel(e.target.value)}>
+          <option value="">pick…</option>
+          {setups.map(x => <option key={x.name} value={x.name} disabled={!x.ok}>
+            {x.name}{x.builtin ? '' : ' (saved)'} · {x.dme} + {x.klr}{x.ok ? '' : ' (image missing)'}</option>)}
+          <option value={'\u0000new'}>＋ New setup…</option>
+        </select>
+        <button style={btn(!!adding, C.textBright)} onClick={() => adding ? setAdding(false) : openNew()}
+                title="Make a new setup: name it and pick the DME and KLR images">＋ NEW</button>
+        <button style={{...btn(false), cursor: paused && chosen ? 'pointer' : 'not-allowed'}} disabled={!paused || !chosen?.ok}
+                onClick={() => setupCall(`/setups/${encodeURIComponent(setupSel)}/load${reset ? '?reset=1' : ''}`, 'POST')}
+                title={chosen ? `Load ${chosen.dme} into the DME and ${chosen.klr} into the KLR${reset ? ', then restart at t=0' : ' in place'}` : 'Pick a setup'}>LOAD SETUP</button>
+        {chosen && !chosen.builtin && (
+          <button style={btn(false, C.red)} title={`Delete the setup ${chosen.name} (the images stay)`}
+                  onClick={async () => confirm(`Delete the setup ${chosen.name}? The images stay.`)
+                    && await setupCall(`/setups/${encodeURIComponent(chosen.name)}`, 'DELETE') && (setSetupSel(''), loadSetups())}>✕</button>
+        )}
+        {setupErr && <span style={{color:C.red}}>{setupErr}</span>}
+      </span>
+      {!adding && <span style={{flexBasis:'100%',height:0}} />}
+      {adding && <NewSetupForm url={url} start={{ dme: chosen?.dme ?? roms?.dme, klr: chosen?.klr ?? roms?.klr }}
+                               style={{flexBasis:'100%',borderTop:`1px solid ${C.border}`,paddingTop:'5px'}}
+                               onCancel={() => setAdding(false)}
+                               onSaved={async name => { setAdding(false); await loadSetups(); setSetupSel(name); }} />}
       {['dme', 'klr'].map(cpu => (
         <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
           <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
@@ -308,37 +336,11 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
         <input type="checkbox" checked={reset} onChange={e => setReset(e.target.checked)} /> RESTART AFTER LOAD
       </label>
       {!paused && <span style={{color:'#779977'}}>pause to load a ROM</span>}
-      <span style={{display:'inline-flex',gap:'6px',alignItems:'center'}}
-            title="A setup is a named DME + KLR pair. Save one from the list of edits (click a red (modified) image name) after SAVE AS">
-        <span style={{color:C.textDim}}>SETUP</span>
-        <select value={setupSel} onFocus={loadSetups} style={{...inp,maxWidth:'220px'}}
-                onChange={e => e.target.value === '\u0000new' ? openNew() : setSetupSel(e.target.value)}>
-          <option value="">pick…</option>
-          {setups.map(x => <option key={x.name} value={x.name} disabled={!x.ok}>
-            {x.name}{x.builtin ? '' : ' (saved)'} · {x.dme} + {x.klr}{x.ok ? '' : ' (image missing)'}</option>)}
-          <option value={'\u0000new'}>＋ New setup…</option>
-        </select>
-        <button style={btn(!!adding, C.textBright)} onClick={() => adding ? setAdding(false) : openNew()}
-                title="Make a new setup: name it and pick the DME and KLR images">＋ NEW</button>
-        <button style={{...btn(false), cursor: paused && chosen ? 'pointer' : 'not-allowed'}} disabled={!paused || !chosen?.ok}
-                onClick={() => setupCall(`/setups/${encodeURIComponent(setupSel)}/load${reset ? '?reset=1' : ''}`, 'POST')}
-                title={chosen ? `Load ${chosen.dme} into the DME and ${chosen.klr} into the KLR${reset ? ', then restart at t=0' : ' in place'}` : 'Pick a setup'}>LOAD SETUP</button>
-        {chosen && !chosen.builtin && (
-          <button style={btn(false, C.red)} title={`Delete the setup ${chosen.name} (the images stay)`}
-                  onClick={async () => confirm(`Delete the setup ${chosen.name}? The images stay.`)
-                    && await setupCall(`/setups/${encodeURIComponent(chosen.name)}`, 'DELETE') && (setSetupSel(''), loadSetups())}>✕</button>
-        )}
-        {setupErr && <span style={{color:C.red}}>{setupErr}</span>}
-      </span>
       <span style={{flex:1}} />
       <button style={btn(comparing, C.blue)} onClick={toggleCompare}
               title="What differs between two DME or two KLR images: maps and tables decoded side by side, and the code that differs with its disassembly">
         COMPARE IMAGES
       </button>
-      {adding && <NewSetupForm url={url} start={{ dme: chosen?.dme ?? roms?.dme, klr: chosen?.klr ?? roms?.klr }}
-                               style={{flexBasis:'100%',borderTop:`1px solid ${C.border}`,paddingTop:'5px'}}
-                               onCancel={() => setAdding(false)}
-                               onSaved={async name => { setAdding(false); await loadSetups(); setSetupSel(name); }} />}
     </div>
   );
 }
