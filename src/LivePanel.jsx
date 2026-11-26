@@ -151,6 +151,8 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
                       ram={mem?.[cpu]} regs={regs?.[cpu]} running={running} stopKey={stopKey} send={send}
                       paused={connected && sim.state === 'paused'} edited={asmSrc?.[cpu]?.patched ?? 0} rom={roms?.[cpu]} url={url}
                       patchRom={live.patchRom} revertRom={live.revertRom}
+                      watches={live.watches?.[cpu]} watchOk={live.watches != null} writes={live.writes?.[cpu]} writers={live.writers?.[cpu]}
+                      connected={connected}
                       onClose={() => popouts.close(`code_${cpu}`)} />
           </div>
         </Popout>
@@ -162,6 +164,13 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
 // Why the sim stopped: a breakpoint hit (with its condition), else the reason
 function StopReason({ reason }) {
   if (!reason) return null;
+  const w = watchHitOf(reason);
+  if (w) return (
+    <span style={{color:C.amber,fontSize:'10px'}}>
+      stopped: watch · <span style={{color:C.blue}}>{watchText(w)}</span>
+      <span style={{color:C.textDim}}> changed by the instruction at {w.by} (the PC is now the next one)</span>
+    </span>
+  );
   const h = bpHitOf(reason);
   if (!h) return <span style={{color:C.amber,fontSize:'10px'}}>stopped: {reason}</span>;
   return (
@@ -672,6 +681,179 @@ const condNow = (k, ram) => {
   const x = k.bit != null ? (v >> k.bit) & 1 : v;
   return { x, ok: k.op === '==' ? x === k.val : k.op === '!=' ? x !== k.val : k.op === '<' ? x < k.val : x > k.val };
 };
+// ── Write watch ──────────────────────────────────────────────────
+// The sim logs every change to a RAM byte from reset (or a snapshot load)
+// with the address of the instruction that made it, whether or not a watch
+// is set, so the boot code's writes can be looked up afterwards. A watch
+// shows a byte's (or bit's) history here; ticking STOP also pauses the
+// sim right after the next instruction that changes it.
+// A watch stop reason, "watch dme 37 00->05 by 1A2B" / "watch dme 21.3 0->1 by 1A2B"
+const watchHitOf = reason => {
+  const m = /^watch (dme|klr) ([0-9A-F]{2})(?:\.([0-7]))? ([0-9A-F]+)->([0-9A-F]+) by ([0-9A-F]+)/.exec(reason ?? '');
+  return m && { cpu: m[1], mem: parseInt(m[2], 16), bit: m[3] != null ? +m[3] : null, old: m[4], nw: m[5], by: m[6] };
+};
+const memLoc = (cpu, mem, bit) => {
+  const n = memName(cpu, mem, bit);
+  return `${cpu === 'dme' ? 'iram' : 'ram'}[${hx(mem)}h]${bit != null ? `.${bit}` : ''}${n ? ` ${n}` : ''}`;
+};
+const watchText = w => `${memLoc(w.cpu, w.mem, w.bit)} ${w.bit != null ? `${w.old}→${w.nw}` : `${w.old}h→${w.nw}h`}`;
+// The routine an address is in: "label" or "label+3"
+const routineOf = (listing, a) => {
+  if (!listing?.length) return '';
+  for (let i = rowFor(listing, a); i >= 0; i--) {
+    if (listing[i].label) return listing[i].a === a ? listing[i].label : `${listing[i].label}+${(a - listing[i].a).toString(16).toUpperCase()}`;
+    if (listing[i].a < a - 0x400) break;
+  }
+  return '';
+};
+const tms = t => t == null ? '' : t < 10 ? t.toFixed(4) : t.toFixed(3);
+const WATCH_POLL_MS = 2000;   // while running, how often the watched bytes' history is fetched
+
+function WatchPanel({ cpu, watches, watchOk, writes = {}, writers, send, listing, ram, running, connected, onJump }) {
+  const [adding, setAdding] = useState(false);
+  const [text, setText] = useState('');
+  const [open, setOpen] = useState(null);       // key whose history is shown
+  const [showAll, setShowAll] = useState(false);
+  const [allQ, setAllQ] = useState('');
+  const list = watches ?? [];
+  const keys = list.map(w => w.key).join(' ');
+  // While running, ask for the watched bytes' history now and then (a stop sends it anyway)
+  useEffect(() => {
+    if (!running || !keys) return;
+    const id = setInterval(() => send(`writes ${cpu} ${keys}`), WATCH_POLL_MS);
+    return () => clearInterval(id);
+  }, [running, keys, cpu, send]);
+  useEffect(() => { if (showAll && !running) send(`writes ${cpu} all`); }, [showAll, running, cpu, send]);
+  if (!connected) return null;
+  if (!watchOk) return (
+    <div style={{fontSize:'10px',color:C.textDim,marginBottom:'4px'}}>
+      WRITE WATCH <span style={{color:'#779977'}}>· this simulator build has no write log: run ./build_live.sh, then restart the bridge</span>
+    </div>
+  );
+  const add = loc => {
+    if (!loc) return;
+    send(`watch add ${cpu} ${hx(loc.mem)}${loc.bit != null ? `.${loc.bit}` : ''} log`);
+    setAdding(false); setText(''); setOpen(hx(loc.mem) + (loc.bit != null ? `.${loc.bit}` : ''));
+  };
+  const typed = () => {
+    const m = /^(?:0x)?([0-9a-f]{1,2})h?(?:\.([0-7]))?(?:\s|$)/i.exec(text.trim());
+    if (m && parseInt(m[1], 16) <= 0x7F) add({ mem: parseInt(m[1], 16), bit: m[2] != null ? +m[2] : null });
+  };
+  const wcmd = (w, op, brk) => `watch ${op} ${cpu} ${w.key}${op === 'add' && !brk ? ' log' : ''}`;
+  const pcLink = (pc, extra = '') => pc == null ? null : (
+    <span style={{color:C.textBright,cursor:'pointer',textDecoration:'underline dotted'}} title={`Show ${hx(pc, cpu === 'dme' ? 4 : 3)} in the listing`}
+          onClick={() => onJump(pc)}>
+      {hx(pc, cpu === 'dme' ? 4 : 3)}{routineOf(listing, pc) && <span style={{color:C.amber}}> {routineOf(listing, pc)}</span>}{extra}
+    </span>
+  );
+  const val = (v, bit) => bit != null ? `${v}` : `${hx(v)}h`;
+  const chg = (c, bit) => c && <>{pcLink(c.pc)} <span style={{color:C.textDim}}>{val(c.old, bit)}→{val(c.nw, bit)} @ {tms(c.t)} ms{c.irq ? ' (+int entry)' : ''}</span></>;
+  const allRows = (writers?.rows ?? []).filter(r => {
+    const q = allQ.trim().toLowerCase();
+    if (!q) return true;
+    return hx(r.mem).toLowerCase().includes(q.replace(/h$/, '')) || memName(cpu, r.mem).toLowerCase().includes(q)
+        || routineOf(listing, r.first).toLowerCase().includes(q) || routineOf(listing, r.last).toLowerCase().includes(q);
+  });
+  return (
+    <div style={{fontSize:'10px',marginBottom:'4px'}}>
+      <div style={{display:'flex',gap:'4px',flexWrap:'wrap',alignItems:'center'}}>
+        <span style={{color:C.textDim}} title={'Who changed a RAM byte or bit, and when: the sim records every change from reset (t=0) or a snapshot load, with the instruction that made it, '
+          + 'so writes made before the first sample (the boot code) can be looked up afterwards. Writing the value already there is not a change.\n'
+          + 'Tick STOP to pause right after the next instruction that changes it.'}>WRITE WATCH</span>
+        {list.length === 0 && !adding && <span style={{color:'#779977'}}>none · + WATCH to see who changed a byte or bit, from reset</span>}
+        {list.map(w => {
+          const d = writes[w.key];
+          const now = ram?.[w.mem] != null ? (w.bit != null ? (ram[w.mem] >> w.bit) & 1 : ram[w.mem]) : null;
+          const last = d?.hist?.[d.hist.length - 1];
+          return (
+            <span key={w.key} style={{display:'inline-flex',alignItems:'center',border:`1px solid ${open === w.key ? C.blue : C.border}`,background:C.panelBg2}}>
+              <label style={{display:'inline-flex',alignItems:'center',gap:'2px',padding:'1px 4px',color: w.brk ? C.red : C.textDim,cursor:'pointer'}}
+                     title="Stop right after an instruction changes it">
+                <input type="checkbox" checked={w.brk} onChange={e => send(wcmd(w, 'add', e.target.checked))}
+                       style={{margin:0,accentColor:C.red,cursor:'pointer'}} />STOP
+              </label>
+              <span style={{color:C.blue,padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`,textTransform:'none'}}
+                    title="Show its history" onClick={() => setOpen(open === w.key ? null : w.key)}>
+                {memLoc(cpu, w.mem, w.bit)}{now != null && !running ? ` = ${val(now, w.bit)}` : ''}
+                <span style={{color:C.textDim}}> · {d ? `${d.n} change${d.n === 1 ? '' : 's'}` : '…'}</span>
+                {last && <span style={{color:C.textDim}}> · last by <span style={{color:C.textBright}}>{hx(last.pc, cpu === 'dme' ? 4 : 3)}</span></span>}
+                {open === w.key ? ' ▴' : ' ▾'}
+              </span>
+              <span style={{color:C.textDim,padding:'1px 5px',cursor:'pointer',borderLeft:`1px solid ${C.border}`}}
+                    title="Remove watch" onClick={() => { send(wcmd(w, 'del')); if (open === w.key) setOpen(null); }}>✕</span>
+            </span>
+          );
+        })}
+        {adding ? (
+          <>
+            <MemSearch src={cpu} value={text} align="left" autoFocus onChange={setText}
+                       onPick={m => add({ mem: m.addr, bit: m.bit ?? null })} onEnter={typed} style={{...inp,width:'170px'}}
+                       placeholder="name or hex addr (21.3 for a bit)" />
+            <button style={btn(false)} onClick={() => { setAdding(false); setText(''); }}>CANCEL</button>
+          </>
+        ) : <button style={btn(false, C.blue)} onClick={() => setAdding(true)}>+ WATCH</button>}
+        <button style={btn(showAll, C.blue)} onClick={() => setShowAll(v => !v)}
+                title="Every RAM byte that has changed since reset, with the first and the last instruction that changed it">WHO WROTE…</button>
+      </div>
+      {open && writes[open] && (() => {
+        const d = writes[open];
+        const rows = [...d.hist].reverse();
+        return (
+          <div style={{border:`1px solid ${C.border2}`,background:C.panelBg2,padding:'4px 6px',marginTop:'4px',maxHeight:'180px',overflowY:'auto'}}>
+            <div style={{color:C.textDim,marginBottom:'3px',display:'flex',gap:'10px',flexWrap:'wrap'}}>
+              <span style={{color:C.blue}}>{memLoc(cpu, d.mem, d.bit)}</span>
+              <span>{d.n} change{d.n === 1 ? '' : 's'} since {d.since ? `${tms(d.since)} ms (snapshot load)` : 'reset'}</span>
+              {d.first && <span>first: {chg(d.first, d.bit)}</span>}
+              {d.bit != null && d.set && <span>last set: {chg(d.set, d.bit)}</span>}
+              {d.bit != null && d.clr && <span>last clear: {chg(d.clr, d.bit)}</span>}
+              {running && <span style={{color:'#557799'}}>(updates every {WATCH_POLL_MS / 1000} s while running)</span>}
+            </div>
+            {rows.length === 0 && <div style={{color:'#779977'}}>no change since {d.since ? 'the load' : 'reset'}{d.bit == null ? '' : ' (of this bit)'}</div>}
+            {rows.map((c, i) => (
+              <div key={i} style={{display:'flex',gap:'10px',whiteSpace:'nowrap'}}>
+                <span style={{color:C.textDim,width:'11ch',textAlign:'right'}}>{tms(c.t)} ms</span>
+                <span style={{color:C.textBright,width:'9ch'}}>{val(c.old, d.bit)} → {val(c.nw, d.bit)}</span>
+                {pcLink(c.pc, c.irq ? <span style={{color:C.textDim}} title="An interrupt was entered right after this instruction: a stack byte may have been its push"> (+int entry)</span> : '')}
+              </div>
+            ))}
+            {d.n > d.hist.length && d.bit == null && <div style={{color:C.textDim}}>… the sim keeps the last 64 changes of each byte; the first is above</div>}
+          </div>
+        );
+      })()}
+      {showAll && (
+        <div style={{border:`1px solid ${C.border2}`,background:C.panelBg2,padding:'4px 6px',marginTop:'4px',maxHeight:'260px',overflowY:'auto'}}>
+          <div style={{display:'flex',gap:'8px',alignItems:'center',marginBottom:'3px',color:C.textDim}}>
+            <span>RAM bytes changed since {writers?.since ? `${tms(writers.since)} ms` : 'reset'}{writers ? ` · ${writers.rows.length}` : ''}</span>
+            <input value={allQ} onChange={e => setAllQ(e.target.value)} placeholder="filter: addr, name or routine" style={{...inp,width:'170px'}} />
+            <button style={btn(false)} onClick={() => send(`writes ${cpu} all`)} title="Fetch the list again">REFRESH</button>
+            <button style={btn(false)} onClick={() => setShowAll(false)}>✕</button>
+          </div>
+          {!writers && <div style={{color:'#779977'}}>…</div>}
+          {writers && (
+            <table style={{borderCollapse:'collapse',width:'100%'}}>
+              <thead><tr style={{color:C.textDim,textAlign:'left'}}>
+                <th style={{fontWeight:'normal'}}>byte</th><th style={{fontWeight:'normal'}}>changes</th>
+                <th style={{fontWeight:'normal'}}>first changed by</th><th style={{fontWeight:'normal'}}>last changed by</th><th />
+              </tr></thead>
+              <tbody>
+                {allRows.map(r => (
+                  <tr key={r.mem}>
+                    <td style={{color:C.blue,whiteSpace:'nowrap'}}>{hx(r.mem)}h {memName(cpu, r.mem)}</td>
+                    <td style={{color:C.textDim}}>{r.n}</td>
+                    <td style={{whiteSpace:'nowrap'}}>{pcLink(r.first)} <span style={{color:C.textDim}}>@ {tms(r.firstT)} ms</span></td>
+                    <td style={{whiteSpace:'nowrap'}}>{pcLink(r.last)} <span style={{color:C.textDim}}>@ {tms(r.lastT)} ms</span></td>
+                    <td><span style={{color:C.blue,cursor:'pointer'}} title="Watch this byte" onClick={() => add({ mem: r.mem, bit: null })}>+watch</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const CMP_OPS = ['==', '!=', '<', '>'];
 // A conditional breakpoint's stop reason, "bp dme 024E if 37>14 (37=16)":
 // the breakpoint, its condition and the value the sim compared
@@ -858,7 +1040,7 @@ function HexDec() {
 }
 
 function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, traceCtx, ram, regs, running, stopKey, send, hidden, onClose,
-                    paused, edited = 0, patchRom, revertRom, rom, url }) {
+                    paused, edited = 0, patchRom, revertRom, rom, url, watches, watchOk, writes, writers, connected }) {
   const [showEdits, setShowEdits] = useState(false);
   const [jump, setJump]   = useState('');
   const [editAt, setEditAt] = useState(null);   // address whose bytes are being edited
@@ -904,6 +1086,9 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     setEditing(null);
   };
   const recent = useMemo(() => new Set(trace.slice(-16)), [trace]);
+  // A watch stop: the instruction that made the change (the PC is the next one)
+  const wHit = !running ? watchHitOf(reason) : null;
+  const writer = wHit && wHit.cpu === cpu ? parseInt(wHit.by, 16) : null;
   // Label / operand columns sized to the longest entry so nothing is cut off
   const colW = useMemo(() => ({
     label: Math.min(22, Math.max(10, ...listing.map(r => r.label.length))),
@@ -1089,6 +1274,9 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
         <CondEditor key={editing} cpu={cpu} addr={editing} cond={condOf(editing)} ram={running ? null : ram}
                     onSet={k => setCond(editing, k)} onClear={() => setCond(editing, null)} onCancel={() => setEditing(null)} />
       )}
+      <WatchPanel cpu={cpu} watches={watches} watchOk={watchOk} writes={writes} writers={writers} send={send} listing={listing}
+                  ram={ram} running={running} connected={connected}
+                  onJump={a => { setCenter(a); setJump(hx(a, cpu === 'dme' ? 4 : 3)); }} />
       <CameFrom cpu={cpu} trace={running ? [] : trace} listing={listing}
                 onJump={a => { setCenter(a); setJump(hx(a, 4)); }} />
       <StackView cpu={cpu} ram={ram} regs={regs} listing={listing} running={running}
@@ -1110,10 +1298,12 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                    onClick={() => hasBp ? removeBp(r.a) : isOff ? setEnabled(r.a, true) : send(bpCmd('add', r.a))}
                    style={{display:'flex',gap:'8px',cursor:'pointer',padding:'0 4px',textAlign:'left',height:`${ROW_H}px`,
                            width:'max-content',minWidth:'100%',boxSizing:'border-box',
-                           background: isPc ? '#1a4a1a' : isHit ? '#4a3a00' : isMatch ? '#241c00' : wasRecent ? '#0c1d0c' : 'transparent',
+                           background: isPc ? '#1a4a1a' : r.a === writer ? '#3a2a00' : isHit ? '#4a3a00' : isMatch ? '#241c00' : wasRecent ? '#0c1d0c' : 'transparent',
                            outline: isHit ? '1px solid #ffcc00' : 'none', outlineOffset:'-1px',
                            borderLeft: `2px solid ${isPc ? C.textBright : isHit ? '#ffcc00' : 'transparent'}`}}>
-                <span style={{width:'10px',color: hasBp ? (conds[r.a] ? C.amber : C.red) : C.textDim}}>{hasBp ? '●' : isOff ? '○' : ''}</span>
+                <span style={{width:'10px',color: hasBp ? (conds[r.a] ? C.amber : C.red) : r.a === writer ? C.amber : C.textDim}}
+                      title={r.a === writer ? `This instruction changed ${watchText(wHit)} (the watch stop)` : undefined}>
+                  {hasBp ? '●' : isOff ? '○' : r.a === writer ? '✎' : ''}</span>
                 <span style={{color: isPc ? C.textBright : '#77aa77',width:'34px'}}>{hx(r.a, cpu === 'dme' ? 4 : 3)}</span>
                 <span style={{color:C.amber,width:`${colW.label}ch`,flex:'none',overflow:'hidden',textOverflow:'ellipsis'}} title={r.label}>{isMatch ? marked(r.label, q) : r.label}</span>
                 <span style={{color:C.textBright,width:'5ch',flex:'none'}}>{r.instr}</span>

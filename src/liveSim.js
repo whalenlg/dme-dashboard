@@ -20,6 +20,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //    POST /snapshots/upload, DELETE /snapshots/<id>: snapshots of the whole
 //                        model, saved by the sim on each warning (or "save");
 //                        the list is fetched again on SIM: [SNAP] ready|deleted
+//  SIM: [WATCH] / [WRITES] / [WRITERS]: watchpoints and the sim's write log
+//                        (who changed each RAM byte, from reset), see parseWrites
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
 //  DME:/KLR: lines are handed to onLogLines in batches, for the
@@ -62,6 +64,41 @@ const splitConds = s => {
   return out;
 };
 
+// A write-log change, "<pc>/<t_ns>/<old><new>[/i]" (bits: "1A2B/812345/01")
+// → {pc, t: ms, old, nw, irq}; "-" → null
+const parseChg = (s, bit) => {
+  const m = /^([0-9A-F]+)\/(\d+)\/([0-9A-F]+)(\/i)?$/i.exec(s ?? '');
+  if (!m) return null;
+  const v = m[3], h = v.length / 2;
+  return { pc: parseInt(m[1], 16), t: +m[2] / 1e6, old: parseInt(v.slice(0, h), bit ? 2 : 16),
+           nw: parseInt(v.slice(h), bit ? 2 : 16), irq: !!m[4] };
+};
+// SIM: [WRITES] dme 21.3 n=4 since=0 first=<c> [set=<c> clr=<c>] hist=<c>;<c>
+export function parseWrites(rest) {
+  const m = /^(dme|klr) ([0-9A-F]{2})(?:\.([0-7]))?\s+(.*)$/i.exec(rest);
+  if (!m) return null;
+  const kv = parseKV(m[4]), bit = m[3] != null;
+  return { cpu: m[1], key: m[2].toUpperCase() + (bit ? `.${m[3]}` : ''), mem: parseInt(m[2], 16), bit: bit ? +m[3] : null,
+           n: +kv.n, since: +kv.since / 1e6, first: parseChg(kv.first, bit), set: parseChg(kv.set, bit), clr: parseChg(kv.clr, bit),
+           hist: (kv.hist ?? '').split(';').map(c => parseChg(c, bit)).filter(Boolean) };
+}
+// SIM: [WRITERS] dme since=0 37=1A2B/12/0F00/800000/99000000,...
+function parseWriters(rest) {
+  const m = /^(dme|klr) since=(\d+)\s*(.*)$/.exec(rest);
+  if (!m) return null;
+  const rows = [];
+  for (const t of m[3].split(',').filter(Boolean)) {
+    const r = /^([0-9A-F]{2})=([0-9A-F]+)\/(\d+)\/([0-9A-F]+)\/(\d+)\/(\d+)$/i.exec(t);
+    if (r) rows.push({ mem: parseInt(r[1], 16), last: parseInt(r[2], 16), n: +r[3], first: parseInt(r[4], 16), firstT: +r[5] / 1e6, lastT: +r[6] / 1e6 });
+  }
+  return { cpu: m[1], since: +m[2] / 1e6, rows };
+}
+// A [WATCH] list, "37,21.3:log" → [{key:'37', mem, bit, brk}]
+const splitWatches = s => (s ?? '').split(',').filter(Boolean).map(t => {
+  const m = /^([0-9A-F]{2})(?:\.([0-7]))?(:log)?$/i.exec(t);
+  return m && { key: m[1].toUpperCase() + (m[2] != null ? `.${m[2]}` : ''), mem: parseInt(m[1], 16), bit: m[2] != null ? +m[2] : null, brk: !m[3] };
+}).filter(Boolean);
+
 export function useLiveSim(url, onLogLines) {
   const [connected, setConnected] = useState(false);
   const [sim, setSim]       = useState(EMPTY_SIM);
@@ -83,7 +120,12 @@ export function useLiveSim(url, onLogLines) {
   const [interval, setIntervalMs] = useState(null);   // {ms, def}: DS snapshot interval, from SIM: [INTERVAL] (null: the sim doesn't report one)
   const [loadedSnap, setLoadedSnap] = useState(null);   // id of the snapshot this run started from
   const [snapBusy, setSnapBusy] = useState(null);       // a regression test being built for LOAD: its latest progress line
-  const [setupsVer, setSetupsVer] = useState(0);   // bumped on SIM: [SETUPS] (GET <url>/setups)
+  const [setupsVer, setSetupsVer] = useState(0);
+  // Watchpoints and the write log: null until the sim reports [WATCH]
+  // (a build from before them doesn't)
+  const [watches, setWatches] = useState(null);         // {dme: [{key, mem, bit, brk}], klr}
+  const [writes, setWrites]   = useState({ dme: {}, klr: {} });   // key ('37', '21.3') → parseWrites
+  const [writers, setWriters] = useState({ dme: null, klr: null }); // parseWriters   // bumped on SIM: [SETUPS] (GET <url>/setups)
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -108,7 +150,7 @@ export function useLiveSim(url, onLogLines) {
     let lastLog = 0;
     // Rare control replies (breakpoints, run state, errors) skip the queue
     // so clicks feel immediate; queued lines are handled first to keep order.
-    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM|SNAP|SNAPCFG|INTERVAL|SETUPS)\]/;
+    const URGENT = /^SIM: \[(BP|STATE|ERROR|EXIT|RESTART|ROM|ASM|SNAP|SNAPCFG|INTERVAL|SETUPS|WATCH|WRITES|WRITERS)\]/;
     const fetchSnaps = () => fetch(`${url}/snapshots`).then(r => r.ok ? r.json() : null).catch(() => null)
       .then(list => { if (list) setSnapshots(list); });
     es.onmessage = ev => {
@@ -150,6 +192,7 @@ export function useLiveSim(url, onLogLines) {
         // adds the old ones again) says which are set, so the code windows
         // never list a breakpoint the sim doesn't have
         setBps({ dme: [], klr: [] }); setBpConds({ dme: {}, klr: {} });
+        setWatches(null); setWrites({ dme: {}, klr: {} }); setWriters({ dme: null, klr: null });
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
@@ -167,6 +210,15 @@ export function useLiveSim(url, onLogLines) {
         const kv = parseKV(rest);
         setBps({ dme: splitHex(kv.dme), klr: splitHex(kv.klr) });
         setBpConds({ dme: splitConds(kv.dme), klr: splitConds(kv.klr) });
+      } else if (kind === 'WATCH') {
+        const kv = parseKV(rest);
+        setWatches({ dme: splitWatches(kv.dme), klr: splitWatches(kv.klr) });
+      } else if (kind === 'WRITES') {
+        const w = parseWrites(rest);
+        if (w) setWrites(x => ({ ...x, [w.cpu]: { ...x[w.cpu], [w.key]: w } }));
+      } else if (kind === 'WRITERS') {
+        const w = parseWriters(rest);
+        if (w) setWriters(x => ({ ...x, [w.cpu]: w }));
       } else if (kind === 'TRACE') {
         const [cpu, list] = rest.split(' ');
         // Entries are pc/ctx0/ctx1/ctx2 (register context per instruction)
@@ -204,6 +256,8 @@ export function useLiveSim(url, onLogLines) {
           const msg = rest.replace(/^building id=\S+\s*/, '');
           setSnapBusy(/ (done|failed)$/.test(msg) ? null : msg);
         }
+        // A snapshot load starts the write log again at its time
+        if (what === 'loaded') { setWrites({ dme: {}, klr: {} }); setWriters({ dme: null, klr: null }); }
         if (what === 'loaded') setLoadedSnap(rest.match(/dir=(.*)$/)?.[1]?.split(/[\\/]/).filter(Boolean).pop() ?? null);
       } else if (kind === 'SETUPS') {
         setSetupsVer(v => v + 1);   // the image setups changed: lists fetch them again
@@ -338,6 +392,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, bpConds, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom, setupsVer,
+  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom, setupsVer,
            snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
