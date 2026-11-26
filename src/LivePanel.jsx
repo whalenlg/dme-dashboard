@@ -257,14 +257,49 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
   const loadSetups = () => url && fetch(`${url}/setups`).then(r => r.ok ? r.json() : []).catch(() => []).then(setSetups);
   useEffect(() => { loadSetups(); }, [url, roms?.dme, roms?.klr, setupsVer]);   // eslint-disable-line react-hooks/exhaustive-deps
   const chosen = setups.find(x => x.name === setupSel);
-  const setupCall = async (path, method) => {
+  const setupCall = async (path, method, body) => {
     setSetupErr(null);
     try {
-      const r = await fetch(`${url}${path}`, { method });
+      // (no JSON content type, so the bridge gets no CORS preflight)
+      const r = await fetch(`${url}${path}`, body === undefined ? { method } : { method, body: JSON.stringify(body) });
       if (!r.ok) setSetupErr((await r.text()) || `HTTP ${r.status}`);
       return r.ok;
     } catch { setSetupErr(`can't reach the simulator bridge at ${url}`); return false; }
   };
+  // NEW SETUP: a name and a DME + KLR image from the bridge's image lists
+  // (bin_images/<cpu>, the uploads and the images saved from edits; the sim
+  // loads .mem files, and unsaved edits aren't a file to keep)
+  const [adding, setAdding] = useState(null);   // { name, dme, klr } while the form is open
+  const [images, setImages] = useState({ dme: [], klr: [] });
+  const openNew = async () => {
+    setSetupErr(null);
+    const list = async cpu => {
+      try {
+        const r = await fetch(`${url}/compare/${cpu}/images`);
+        return r.ok ? (await r.json()).filter(i => /\.mem$/i.test(i.name) && i.src !== 'edited') : [];
+      } catch { return []; }
+    };
+    const [dme, klr] = await Promise.all([list('dme'), list('klr')]);
+    setImages({ dme, klr });
+    // start from the images loaded now (or the chosen setup's) when listed
+    const start = cpu => {
+      const want = [chosen?.[cpu], roms?.[cpu] && roms[cpu].split(/[\\/]/).pop()];
+      return want.find(n => n && (cpu === 'dme' ? dme : klr).some(i => i.name === n))
+        ?? (cpu === 'dme' ? dme : klr)[0]?.name ?? '';
+    };
+    setAdding({ name: '', dme: start('dme'), klr: start('klr') });
+  };
+  const newName = adding?.name.trim() ?? '';
+  const replaces = setups.find(x => x.name === newName);
+  const saveNew = async () => {
+    if (!newName || !adding.dme || !adding.klr || replaces?.builtin) return;
+    if (await setupCall('/setups', 'POST', { name: newName, dme: adding.dme, klr: adding.klr })) {
+      setAdding(null);
+      await loadSetups();
+      setSetupSel(newName);
+    }
+  };
+  const imgLabel = i => `${i.name}${i.saved ? ' (edited)' : i.src === 'upload' ? ' (uploaded)' : ''}`;
   return (
     <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',padding:'5px 10px'}}>
       <span style={{...title,marginBottom:0}}>ROM IMAGES</span>
@@ -306,11 +341,15 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
       <span style={{display:'inline-flex',gap:'6px',alignItems:'center'}}
             title="A setup is a named DME + KLR pair. Save one from the list of edits (click a red (modified) image name) after SAVE AS">
         <span style={{color:C.textDim}}>SETUP</span>
-        <select value={setupSel} onChange={e => setSetupSel(e.target.value)} onFocus={loadSetups} style={{...inp,maxWidth:'220px'}}>
+        <select value={setupSel} onFocus={loadSetups} style={{...inp,maxWidth:'220px'}}
+                onChange={e => e.target.value === '\u0000new' ? openNew() : setSetupSel(e.target.value)}>
           <option value="">pick…</option>
           {setups.map(x => <option key={x.name} value={x.name} disabled={!x.ok}>
             {x.name}{x.builtin ? '' : ' (saved)'} · {x.dme} + {x.klr}{x.ok ? '' : ' (image missing)'}</option>)}
+          <option value={'\u0000new'}>＋ New setup…</option>
         </select>
+        <button style={btn(!!adding, C.textBright)} onClick={() => adding ? setAdding(null) : openNew()}
+                title="Make a new setup: name it and pick the DME and KLR images">＋ NEW</button>
         <button style={{...btn(false), cursor: paused && chosen ? 'pointer' : 'not-allowed'}} disabled={!paused || !chosen?.ok}
                 onClick={() => setupCall(`/setups/${encodeURIComponent(setupSel)}/load${reset ? '?reset=1' : ''}`, 'POST')}
                 title={chosen ? `Load ${chosen.dme} into the DME and ${chosen.klr} into the KLR${reset ? ', then restart at t=0' : ' in place'}` : 'Pick a setup'}>LOAD SETUP</button>
@@ -326,6 +365,31 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
               title="What differs between two DME or two KLR images: maps and tables decoded side by side, and the code that differs with its disassembly">
         COMPARE IMAGES
       </button>
+      {adding && (
+        <div style={{flexBasis:'100%',display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap',
+                     borderTop:`1px solid ${C.border}`,paddingTop:'5px'}}>
+          <span style={{color:C.textDim,letterSpacing:'0.1em'}}>NEW SETUP</span>
+          <input value={adding.name} autoFocus placeholder="setup name" style={{...inp,width:'180px'}}
+                 onChange={e => setAdding(a => ({ ...a, name: e.target.value.replace(/[^\w .+-]/g, '_').slice(0, 64) }))}
+                 onKeyDown={e => { if (e.key === 'Enter') saveNew(); if (e.key === 'Escape') setAdding(null); }} />
+          {['dme', 'klr'].map(cpu => (
+            <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
+              <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
+              <select value={adding[cpu]} onChange={e => setAdding(a => ({ ...a, [cpu]: e.target.value }))} style={{...inp,maxWidth:'260px'}}>
+                {!images[cpu].length && <option value="">no {cpu.toUpperCase()} images found</option>}
+                {images[cpu].map(i => <option key={`${i.src}/${i.name}`} value={i.name}>{imgLabel(i)}</option>)}
+              </select>
+            </span>
+          ))}
+          <button style={btn(false, C.textBright)} disabled={!newName || !adding.dme || !adding.klr || !!replaces?.builtin} onClick={saveNew}
+                  title={replaces?.builtin ? `${newName} is a built-in setup: pick another name`
+                    : `Save ${newName || 'the setup'}: ${adding.dme} + ${adding.klr}. It is listed under SETUP and in RUN REGRESSIONS' ROM pairs.`}>
+            {replaces && !replaces.builtin ? 'REPLACE SETUP' : 'SAVE SETUP'}</button>
+          <button style={btn(false)} onClick={() => setAdding(null)}>CANCEL</button>
+          {replaces && <span style={{color:replaces.builtin ? C.red : C.amber}}>
+            {replaces.builtin ? 'that name is a built-in setup' : `replaces the saved setup ${newName} (${replaces.dme} + ${replaces.klr})`}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1187,6 +1251,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     const a = parseInt(q, 16);
     if (!isNaN(a)) setCenter(a);
   };
+  // ◀ ▶ are grayed out until the search has something to step through
+  const stepBtn = matches.length ? btn(false) : {...btn(false), cursor:'not-allowed', opacity:0.4};
   // Clicking a label in an operand goes to where it is defined, with the
   // search set to it so ◀ ▶ step through the places that use it
   const goLabel = name => {
@@ -1220,8 +1286,10 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                  placeholder="label or hex" style={{...inp,width:'110px'}}
                  title="Type part of a label to highlight every row that defines or uses one that matches (labels and operands). Enter goes to the next match, Shift+Enter the previous one; or type a hex address" />
           <button style={btn(false)} onClick={() => doJump()}>GO</button>
-          <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(-1)} title="Previous match (Shift+Enter)">◀</button>
-          <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(1)} title="Next match (Enter)">▶</button>
+          <button style={stepBtn} disabled={!matches.length} onClick={() => doJump(-1)}
+                  title={matches.length ? 'Previous match (Shift+Enter)' : 'Type a label to search first'}>◀</button>
+          <button style={stepBtn} disabled={!matches.length} onClick={() => doJump(1)}
+                  title={matches.length ? 'Next match (Enter)' : 'Type a label to search first'}>▶</button>
           {q && (matches.length
             ? <span style={{color:C.amber,alignSelf:'center',minWidth:'6ch'}}>{onMatch ? `${hit + 1}/${matches.length}` : `${matches.length} match${matches.length > 1 ? 'es' : ''}`}</span>
             : isNaN(parseInt(q, 16)) && <span style={{color:C.red,alignSelf:'center'}}>no match</span>)}
@@ -1437,7 +1505,7 @@ const fmtMs = ns => ns == null ? '--' : (ns / 1e6).toFixed(3);
 const short = h => h ? h.slice(0, 12) : '--';
 
 function SnapshotPanel({ live, running, url }) {
-  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
+  const { connected, snapshots = [], snapCfg, loadedSnap, snapBusy, send, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail } = live;
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState('');
   const [testName, setTestName] = useState('');
@@ -1463,6 +1531,15 @@ function SnapshotPanel({ live, running, url }) {
   };
   const badge = r => ({ warn: C.red, fail: C.red, manual: C.blue, upload: C.amber, test: '#cc88ff' }[r] ?? C.textDim);
   const loadedTest = snapshots.find(s => s.id === loadedSnap && s.kind === 'test');
+  // CLEAR TESTS: every regression-test (TEST) row, after an "are you sure"
+  const tests = snapshots.filter(s => s.kind === 'test');
+  const clearTests = async () => {
+    const n = tests.length;
+    if (!n || !confirm(`Are you sure? This deletes all ${n} regression test snapshot${n === 1 ? '' : 's'} (TEST rows) and can't be undone.\n\n`
+                       + 'Your other snapshots (warnings, SAVE NOW, uploads) stay.')) return;
+    if (detail && tests.some(t => t.id === detail.id)) setDetail(null);
+    await deleteSnapshots(tests.map(t => t.id));
+  };
   return (
     <div style={{...panel,fontSize:'10px',padding:'5px 10px'}}>
       <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
@@ -1486,6 +1563,9 @@ function SnapshotPanel({ live, running, url }) {
                onChange={e => { const f = e.target.files[0]; e.target.value = ''; uploadSnapshot(f); setOpen(true); }} />
         <button style={btn(false)} disabled={!connected} onClick={() => pick.current.click()}
                 title="Add a snapshot saved earlier with ⬇ (.dmesnap)">UPLOAD .dmesnap</button>
+        <button style={btn(false, C.red)} disabled={!connected || !tests.length} onClick={clearTests}
+                title="Delete every regression test snapshot (the TEST rows); asks first. The other snapshots stay">
+          ✕ CLEAR TESTS ({tests.length})</button>
         {loadedSnap && !loadedTest && <span style={{color:C.amber}} title={loadedSnap}>running from snapshot {loadedSnap}</span>}
         {loadedTest && <span style={{color:'#cc88ff'}} title={loadedSnap}>
           regression test {loadedTest.test}: inputs follow its script (the controls do nothing) · RESTART returns to the live sim</span>}

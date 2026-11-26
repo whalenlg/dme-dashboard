@@ -16,6 +16,7 @@ import { Popout } from "./popout.jsx";
 import { usePopouts } from "./popouts.js";
 import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
+import { useSimVersion, versionLabel } from "./version.js";
 import LogList from "./LogList.jsx";
 import { thin, extent, inRange } from "./thin.js";
 import { CursorContext, CursorLine } from "./cursor.jsx";
@@ -842,6 +843,9 @@ const S = {
   title:{fontFamily:"'Orbitron','Courier New',monospace",fontSize:'15px',fontWeight:900,
          color:C.textBright,letterSpacing:'0.08em',textShadow:`0 0 12px ${C.textBright}66`,margin:0},
   sub:{color:'#88bb88',fontSize:'9px',letterSpacing:'0.2em',marginTop:'1px'},
+  version:{color:'#88bb88',fontSize:'10px',fontWeight:400,letterSpacing:'0.05em',marginLeft:'10px',
+           fontFamily:"'Courier New',monospace",border:'1px solid #3a5a3a',borderRadius:'3px',padding:'0 5px',
+           verticalAlign:'middle',cursor:'default',textShadow:'none'},
   tabBar:{background:C.panelBg,borderBottom:`1px solid ${C.border}`,flexShrink:0},
   tabRow:{display:'flex',gap:'2px',padding:'4px 10px 0'},
   tabRowKlr:{display:'flex',gap:'2px',padding:'2px 10px 0',borderTop:`1px solid #0a2a0a`},
@@ -1057,6 +1061,8 @@ export default function DMEDashboard() {
   const [showRunAll, setShowRunAll] = useState(false);
   // (the bridge last used for LIVE, or the default one)
   const [runAllUrl, setRunAllUrl] = useState(liveUrl || DEFAULT_LIVE_URL);
+  // The version in the banner: the bridge's (the simulator's release), else this build's
+  const simVersion = useSimVersion(liveUrl ?? DEFAULT_LIVE_URL);
   if (liveUrl && liveUrl !== runAllUrl) setRunAllUrl(liveUrl);
   const runAll = useRunAll(runAllUrl, showRunAll);
   const runAllRun = runAll.info?.run;
@@ -1531,6 +1537,7 @@ export default function DMEDashboard() {
       </div>
   );
   const scrubber = (t, p) => KLR_TABS.includes(t) ? klrScrubber(p) : dmeScrubber(p);
+  const version = versionLabel(simVersion);
   // Log review: one scrubber for whichever tab is shown
   const logCursor = { idx, setIdx, playing, setPlaying, playSpeed, setPlaySpeed, t: snap.t,
                       klrIdx, setKlrIdx, klrPlaying, setKlrPlaying, klrPlaySpeed, setKlrPlaySpeed };
@@ -1541,7 +1548,8 @@ export default function DMEDashboard() {
       {/* ── HEADER ─────────────────────────────────────────── */}
       <div style={S.hdr}>
         <div>
-          <div style={S.title}>▶ PORSCHE 951 DME AND KLR — SIMULATION DEBUG CONSOLE</div>
+          <div style={S.title}>▶ PORSCHE 951 DME AND KLR — SIMULATION DEBUG CONSOLE
+            <span style={S.version} title={version.tip}>{version.label}</span></div>
           <div style={S.sub}>BOSCH MOTRONIC · INTEL 8051 + 8048 · PORSCHE 944 TURBO</div>
           {logFileName && (
             <div style={{color:'#66ddaa',fontSize:'10px',marginTop:'3px',
@@ -2159,7 +2167,35 @@ function OverviewTab({ snap, iram, isLive, noCat, fuelMsV, fuelNext, load16, wu1
 // ─────────────────────────────────────────────────────────────────
 //  PORTS TAB
 // ─────────────────────────────────────────────────────────────────
+// Hover tooltip for a port pin row: the pin's description lives here
+// rather than inline, so the PORTS grid stays compact.
+function PortPinTooltip({ tip }) {
+  const { pName, b, dirCol, bitVal, x, y } = tip;
+  const W = 340;
+  const left = Math.max(8, Math.min(x + 14, window.innerWidth - W - 8));
+  const below = y + 18;
+  const top = below + 110 > window.innerHeight ? Math.max(8, y - 110) : below;
+  return (
+    <div style={{
+      position:'fixed',left,top,width:W,zIndex:60,pointerEvents:'none',textAlign:'left',
+      background:'#060e06',border:`1px solid ${dirCol}`,borderRadius:'4px',
+      padding:'8px 12px',boxShadow:`0 0 14px ${dirCol}33`,
+    }}>
+      <div style={{display:'flex',gap:'8px',alignItems:'baseline',marginBottom:'4px'}}>
+        <span style={{color:C.textDim,fontSize:'10px'}}>{pName}.{b.bit}</span>
+        <span style={{color:dirCol,fontSize:'12px',fontWeight:'bold'}}>{b.name}</span>
+        <span style={{color:dirCol,fontSize:'9px'}}>{b.dir}</span>
+        {bitVal !== null && (
+          <span style={{marginLeft:'auto',color:C.textBright,fontSize:'11px'}}>= {bitVal}</span>
+        )}
+      </div>
+      <div style={{color:C.textDim,fontSize:'11px',lineHeight:'1.5'}}>{b.desc}</div>
+    </div>
+  );
+}
+
 function PortsTab({ snap, logHasPorts, logLoaded }) {
+  const [pinTip, setPinTip] = useState(null);
   const portVals = { P1: snap?.p1, P2: snap?.p2, P3: snap?.p3 };
   const portDescs = {
     P1: 'ANALOG I/O — injector, ignition, O2 sensor',
@@ -2195,11 +2231,15 @@ function PortsTab({ snap, logHasPorts, logLoaded }) {
                 const bitVal = hasVal ? ((portByte >> b.bit) & 1) : null;
                 const isSet  = bitVal === 1;
                 const dirCol = b.dir==='IN' ? C.blue : b.dir==='OUT' ? '#66ffaa' : C.amber;
+                const showTip = e => setPinTip({pName,b,dirCol,bitVal,x:e.clientX,y:e.clientY});
                 return (
-                  <div key={b.bit} style={{
+                  <div key={b.bit}
+                    onMouseEnter={showTip} onMouseMove={showTip}
+                    onMouseLeave={()=>setPinTip(null)}
+                    style={{
                     display:'grid',
-                    gridTemplateColumns:'24px 24px 80px 1fr',
-                    gap:'6px',alignItems:'center',
+                    gridTemplateColumns:'30px 22px 36px 1fr',
+                    gap:'6px',alignItems:'center',cursor:'help',
                     padding:'4px 6px',borderBottom:`1px solid ${C.border}`,
                     background: isSet ? '#0a1a0a' : 'transparent',
                   }}>
@@ -2226,12 +2266,8 @@ function PortsTab({ snap, logHasPorts, logLoaded }) {
                       background: b.dir==='IN'?'#0a1a2a':b.dir==='OUT'?'#0a1f0a':'#1a1a0a',
                       color: dirCol, textAlign:'center',whiteSpace:'nowrap',
                     }}>{b.dir}</span>
-                    <div>
-                      <span style={{color:isSet?dirCol:'#00cc66',fontSize:'10px',
-                                    fontWeight:'bold'}}>{b.name}</span>
-                      <span style={{color:C.textDim,fontSize:'9px',
-                                    marginLeft:'6px',lineHeight:'1.4'}}>{b.desc}</span>
-                    </div>
+                    <span style={{color:isSet?dirCol:'#00cc66',fontSize:'10px',
+                                  fontWeight:'bold',textAlign:'left'}}>{b.name}</span>
                   </div>
                 );
               })}
@@ -2239,6 +2275,7 @@ function PortsTab({ snap, logHasPorts, logLoaded }) {
           );
         })}
       </div>
+      {pinTip && <PortPinTooltip tip={pinTip} />}
     </div>
   );
 }
@@ -2255,15 +2292,15 @@ const IRAM_SUBTABS = [
   { key:'flags',   label:'FLAGS',      groups: ['flags'] },
   { key:'rpm',     label:'RPM/CRANK',  groups: ['rpm','timer'] },
   { key:'enrich',  label:'ENRICH/ISV', groups: ['enrich','isv'] },
-  { key:'sys',     label:'SYSTEM',     groups: ['sys','reg'] },
-  { key:'misc',    label:'WORK AREA',  groups: ['misc'] },
 ];
 
 function IRAMTab({ iram, tooltip, setTooltip }) {
   const [sub, setSub] = useState('all');
   const subDef  = IRAM_SUBTABS.find(t=>t.key===sub) || IRAM_SUBTABS[0];
+  // FLAGS: only the bit-flag bytes 20h-25h; 26h-29h are reserved/diag
+  // bytes, not flags, so their bits are left out
   const entries = subDef.groups
-    ? IRAM_MAP.filter(e => subDef.groups.includes(e.g))
+    ? IRAM_MAP.filter(e => subDef.groups.includes(e.g) && !(sub === 'flags' && e.a >= 0x26))
     : IRAM_MAP;
 
   const isAll = sub === 'all';

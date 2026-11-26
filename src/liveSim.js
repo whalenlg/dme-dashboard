@@ -372,6 +372,12 @@ export function useLiveSim(url, onLogLines) {
     return !!r;
   }, [snapCall]);
   const deleteSnapshot = useCallback(id => snapCall(snapUrl(id), { method: 'DELETE' }, `Couldn't delete snapshot ${id}`), [snapCall]);
+  // Several at once (CLEAR TESTS): one DELETE each, in turn; the count that went
+  const deleteSnapshots = useCallback(async ids => {
+    let n = 0;
+    for (const id of ids) if (await snapCall(snapUrl(id), { method: 'DELETE' }, `Couldn't delete snapshot ${id}`)) n++;
+    return n;
+  }, [snapCall]);
   const snapshotDetail = useCallback(async id => {
     const r = await snapCall(snapUrl(id), {}, `Couldn't read snapshot ${id}`);
     return r ? r.json() : null;
@@ -393,5 +399,5 @@ export function useLiveSim(url, onLogLines) {
   }, [snapCall]);
 
   return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom, setupsVer,
-           snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, downloadSnapshot, uploadSnapshot, snapshotDetail };
+           snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
