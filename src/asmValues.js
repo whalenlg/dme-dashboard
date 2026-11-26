@@ -225,7 +225,9 @@ export function cameFrom(cpu, trace, listing) {
 //  instruction was fetched, i.e. before it ran (see the testbench):
 //    DME ctx0 = A B PSW SP DPH DPL [iram @ operand byte 1] [@ byte 2]
 //        ctx1 = R0..R7 (active bank), ctx2 = @R0 @R1 code[A+DPTR] code[A+PC+1]
-//               [byte holding the bit at operand byte 1] 0 0 0
+//               [byte holding the bit at operand byte 1] [SFR bit byte] [01: SFR bit byte there] 0
+//        (SFR bit byte: for a bit address 80-FF, that SFR as the CPU reads it,
+//         e.g. P3 with its pins: P3.4 = T0, the CAT input; older sims send 0 0)
 //    KLR ctx0 = A PSW T P1 P2 {F0,F1} @R0 @R1, ctx1 = R0..R7 (active bank)
 //  traceState turns one into the { ram, regs } the operand decoders take;
 //  ram holds only what was captured, so anything else reads as '--'.
@@ -243,7 +245,7 @@ export function traceState(cpu, ctx, row) {
   const r = bytesOf(ctx.c1, 8);
   const ram = {};
   if (cpu === 'dme') {
-    const [ri0, ri1, mdptr, mpc, bitByte] = bytesOf(ctx.c2, 5);
+    const [ri0, ri1, mdptr, mpc, bitByte, sfrByte, sfrOk] = bytesOf(ctx.c2, 7);
     const regs = { acc: a0, b: a1, psw: a2, sp: a3, dptr: (a4 << 8) | a5, mdptr, mpc };
     // Direct operands: the instruction's 2nd / 3rd bytes are the addresses
     const ib = (row?.bytes ?? '').split(/\s+/).filter(b => /^[0-9a-f]{1,2}$/i.test(b)).map(b => parseInt(b, 16));
@@ -252,6 +254,11 @@ export function traceState(cpu, ctx, row) {
     // Bit operand (byte 2 is a bit address 00-7F): the byte holding it
     if (/0x[0-9a-f]{2}\.[0-7]/i.test(row?.num ?? '') && ib[1] != null && ib[1] < 0x80 && !isNaN(bitByte))
       ram[0x20 + (ib[1] >> 3)] = bitByte;
+    // SFR bit operand (80-FF): the SFR byte the CPU read, pins and all
+    if (sfrOk === 1 && /0x[0-9a-f]{2}\.[0-7]/i.test(row?.num ?? '') && ib[1] != null && ib[1] >= 0x80) {
+      const n = SFR[ib[1] & 0xf8];
+      if (n && regs[n] == null) regs[n] = sfrByte;
+    }
     if (r[0] < 0x80) ram[r[0]] = ri0;
     if (r[1] < 0x80) ram[r[1]] = ri1;
     const bank = (a2 >> 3) & 3;
