@@ -1190,6 +1190,8 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
     const a = parseInt(q, 16);
     if (!isNaN(a)) setCenter(a);
   };
+  // ◀ ▶ are grayed out until the search has something to step through
+  const stepBtn = matches.length ? btn(false) : {...btn(false), cursor:'not-allowed', opacity:0.4};
   // Clicking a label in an operand goes to where it is defined, with the
   // search set to it so ◀ ▶ step through the places that use it
   const goLabel = name => {
@@ -1223,8 +1225,10 @@ function AsmPanel({ cpu, name, listing, pc, bps, conds = {}, reason, trace, trac
                  placeholder="label or hex" style={{...inp,width:'110px'}}
                  title="Type part of a label to highlight every row that defines or uses one that matches (labels and operands). Enter goes to the next match, Shift+Enter the previous one; or type a hex address" />
           <button style={btn(false)} onClick={() => doJump()}>GO</button>
-          <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(-1)} title="Previous match (Shift+Enter)">◀</button>
-          <button style={btn(false)} disabled={!matches.length} onClick={() => doJump(1)} title="Next match (Enter)">▶</button>
+          <button style={stepBtn} disabled={!matches.length} onClick={() => doJump(-1)}
+                  title={matches.length ? 'Previous match (Shift+Enter)' : 'Type a label to search first'}>◀</button>
+          <button style={stepBtn} disabled={!matches.length} onClick={() => doJump(1)}
+                  title={matches.length ? 'Next match (Enter)' : 'Type a label to search first'}>▶</button>
           {q && (matches.length
             ? <span style={{color:C.amber,alignSelf:'center',minWidth:'6ch'}}>{onMatch ? `${hit + 1}/${matches.length}` : `${matches.length} match${matches.length > 1 ? 'es' : ''}`}</span>
             : isNaN(parseInt(q, 16)) && <span style={{color:C.red,alignSelf:'center'}}>no match</span>)}
