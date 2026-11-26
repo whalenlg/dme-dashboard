@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────
-//  FOOTER — copyright and credits, at the bottom of the main page and
-//  of every pop-out window
+//  FOOTER — copyright and credits, at the bottom of the main page only
+//  (pop-out windows leave it out)
 // ─────────────────────────────────────────────────────────────────
 
 const LINKS = [
