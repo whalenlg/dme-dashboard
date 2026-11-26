@@ -38,8 +38,13 @@ const INPUTS = [
   { k:'coolant',   label:'COOLANT (ch3)', hint:'31 ≈85°C/184°F default · 68 ≈48°C · C0 ≈−2°C · 00 shorted' },
   { k:'airtemp',   label:'AIR TEMP (ch2)', hint:'9E ≈20°C default · 50 ≈62°C · 00 shorted' },
   { k:'battery',   label:'BATTERY (ch1)', hint:'V ≈ raw×0.0526+2.13', volts:true },
-  { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00], names:['under 1000 m','over 1000 m'],
-    hint:'ch4 raw F8 / 00, as TEST_IDLE_HIGH_ALT' },
+  // ch4 is the altitude switch plus the region coding plug. The ROM looks
+  // 14h up in the 4-band table at 1296h (edges 2E / 80 / C8) and writes
+  // 25h.7 (high altitude) and 25h.6 (REGION_CODE, 0 = US, 1 = RoW). The
+  // RoW plug adds a 1.8k resistor, which puts ch4 at ~3V (99) at sea level.
+  { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00,0x99,0x56],
+    names:['US under 1000 m','US over 1000 m','RoW under 1000 m','RoW over 1000 m'],
+    hint:'ch4 raw F8 ≈4.9V / 00 0V (US, as TEST_IDLE_HIGH_ALT) · 99 ≈3.0V / 56 ≈1.7V (RoW plug, 1.8k) → 25h.7:6 = 00 / 01 / 10 / 11' },
   { k:'ac',        label:'AC (T1)',      positions:[0,1], names:['off','on'],
     hint:'DME T1 (P3.5): AC compressor; the closed-loop model adds its load and the ISV should catch it' },
   { k:'cat',       label:'CAT (T0)',     positions:[0,1], names:['fitted','not fitted'],
