@@ -1,7 +1,7 @@
 import { Footer } from "./footer.jsx";
 import { RomName } from "./romEdits.jsx";
 import { shownName } from "./romNames.js";
-import { useState, useCallback, useMemo, useEffect, useRef, memo, startTransition, useContext } from "react";
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, memo, startTransition, useContext } from "react";
 import {
   LineChart, ComposedChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine, DefaultTooltipContent
@@ -920,6 +920,45 @@ const NO_ROWS = [];
 // The user manual, kept with the simulator (944turbo_dme_klr docs/USER_MANUAL.md)
 const MANUAL_URL = 'https://github.com/whalenlg/944turbo_dme_klr/blob/main/docs/USER_MANUAL.md';
 
+// The DME values at one scrubber position (log review has one; each live
+// window has its own, see LiveTabWindow)
+function dmeAt(snapshots, idx) {
+  const snap = snapshots[idx] || { iram:{} };
+  // T0 (P3.4) from the latest snapshot that logged the ports (the [DS]
+  // lines; STATUS snapshots in between carry none): 1 = no cat
+  let noCat = false;
+  for (let i = idx; i >= 0; i--) {
+    const p3 = snapshots[i]?.p3;
+    if (p3 != null) { noCat = ((p3 >> 4) & 1) === 1; break; }
+  }
+  // Merged iram: current snap + fill gaps from nearest prior DS snapshot
+  let iram = snap.iram ?? {};
+  if (snapshots.length) {
+    const base = {};
+    for (let i = Math.min(idx, snapshots.length - 1); i >= 0; i--) {
+      const s = snapshots[i];
+      if (s && !s.raw?.includes('[STATUS]')) { Object.assign(base, s.iram); break; }
+    }
+    // (STATUS values take priority)
+    iram = { ...base, ...(snap.iram ?? {}) };
+  }
+  return {
+    snap, noCat, iram,
+    fuelMsV:  fuelMs(snap),
+    fuelNext: (((iram[0x4F]||0)<<8)|(iram[0x4E]||0))*2/1000,
+    load16:   ((iram[0x46]||0)<<8)|(iram[0x47]||0),
+    wu16:     ((iram[0x58]||0)<<8)|(iram[0x59]||0),
+    lmbd16:   ((iram[0x1B]||0)<<8)|(iram[0x1C]||0),
+  };
+}
+// The snapshot nearest time t
+function nearestIdx(sn, t) {
+  let best = 0;
+  for (let i = 1; i < sn.length; i++)
+    if (Math.abs(sn[i].t - t) < Math.abs(sn[best].t - t)) best = i;
+  return best;
+}
+
 export default function DMEDashboard() {
   const [logFileName, setLogFileName] = useState('');
   const [data, setData]         = useState({ snapshots:[], phases:[], expect:[] });
@@ -940,15 +979,12 @@ export default function DMEDashboard() {
     const v = new URLSearchParams(window.location.search).get('live');
     return v === null ? null : (v && v !== '1' ? v : DEFAULT_LIVE_URL);
   });
-  const [follow, setFollow] = useState(true);
   // Time-axis zoom shared by DME CHARTS, KLR CHARTS and TIMELINE ([t0, t1] or null = all)
   const [zoom, setZoom] = useState(null);
   // The RPM-axis chart tabs' zoom ([rpm0, rpm1]), apart from the time zoom
   const [rpmZoom, setRpmZoom] = useState(null);
   const [rpmMapZoom, setRpmMapZoom] = useState(null);   // DME RPM MAPS: rpm range
   const [klrRpmMapZoom, setKlrRpmMapZoom] = useState(null);   // KLR RPM MAPS: rpm range
-  const followRef = useRef(follow);
-  useEffect(() => { followRef.current = follow; }, [follow]);
   // Live mode: each tab (and each code debugger) opens in a window of its own
   const popouts = usePopouts();
   const liveTabs = liveUrl ? ALL_TABS.filter(t => popouts.wins[t]) : [];
@@ -966,23 +1002,18 @@ export default function DMEDashboard() {
       liveParsers.current = { dme: dmeLogParser(LIVE_MAX), klr: klrLogParser(LIVE_MAX) };
     liveParsers.current.dme.push(lines);
     liveParsers.current.klr.push(lines);
-    const { dropped: dmeDropped, ...dme } = liveParsers.current.dme.result();
-    const { dropped: klrDropped, ...klr } = liveParsers.current.klr.result();
+    const { dropped: _dd, ...dme } = liveParsers.current.dme.result();
+    const { dropped: _kd, ...klr } = liveParsers.current.klr.result();
     // A transition: React renders the new data in short slices that the
     // browser can interrupt, instead of one long frame per update
     startTransition(() => {
       if (fresh) { setZoom(null); setRpmZoom(null); setRpmMapZoom(null); setKlrRpmMapZoom(null); }
       setData(d => d.snapshots === dme.snapshots && d.phases === dme.phases && d.lookupsVer === dme.lookupsVer && d.klrLookupsVer === dme.klrLookupsVer ? d : dme);
       setKlrData(k => k.snapshots === klr.snapshots && k.phases === klr.phases && k.status === klr.status && k.sparks === klr.sparks ? k : klr);
-      // FOLLOW keeps both the DME and the KLR playback cursors on the newest data
-      if (followRef.current) {
-        setIdx(Math.max(0, dme.snapshots.length - 1));
-        setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
-      } else {
-        // Keep the cursors on the same entries when old ones are trimmed
-        if (dmeDropped) setIdx(i => Math.max(0, i - dmeDropped));
-        if (klrDropped) setKlrIdx(i => Math.max(0, i - klrDropped));
-      }
+      // Live: these cursors stay on the newest data (what a window with
+      // FOLLOW on shows); each window keeps its own cursor for FOLLOW off
+      setIdx(Math.max(0, dme.snapshots.length - 1));
+      setKlrIdx(Math.max(0, (klr.phases?.length ?? 0) - 1));
     });
   }, []);
   const live = useLiveSim(liveUrl, handleLiveLines);
@@ -1140,16 +1171,9 @@ export default function DMEDashboard() {
     openLogFile(file);
   }, [openLogFile]);
 
-  const snap     = data.snapshots[idx] || { iram:{} };
-  // T0 (P3.4) from the latest snapshot that logged the ports (the [DS]
-  // lines; STATUS snapshots in between carry none): 1 = no cat
-  const noCat = useMemo(() => {
-    for (let i = idx; i >= 0; i--) {
-      const p3 = data.snapshots[i]?.p3;
-      if (p3 != null) return ((p3 >> 4) & 1) === 1;
-    }
-    return false;
-  }, [data.snapshots, idx]);
+  // The log scrubber's position (and, live, the newest data)
+  const logView = useMemo(() => dmeAt(data.snapshots, idx), [data.snapshots, idx]);
+  const snap = logView.snap;
   // Move the scrubber to the snapshot nearest time t (Timeline tab clicks)
   // Stable (reads the snapshots through a ref) so it doesn't re-render the
   // memoized Timeline on every live update
@@ -1158,32 +1182,9 @@ export default function DMEDashboard() {
   const seekTo = useCallback(t => {
     const sn = snapsRef.current;
     if (!sn.length) return;
-    let best = 0;
-    for (let i = 1; i < sn.length; i++)
-      if (Math.abs(sn[i].t - t) < Math.abs(sn[best].t - t)) best = i;
     setPlaying(false);
-    setIdx(best);
+    setIdx(nearestIdx(sn, t));
   }, []);
-  // Build merged iram: current snap + fill gaps from nearest prior DS snapshot
-  const iram = useMemo(() => {
-    if (!data.snapshots?.length) return snap.iram ?? {};
-    const base = {};
-    // Find most recent DS snapshot at or before current index
-    for (let i = Math.min(idx, data.snapshots.length - 1); i >= 0; i--) {
-      const s = data.snapshots[i];
-      if (s && !s.raw?.includes('[STATUS]')) {
-        Object.assign(base, s.iram);
-        break;
-      }
-    }
-    // Overlay current snap (STATUS values take priority)
-    return { ...base, ...(snap.iram ?? {}) };
-  }, [data.snapshots, idx, snap]);
-  const fuelMsV  = fuelMs(snap);
-  const fuelNext = (((iram[0x4F]||0)<<8)|(iram[0x4E]||0))*2/1000;
-  const load16   = ((iram[0x46]||0)<<8)|(iram[0x47]||0);
-  const wu16     = ((iram[0x58]||0)<<8)|(iram[0x59]||0);
-  const lmbd16   = ((iram[0x1B]||0)<<8)|(iram[0x1C]||0);
 
   // Only the chart tabs read these, and on long runs they cost a pass
   // over every snapshot per update, so they are skipped on other tabs
@@ -1379,7 +1380,11 @@ export default function DMEDashboard() {
   };
 
   // One tab's content: below the header (log), or in its own window (live)
-  const renderTab = t => (
+  // v: the scrubber position it shows (dmeAt's values, klrIdx, seekTo, and
+  // follow: a live window on the newest data)
+  const renderTab = (t, v) => {
+    const { snap, iram, noCat, fuelMsV, fuelNext, load16, wu16, lmbd16, klrIdx, seekTo } = v;
+    return (
     <>
     {t==='overview' && <OverviewTab snap={snap} iram={iram} isLive={!!liveUrl} noCat={noCat}
       fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
@@ -1388,7 +1393,7 @@ export default function DMEDashboard() {
         logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
         logLoaded={data.snapshots.length>0} />}
     {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
-    <CursorContext.Provider value={follow && liveUrl ? feed.t : snap.t}>
+    <CursorContext.Provider value={v.follow ? feed.t : snap.t}>
       {t==='diag'     && <DiagTab iram={iram} snap={snap} snapshots={feed.data.snapshots}
           onSeek={seekTo} range={zoom} setRange={setZoom} live={liveUrl ? live : null}
           logRom={liveUrl ? null : feed.data.rom?.dme} />}
@@ -1423,16 +1428,18 @@ export default function DMEDashboard() {
     {t==='klr_iram'   && <KLRIRAMTab  klrData={klrData} klrIdx={klrIdx} />}
     {t==='klr_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
         range={zoom} setRange={setZoom}
-        currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
+        currentT={v.follow ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
     {t==='klr_rpm_charts' && <KLRChartsTab klrData={feed.klrData} dmeSnaps={feed.data.snapshots} expect={feed.data.expect}
         xRpm range={rpmZoom} setRange={setRpmZoom}
-        currentT={follow && liveUrl ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
+        currentT={v.follow ? feed.klrT : klrData.phases?.[klrIdx]?.t} />}
     {t==='klr_phase'  && <KLRPhaseTab klrData={klrData} klrIdx={klrIdx} />}
     {t==='klr_diag'   && <KLRDiagTab  klrData={klrData} klrIdx={klrIdx} />}
     </>
-  );
+    );
+  };
   // The playback scrubber for a tab: KLR tabs step the KLR phases
-  const dmeScrubber = () => data.snapshots.length > 0 && (
+  // p: the cursor it moves (the log's, or a live window's own)
+  const dmeScrubber = ({ idx, setIdx, playing, setPlaying, playSpeed, setPlaySpeed, t }) => data.snapshots.length > 0 && (
       <div style={S.scrubber}>
         {/* Play / Pause */}
         <button onClick={()=>setPlaying(p=>!p)}
@@ -1475,7 +1482,7 @@ export default function DMEDashboard() {
         <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",
                       fontSize:'14px',whiteSpace:'nowrap',minWidth:'90px',textAlign:'right',
                       textShadow:`0 0 8px ${C.textBright}66`}}>
-          t={snap.t ?? '---'} ms
+          t={t ?? '---'} ms
         </span>
 
         {/* Snapshot counter */}
@@ -1484,7 +1491,7 @@ export default function DMEDashboard() {
         </span>
       </div>
   );
-  const klrScrubber = () => klrData.phases?.length > 0 && (
+  const klrScrubber = ({ klrIdx, setKlrIdx, klrPlaying, setKlrPlaying, klrPlaySpeed, setKlrPlaySpeed }) => klrData.phases?.length > 0 && (
       <div style={{...S.scrubber, borderTop:`1px solid #004433`, background:'#030c08'}}>
         <span style={{color:'#44aaff',fontSize:'9px',whiteSpace:'nowrap',letterSpacing:'.05em'}}>KLR</span>
         <button onClick={()=>setKlrPlaying(p=>!p)}
@@ -1523,7 +1530,11 @@ export default function DMEDashboard() {
         </span>
       </div>
   );
-  const scrubber = t => KLR_TABS.includes(t) ? klrScrubber() : dmeScrubber();
+  const scrubber = (t, p) => KLR_TABS.includes(t) ? klrScrubber(p) : dmeScrubber(p);
+  // Log review: one scrubber for whichever tab is shown
+  const logCursor = { idx, setIdx, playing, setPlaying, playSpeed, setPlaySpeed, t: snap.t,
+                      klrIdx, setKlrIdx, klrPlaying, setKlrPlaying, klrPlaySpeed, setKlrPlaySpeed };
+  const logTabView = { ...logView, klrIdx, seekTo, follow: false };
 
   return (
     <div style={S.root}>
@@ -1598,25 +1609,26 @@ export default function DMEDashboard() {
 
       {/* ── TIME SCRUBBER + PLAYBACK (log): just under the tabs, and it
              stays at the top of the window as the page scrolls ── */}
-      {!liveUrl && <div style={{position:'sticky',top:0,zIndex:20}}>{scrubber(tab)}</div>}
+      {!liveUrl && <div style={{position:'sticky',top:0,zIndex:20}}>{scrubber(tab, logCursor)}</div>}
 
       {/* ── TAB CONTENT ────────────────────────────────────── */}
       <div style={S.content}>
-        {liveUrl && <LivePanel live={live} url={liveUrl} follow={follow} setFollow={setFollow}
+        {liveUrl && <LivePanel live={live} url={liveUrl}
                                series={liveSer} mem={liveMem} popouts={popouts}
                                onClose={()=>setLiveUrl(null)} />}
-        {!liveUrl && renderTab(tab)}
+        {!liveUrl && <Rendered render={renderTab} args={[tab, logTabView]} />}
       </div>
       <Footer />
 
 
       {/* ── LIVE: each open tab in its own window ───────────── */}
+      {/* (each with its own FOLLOW and scrubber: see LiveTabWindow) */}
       {liveTabs.map(t => (
-        <Popout key={t} entry={popouts.wins[t]} title={TAB_LABEL[t]}
-                sub={`live simulation${follow ? '' : ' · FOLLOW off'}`} header={scrubber(t)}>
-          {renderTab(t)}
+        <LiveTabWindow key={t} entry={popouts.wins[t]} title={TAB_LABEL[t]} klr={KLR_TABS.includes(t)}
+                       snapshots={data.snapshots} phases={klrData.phases}
+                       renderTab={v => renderTab(t, v)} scrubber={p => scrubber(t, p)}>
           {t === 'iram' && tooltip && <IRAMTooltip tip={tooltip} />}
-        </Popout>
+        </LiveTabWindow>
       ))}
 
       {/* ── LOG INPUT MODAL ─────────────────────────────────── */}
@@ -1678,6 +1690,106 @@ export default function DMEDashboard() {
       {/* ── IRAM TOOLTIP ────────────────────────────────────── */}
       {!liveUrl && tooltip && <IRAMTooltip tip={tooltip} />}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  LIVE TAB WINDOW
+//  A tab in a pop-out window of its own, with its own FOLLOW checkbox:
+//  on, the window shows the newest data; off (or once its scrubber,
+//  playback or a click on a chart moves it), it stays where it is while
+//  the sim runs on, apart from the other windows. Its position is held
+//  as the snapshot (and KLR phase) itself, so it stays on the same entry
+//  as new ones arrive and old ones are trimmed.
+// ─────────────────────────────────────────────────────────────────
+// Draws render(...args) (a render function of the dashboard's, handed
+// callbacks that read refs in their handlers only)
+function Rendered({ render, args }) { return render(...args); }
+
+function LiveTabWindow({ entry, title, klr, snapshots, phases = NO_ROWS, renderTab, scrubber, children }) {
+  const [follow, setFollow] = useState(true);
+  const [pin, setPin] = useState(null);         // DME snapshot shown with FOLLOW off
+  const [klrPin, setKlrPin] = useState(null);   // KLR phase shown with FOLLOW off
+  const [playing, setPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState(100);
+  const [klrPlaying, setKlrPlaying] = useState(false);
+  const [klrPlaySpeed, setKlrPlaySpeed] = useState(100);
+  // (a pinned entry trimmed off the front: the oldest one kept)
+  const idx = follow ? Math.max(0, snapshots.length - 1) : Math.max(0, snapshots.indexOf(pin));
+  const klrIdx = follow ? Math.max(0, phases.length - 1) : Math.max(0, phases.indexOf(klrPin));
+  // (for the handlers and the playback timers)
+  const ref = useRef(null);
+  useLayoutEffect(() => { ref.current = { snapshots, phases, idx, klrIdx, follow }; });
+
+  // Leaving FOLLOW keeps both cursors where they are
+  const unfollow = useCallback(() => {
+    const c = ref.current;
+    if (!c.follow) return;
+    setPin(c.snapshots[c.idx] ?? null);
+    setKlrPin(c.phases[c.klrIdx] ?? null);
+    setFollow(false);
+  }, []);
+  const setFollowOn = on => {
+    if (!on) { unfollow(); return; }
+    setPlaying(false); setKlrPlaying(false); setFollow(true);
+  };
+  // Scrubber moves (a value or an updater, as with useState)
+  const setIdx = useCallback(v => {
+    const c = ref.current, n = typeof v === 'function' ? v(c.idx) : v;
+    unfollow();
+    setPin(c.snapshots[n] ?? null);
+  }, [unfollow]);
+  const setKlrIdx = useCallback(v => {
+    const c = ref.current, n = typeof v === 'function' ? v(c.klrIdx) : v;
+    unfollow();
+    setKlrPin(c.phases[n] ?? null);
+  }, [unfollow]);
+  const play = useCallback(p => { unfollow(); setPlaying(p); }, [unfollow]);
+  const klrPlay = useCallback(p => { unfollow(); setKlrPlaying(p); }, [unfollow]);
+  // Clicks on the charts and the timeline (stable for the memoized ones)
+  const seekTo = useCallback(t => {
+    const sn = ref.current.snapshots;
+    if (!sn.length) return;
+    setPlaying(false);
+    setIdx(nearestIdx(sn, t));
+  }, [setIdx]);
+
+  // Playback: steps this window's own cursor, to the newest entry at most
+  useEffect(() => {
+    if (!playing) return;
+    const id = setInterval(() => {
+      const c = ref.current;
+      if (c.idx >= c.snapshots.length - 1) setPlaying(false);
+      else setPin(c.snapshots[c.idx + 1]);
+    }, playSpeed);
+    return () => clearInterval(id);
+  }, [playing, playSpeed]);
+  useEffect(() => {
+    if (!klrPlaying) return;
+    const id = setInterval(() => {
+      const c = ref.current;
+      if (c.klrIdx >= c.phases.length - 1) setKlrPlaying(false);
+      else setKlrPin(c.phases[c.klrIdx + 1]);
+    }, klrPlaySpeed);
+    return () => clearInterval(id);
+  }, [klrPlaying, klrPlaySpeed]);
+
+  const view = useMemo(() => dmeAt(snapshots, idx), [snapshots, idx]);
+  const cursor = { idx, setIdx, playing, setPlaying: play, playSpeed, setPlaySpeed, t: view.snap.t,
+                   klrIdx, setKlrIdx, klrPlaying, setKlrPlaying: klrPlay, klrPlaySpeed, setKlrPlaySpeed };
+  const tools = (
+    <label style={{color: follow ? C.textBright : C.amber,fontSize:'10px',cursor:'pointer',whiteSpace:'nowrap'}}
+           title={follow ? 'Showing the newest data. Uncheck (or move the scrubber) to hold this window where it is'
+                         : 'Held where it is while the sim runs on. Check to jump to the newest data and follow it'}>
+      <input type="checkbox" checked={follow} onChange={e => setFollowOn(e.target.checked)} /> FOLLOW
+    </label>
+  );
+  return (
+    <Popout entry={entry} title={title} sub={`live simulation${follow ? '' : ` · held at t=${(klr ? phases[klrIdx]?.t : view.snap.t) ?? '---'} ms`}`}
+            tools={tools} header={<Rendered render={scrubber} args={[cursor]} />}>
+      <Rendered render={renderTab} args={[{ ...view, klrIdx, seekTo, follow }]} />
+      {children}
+    </Popout>
   );
 }
 
