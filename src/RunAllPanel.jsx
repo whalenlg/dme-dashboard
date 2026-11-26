@@ -3,6 +3,7 @@ import RegressHosts from "./RegressHosts.jsx";
 import HostTest from "./HostTest.jsx";
 import InstallTestsPanel from "./InstallTestsPanel.jsx";
 import RomVariants from "./RomVariants.jsx";
+import { NewSetupForm } from "./newSetup.jsx";
 import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -135,6 +136,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [fqs, setFqs] = useState(null);              // null = closed; {loading} | {text, at, ...} | {error}
   const [fqsRom, setFqsRom] = useState(null);        // the FQS analysis' ROM folder; null = the picked pair's
   const [variants, setVariants] = useState(false);    // the ROM VARIANTS view is open
+  const [newSetup, setNewSetup] = useState(false);    // the NEW SETUP form is open
   const [busy, setBusy] = useState(null);
   const hostState = useRegressHosts(url, true);
   const [useHosts, setUseHosts] = useState(true);
@@ -433,7 +435,20 @@ export default function RunAllPanel({ url, state, onClose }) {
           <div style={ttl}>Options{locked && <span style={{color:C.amber,letterSpacing:0,textTransform:'none'}}>(fixed while a run is going)</span>}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:'10px 18px'}}>
             {romInfo && <div style={{gridColumn:'1 / -1'}}>
-              <div style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em',marginBottom:'4px'}}>ROM IMAGES (EVERY TEST)</div>
+              <div style={{display:'flex',gap:'10px',alignItems:'center',marginBottom:'4px'}}>
+                <span style={{color:C.textDim,fontSize:'9px',letterSpacing:'.15em'}}>ROM IMAGES (EVERY TEST)</span>
+                <button style={{...btn(newSetup ? 'p' : 's', locked), padding:'2px 8px', fontSize:'9px'}}
+                        disabled={locked} onClick={() => setNewSetup(v => !v)}
+                        title="Make a setup: name a DME + KLR pair. It is listed here as <name> (setup), and under SETUP in the live ROM IMAGES row">＋ NEW SETUP</button>
+              </div>
+              {newSetup && !locked && <NewSetupForm url={url} start={romSel} style={{marginBottom:'6px'}}
+                onCancel={() => setNewSetup(false)}
+                onSaved={(name, list) => {
+                  setNewSetup(false);
+                  const x = list?.find?.(y => y.name === name);
+                  if (x) setRom({ dme: x.dme, klr: x.klr });   // run on it next
+                  refresh?.();
+                }} />}
               {!lite && presets.length > 0 && <div style={{display:'flex',flexWrap:'wrap',gap:'4px 16px',alignItems:'center',marginBottom:'5px'}}>
                 <span style={{color:C.textDim,fontSize:'10px'}} title="Each test runs once per ticked pair and simulator (run_all.sh --roms), each pair in its own folder">ROM pairs:</span>
                 {presets.map(p => {
@@ -469,7 +484,7 @@ export default function RunAllPanel({ url, state, onClose }) {
                                        const p = presets.find(x => x.dme === n.dme && x.klr === n.klr);
                                        if (p && !lite) { setRom(null); setPairs(new Set([p.folder])); } else setRom(n); }}>
                       {(romInfo.images[cpu] ?? []).map(i => (
-                        <option key={i.name} value={i.name}>{i.name}{i.src === 'upload' ? ' (uploaded)' : ''}{i.name === romInfo.default[cpu] ? ' (default)' : ''}</option>
+                        <option key={i.name} value={i.name}>{i.name}{i.saved ? ' (edited)' : i.src === 'upload' ? ' (uploaded)' : ''}{i.name === romInfo.default[cpu] ? ' (default)' : ''}</option>
                       ))}
                     </select>
                   </label>

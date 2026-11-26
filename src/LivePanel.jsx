@@ -9,6 +9,7 @@ import { MemSearch } from "./memSearch.jsx";
 import { Popout } from "./popout.jsx";
 import RomCompare from "./RomCompare.jsx";
 import { RomName, EditsList } from "./romEdits.jsx";
+import { NewSetupForm } from "./newSetup.jsx";
 import { MODIFIED, downloadBin } from "./romNames.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -257,49 +258,18 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
   const loadSetups = () => url && fetch(`${url}/setups`).then(r => r.ok ? r.json() : []).catch(() => []).then(setSetups);
   useEffect(() => { loadSetups(); }, [url, roms?.dme, roms?.klr, setupsVer]);   // eslint-disable-line react-hooks/exhaustive-deps
   const chosen = setups.find(x => x.name === setupSel);
-  const setupCall = async (path, method, body) => {
+  const setupCall = async (path, method) => {
     setSetupErr(null);
     try {
-      // (no JSON content type, so the bridge gets no CORS preflight)
-      const r = await fetch(`${url}${path}`, body === undefined ? { method } : { method, body: JSON.stringify(body) });
+      const r = await fetch(`${url}${path}`, { method });
       if (!r.ok) setSetupErr((await r.text()) || `HTTP ${r.status}`);
       return r.ok;
     } catch { setSetupErr(`can't reach the simulator bridge at ${url}`); return false; }
   };
-  // NEW SETUP: a name and a DME + KLR image from the bridge's image lists
-  // (bin_images/<cpu>, the uploads and the images saved from edits; the sim
-  // loads .mem files, and unsaved edits aren't a file to keep)
-  const [adding, setAdding] = useState(null);   // { name, dme, klr } while the form is open
-  const [images, setImages] = useState({ dme: [], klr: [] });
-  const openNew = async () => {
-    setSetupErr(null);
-    const list = async cpu => {
-      try {
-        const r = await fetch(`${url}/compare/${cpu}/images`);
-        return r.ok ? (await r.json()).filter(i => /\.mem$/i.test(i.name) && i.src !== 'edited') : [];
-      } catch { return []; }
-    };
-    const [dme, klr] = await Promise.all([list('dme'), list('klr')]);
-    setImages({ dme, klr });
-    // start from the images loaded now (or the chosen setup's) when listed
-    const start = cpu => {
-      const want = [chosen?.[cpu], roms?.[cpu] && roms[cpu].split(/[\\/]/).pop()];
-      return want.find(n => n && (cpu === 'dme' ? dme : klr).some(i => i.name === n))
-        ?? (cpu === 'dme' ? dme : klr)[0]?.name ?? '';
-    };
-    setAdding({ name: '', dme: start('dme'), klr: start('klr') });
-  };
-  const newName = adding?.name.trim() ?? '';
-  const replaces = setups.find(x => x.name === newName);
-  const saveNew = async () => {
-    if (!newName || !adding.dme || !adding.klr || replaces?.builtin) return;
-    if (await setupCall('/setups', 'POST', { name: newName, dme: adding.dme, klr: adding.klr })) {
-      setAdding(null);
-      await loadSetups();
-      setSetupSel(newName);
-    }
-  };
-  const imgLabel = i => `${i.name}${i.saved ? ' (edited)' : i.src === 'upload' ? ' (uploaded)' : ''}`;
+  // ＋ NEW: name a DME + KLR pair (newSetup.jsx), starting from the
+  // chosen setup's images or the ones loaded now
+  const [adding, setAdding] = useState(false);
+  const openNew = () => { setSetupErr(null); setAdding(true); };
   return (
     <div style={{...panel,display:'flex',gap:'14px',alignItems:'center',flexWrap:'wrap',fontSize:'10px',padding:'5px 10px'}}>
       <span style={{...title,marginBottom:0}}>ROM IMAGES</span>
@@ -348,7 +318,7 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
             {x.name}{x.builtin ? '' : ' (saved)'} · {x.dme} + {x.klr}{x.ok ? '' : ' (image missing)'}</option>)}
           <option value={'\u0000new'}>＋ New setup…</option>
         </select>
-        <button style={btn(!!adding, C.textBright)} onClick={() => adding ? setAdding(null) : openNew()}
+        <button style={btn(!!adding, C.textBright)} onClick={() => adding ? setAdding(false) : openNew()}
                 title="Make a new setup: name it and pick the DME and KLR images">＋ NEW</button>
         <button style={{...btn(false), cursor: paused && chosen ? 'pointer' : 'not-allowed'}} disabled={!paused || !chosen?.ok}
                 onClick={() => setupCall(`/setups/${encodeURIComponent(setupSel)}/load${reset ? '?reset=1' : ''}`, 'POST')}
@@ -365,31 +335,10 @@ function RomRow({ url, setupsVer, roms, asmSrc, paused, loadRom, comparing, togg
               title="What differs between two DME or two KLR images: maps and tables decoded side by side, and the code that differs with its disassembly">
         COMPARE IMAGES
       </button>
-      {adding && (
-        <div style={{flexBasis:'100%',display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap',
-                     borderTop:`1px solid ${C.border}`,paddingTop:'5px'}}>
-          <span style={{color:C.textDim,letterSpacing:'0.1em'}}>NEW SETUP</span>
-          <input value={adding.name} autoFocus placeholder="setup name" style={{...inp,width:'180px'}}
-                 onChange={e => setAdding(a => ({ ...a, name: e.target.value.replace(/[^\w .+-]/g, '_').slice(0, 64) }))}
-                 onKeyDown={e => { if (e.key === 'Enter') saveNew(); if (e.key === 'Escape') setAdding(null); }} />
-          {['dme', 'klr'].map(cpu => (
-            <span key={cpu} style={{display:'inline-flex',gap:'6px',alignItems:'center'}}>
-              <span style={{color:C.textDim}}>{cpu.toUpperCase()}</span>
-              <select value={adding[cpu]} onChange={e => setAdding(a => ({ ...a, [cpu]: e.target.value }))} style={{...inp,maxWidth:'260px'}}>
-                {!images[cpu].length && <option value="">no {cpu.toUpperCase()} images found</option>}
-                {images[cpu].map(i => <option key={`${i.src}/${i.name}`} value={i.name}>{imgLabel(i)}</option>)}
-              </select>
-            </span>
-          ))}
-          <button style={btn(false, C.textBright)} disabled={!newName || !adding.dme || !adding.klr || !!replaces?.builtin} onClick={saveNew}
-                  title={replaces?.builtin ? `${newName} is a built-in setup: pick another name`
-                    : `Save ${newName || 'the setup'}: ${adding.dme} + ${adding.klr}. It is listed under SETUP and in RUN REGRESSIONS' ROM pairs.`}>
-            {replaces && !replaces.builtin ? 'REPLACE SETUP' : 'SAVE SETUP'}</button>
-          <button style={btn(false)} onClick={() => setAdding(null)}>CANCEL</button>
-          {replaces && <span style={{color:replaces.builtin ? C.red : C.amber}}>
-            {replaces.builtin ? 'that name is a built-in setup' : `replaces the saved setup ${newName} (${replaces.dme} + ${replaces.klr})`}</span>}
-        </div>
-      )}
+      {adding && <NewSetupForm url={url} start={{ dme: chosen?.dme ?? roms?.dme, klr: chosen?.klr ?? roms?.klr }}
+                               style={{flexBasis:'100%',borderTop:`1px solid ${C.border}`,paddingTop:'5px'}}
+                               onCancel={() => setAdding(false)}
+                               onSaved={async name => { setAdding(false); await loadSetups(); setSetupSel(name); }} />}
     </div>
   );
 }
