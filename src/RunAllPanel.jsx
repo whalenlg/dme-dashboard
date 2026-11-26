@@ -55,6 +55,22 @@ const fmtDur = s => {
   return `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min`;
 };
 const fmtSim = s => (s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${+s.toFixed(1)} s`);
+
+// A test's settings for the tooltip on its name: the -D flags it is built
+// with (a replay: its window arguments), one per line, as the bridge's
+// GET /runall gives them (opts; the developer runners also print them to
+// <test>.runner.log, which the lite package doesn't keep)
+function optsTitle(t) {
+  if (!t) return undefined;
+  const lines = [];
+  for (const a of t.opts ?? []) {
+    if (a.startsWith('-') || !lines.length) lines.push(a);
+    else lines[lines.length - 1] += ` ${a}`;
+  }
+  const replay = /^replay_/.test(t.name);
+  const loop = replay ? 'log replay' : (t.opts ?? []).includes('-DCL_MODE') ? 'closed loop (files_cl)' : 'open loop (files)';
+  return [`${t.name} · ${fmtSim(t.sim_s ?? 40)} simulated · ${loop}`, ...(lines.length ? lines : ['(no settings from the bridge: update 944turbo_dme_klr)'])].join('\n');
+}
 const pctOf = (d, t) => (t > 0 ? Math.min(100, (100 * d) / t) : 0);
 // iv_disk_rates.json is in MiB (du); shown in decimal MB / GB, as Finder and Explorer show file sizes
 const fmtSize = mb => {
@@ -95,6 +111,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const groups = useMemo(() => info?.groups ?? [], [info?.groups]);
   const allTests = useMemo(() => groups.flatMap(g => g.tests), [groups]);
   const lenOf = useMemo(() => Object.fromEntries(allTests.map(t => [t.name, t.sim_s])), [allTests]);
+  const testOf = useMemo(() => Object.fromEntries(allTests.map(t => [t.name, t])), [allTests]);
 
   // ── Options ───────────────────────────────────────────────
   const [sel, setSel] = useState(null);             // Set of picked tests; null = all
@@ -742,7 +759,7 @@ export default function RunAllPanel({ url, state, onClose }) {
                     <div key={t.name} style={{display:'flex',alignItems:'flex-start',gap:'8px',padding:'1px 0'}}>
                       <label style={{...lbl(locked),width:'378px',flexShrink:0}}>
                         <input type="checkbox" checked={picked.has(t.name)} disabled={locked} onChange={()=>toggle([t.name])} />
-                        <span style={{color:picked.has(t.name) ? C.text : C.grey}}>{t.name}</span>
+                        <span style={{color:picked.has(t.name) ? C.text : C.grey}} title={optsTitle(t)}>{t.name}</span>
                         <span style={{color:C.textDim,fontSize:'10px',marginLeft:'auto'}}>{fmtSim(t.sim_s)}</span>
                       </label>
                       {!lite && <span style={{display:'flex',gap:'3px',flexShrink:0}}>
@@ -778,7 +795,7 @@ export default function RunAllPanel({ url, state, onClose }) {
           <div style={ttl}>Running now</div>
           {suiteKeys.flatMap(k => Object.entries(suites[k].tests).filter(([, t]) => t.state === 'running').map(([name]) => (
             <div key={`${k}-${name}`} style={{display:'flex',alignItems:'center',gap:'8px'}}>
-              <span style={{width:'400px',color:C.text,fontSize:'11px'}}>{name}</span>
+              <span style={{width:'400px',color:C.text,fontSize:'11px'}} title={optsTitle(testOf[name])}>{name}</span>
               <div style={{flex:1}}>{testRow(name, suites[k])}</div>
             </div>
           )))}
