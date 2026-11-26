@@ -62,7 +62,7 @@ const inp = { background:'#030803', border:`1px solid ${C.border}`, color:C.text
 const panel = { background:C.panelBg, border:`1px solid ${C.border}`, borderRadius:'2px', padding:'8px 10px' };
 const title = { color:C.textDim, fontSize:'9px', letterSpacing:'0.2em', textTransform:'uppercase', marginBottom:'6px' };
 
-export default function LivePanel({ live, url, follow, setFollow, series, mem, popouts, onClose }) {
+export default function LivePanel({ live, url, series, mem, popouts, onClose }) {
   const { connected, sim, inputs, bps, bpConds, trace, traceCtx, error, asm, asmSrc, regs, roms, send, restart, loadRom } = live;
   const running = sim.state === 'running';
   // ROM compare opens in a window of its own (see popouts.js)
@@ -100,9 +100,6 @@ export default function LivePanel({ live, url, follow, setFollow, series, mem, p
         <span style={{color:'#779977',fontSize:'9px'}} title="Step, RUN TO and breakpoints are in the DME CODE and KLR CODE windows">
           step / breakpoints: open DME CODE or KLR CODE ↗</span>
         <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
-        <label style={{color:C.textDim,fontSize:'10px',cursor:'pointer'}}>
-          <input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> FOLLOW
-        </label>
         <ResolutionBox interval={live.interval} connected={connected} send={send} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
