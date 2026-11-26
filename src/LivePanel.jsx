@@ -38,14 +38,19 @@ const INPUTS = [
   { k:'coolant',   label:'COOLANT (ch3)', hint:'31 ≈85°C/184°F default · 68 ≈48°C · C0 ≈−2°C · 00 shorted' },
   { k:'airtemp',   label:'AIR TEMP (ch2)', hint:'9E ≈20°C default · 50 ≈62°C · 00 shorted' },
   { k:'battery',   label:'BATTERY (ch1)', hint:'V ≈ raw×0.0526+2.13', volts:true },
-  { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00], names:['under 1000 m','over 1000 m'],
-    hint:'ch4 raw F8 / 00, as TEST_IDLE_HIGH_ALT' },
+  // ch4 is the altitude switch plus the region coding plug. The ROM looks
+  // 14h up in the 4-band table at 1296h (edges 2E / 80 / C8) and writes
+  // 25h.7 (high altitude) and 25h.6 (REGION_CODE, 0 = US, 1 = RoW). The
+  // RoW plug adds a 1.8k resistor, which puts ch4 at ~3V (99) at sea level.
+  { k:'altitude',  label:'ALTITUDE (ch4)', positions:[0xF8,0x00,0x99,0x56],
+    names:['US under 1000 m','US over 1000 m','RoW under 1000 m','RoW over 1000 m'],
+    hint:'ch4 raw F8 ≈4.9V / 00 0V (US, as TEST_IDLE_HIGH_ALT) · 99 ≈3.0V / 56 ≈1.7V (RoW plug, 1.8k) → 25h.7:6 = 00 / 10 / 01 / 11 · RoW (25h.6 = 1) runs open loop: LAMBDA_ENABLE 20h.7 off' },
   { k:'ac',        label:'AC (T1)',      positions:[0,1], names:['off','on'],
     hint:'DME T1 (P3.5): AC compressor; the closed-loop model adds its load and the ISV should catch it' },
   { k:'cat',       label:'CAT (T0)',     positions:[0,1], names:['fitted','not fitted'],
-    hint:'DME T0 (P3.4): the firmware\'s has-cat flag (0 = fitted)' },
+    hint:'DME T0 (P3.4): the firmware\'s has-cat flag (0 = fitted). Not fitted: no O2 sensor, both O2 pins held at 0' },
   { k:'o2',        label:'O2 SENSOR',    positions:['auto',0,1,3], names:['auto','lean','cross','rich'],
-    hint:'auto follows the model\'s mixture; lean / cross / rich pin the comparator outputs (P1.6/P1.7)' },
+    hint:'auto follows the model\'s mixture; lean / cross / rich pin the comparator outputs (P1.6/P1.7). CAT not fitted overrides: both pins 0' },
 ];
 
 const btn = (on, col = C.textBright) => ({
@@ -533,6 +538,9 @@ function InputsPanel({ inputs, send }) {
                    style={{width:'100%',accentColor: isAuto ? C.blue : '#00cc66',opacity: isAuto || scripted ? 0.5 : 1}} />
             )}
             {d.hint && !scripted && <div style={{color:'#779977',fontSize:'8px'}}>{d.hint}</div>}
+            {(d.k === 'cat' || d.k === 'o2') && inputs.cat === 1 &&
+              <div style={{color:C.red,fontSize:'9px'}}>
+                NO CAT: O2 disconnected (both O2 pins held at 0, as in o2_disconnected)</div>}
           </div>
         );
       })}
