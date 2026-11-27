@@ -3,6 +3,7 @@ import RegressHosts from "./RegressHosts.jsx";
 import HostTest from "./HostTest.jsx";
 import InstallTestsPanel from "./InstallTestsPanel.jsx";
 import RomVariants from "./RomVariants.jsx";
+import RegionCat from "./RegionCat.jsx";
 import { SetupPicker } from "./newSetup.jsx";
 import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 
@@ -22,6 +23,9 @@ import { useRegressHosts, usableThreads, romFolder } from "./runAll.js";
 //                             (developer install)
 //    GET  <url>/runall/romdiff?roms=a,b  ROM VARIANTS: two or more ROM
 //                             pairs' tests side by side (RomVariants.jsx)
+//    GET  <url>/runall/regioncat?roms=a,b  REGION/ALT/CAT: the region,
+//                             altitude and cat tests against their
+//                             baselines, per ROM pair (RegionCat.jsx)
 //  Each ROM pair's runs write in its own folder, $DMEKLR_TMP/dme_klr/<rom>
 //  (89, 86, carpokes or the DME image's name: romFolder in runAll.js).
 //  Developer install: the named pairs can be ticked together (89 alone by
@@ -136,6 +140,7 @@ export default function RunAllPanel({ url, state, onClose }) {
   const [fqs, setFqs] = useState(null);              // null = closed; {loading} | {text, at, ...} | {error}
   const [fqsRom, setFqsRom] = useState(null);        // the FQS analysis' ROM folder; null = the picked pair's
   const [variants, setVariants] = useState(false);    // the ROM VARIANTS view is open
+  const [regionCat, setRegionCat] = useState(false);  // the REGION/ALT/CAT view is open
   const [busy, setBusy] = useState(null);
   const hostState = useRegressHosts(url, true);
   const [useHosts, setUseHosts] = useState(true);
@@ -568,7 +573,11 @@ export default function RunAllPanel({ url, state, onClose }) {
             {!lite && <button style={{...btn('s'),padding:'3px 10px',fontSize:'10px'}}
               title="Two or more ROM pairs' tests side by side, from the logs each pair's runs left in its folder: verdicts and the values that differ"
               onClick={() => setVariants(v => !v)}>{variants ? 'HIDE ROM VARIANTS' : 'ROM VARIANTS'}</button>}
+            {!lite && <button style={{...btn('s'),padding:'3px 10px',fontSize:'10px'}}
+              title="The region, altitude and cat tests against their baselines (cl_ramp_to_3000 / 6000, warm_idle_5s), one table per ROM pair: fuel %, timing °, rpm and load changes and their expected ranges"
+              onClick={() => setRegionCat(v => !v)}>{regionCat ? 'HIDE REGION/ALT/CAT' : 'REGION/ALT/CAT'}</button>}
           </div>
+          {regionCat && <RegionCat url={url} folders={folders} active={active} btn={btn} inp={inp} />}
           {variants && <RomVariants url={url} folders={folders} pickFolder={pickFolder} active={active} btn={btn} inp={inp} />}
           {fqs && <div style={{marginTop:'10px',borderTop:`1px solid ${C.border}`,paddingTop:'8px'}}>
             <div style={{display:'flex',alignItems:'center',gap:'10px',fontSize:'10px',color:C.textDim}}>
