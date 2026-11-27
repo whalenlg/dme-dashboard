@@ -14,7 +14,7 @@ import RunAllPanel from "./RunAllPanel.jsx";
 import { useRunAll } from "./runAll.js";
 import { Popout } from "./popout.jsx";
 import { usePopouts } from "./popouts.js";
-import { ATM_KPA, mapKpa, gaugePsi, boostParts } from "./boost.js";
+import { ATM_KPA, mapKpa, gaugePsi, boostParts, fmtBoost } from "./boost.js";
 import { useLiveSim, DEFAULT_LIVE_URL } from "./liveSim.js";
 import { useSimVersion, versionLabel } from "./version.js";
 import LogList from "./LogList.jsx";
@@ -3438,8 +3438,148 @@ function KLRTab({ klrData, currentT, boost }) {
     c.boostInput,      c.boostTarget,     c.deviation,
   ];
 
-  return boost ? <BoostControlTab klrData={klrData} {...boost} arrange={arrange} />
-               : <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>{Object.values(tile)}</div>;
+  return (
+    <div>
+      {boost ? <BoostControlTab klrData={klrData} {...boost} arrange={arrange} />
+             : <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'8px'}}>{Object.values(tile)}</div>}
+      <KLRKeyRegisters klrData={klrData} currentT={currentT} />
+    </div>
+  );
+}
+
+// KLR RAM at time t: the nearest [DS] hex snapshot at or before t, with any
+// later ram[n] values from STATUS lines laid over it (whichever source
+// updated an address more recently wins), plus the latest STATUS line.
+function klrRamAt(klrData, t = Infinity) {
+  const snap = (klrData?.snapshots ?? []).filter(s => s.t <= t).slice(-1)[0];
+  const status = (klrData?.status ?? []).filter(s => s.t <= t);
+  const ram = { ...(snap?.ram ?? {}) };
+  const snapT = snap?.t ?? -Infinity;
+  for (const s of status)
+    if (s.ramVals && s.t >= snapT) Object.assign(ram, s.ramVals);
+  return { ram, latestStatus: status[status.length - 1] ?? null };
+}
+
+const s8 = v => v == null ? null : (v << 24) >> 24;
+const sgn = v => v == null ? '--' : `${v >= 0 ? '+' : ''}${v}`;
+
+// Key registers + control flags under the KLR OVERVIEW tiles, laid out as on
+// the DME OVERVIEW. Addresses and names are the KLR byte map (KLR_KNOWN,
+// from 89KLR951.xlsx byte_mem), picked for boost and knock control.
+function KLRKeyRegisters({ klrData, currentT }) {
+  const { ram, latestStatus: st } = klrRamAt(klrData, currentT ?? Infinity);
+  const r = a => ram[a];
+  const dec = a => r(a) != null ? `${r(a)}d` : '--';
+  const psi = a => r(a) != null ? fmtBoost(gaugePsi(r(a))) : '--';
+  const deg = a => r(a) != null ? `${(r(a) * KLR_DEG_PER_COUNT).toFixed(1)}° retard` : '--';
+  const thr = ram43ToThrottlePct(r(0x43));
+
+  // [label, value, detail, address (for the hover description)]
+  const regs = [
+    // engine speed and throttle
+    ['Eng Speed (24)',     h2(r(0x24)), r(0x24) != null ? `${r(0x24)} ticks` : '--', 0x24],
+    ['Timer Period R7 (07)', h2(r(0x07)), dec(0x07), 0x07],
+    ['RPM Map Axis (44)',  h2(r(0x44)), dec(0x44), 0x44],
+    ['TPS Map Axis (43)',  h2(r(0x43)), thr != null ? `${thr.toFixed(1)}% throttle` : '--', 0x43],
+    ['TPS Raw (3C)',       h2(r(0x3C)), dec(0x3C), 0x3C],
+    ['TPS Degrees (3A)',   h2(r(0x3A)), dec(0x3A), 0x3A],
+    ['WOT Angle (3E)',     h2(r(0x3E)), dec(0x3E), 0x3E],
+    ['Battery (2E)',       h2(r(0x2E)), dec(0x2E), 0x2E],
+    // boost control
+    ['MAP Pressure (52)',  h2(r(0x52)), r(0x52) != null ? `${mapKpa(r(0x52)).toFixed(1)}kPa  ${psi(0x52)}` : '--', 0x52],
+    ['MAP Compare (51)',   h2(r(0x51)), psi(0x51), 0x51],
+    ['Boost Thresh (4C)',  h2(r(0x4C)), dec(0x4C), 0x4C],
+    ['Boost Knock Red (57)', h2(r(0x57)), dec(0x57), 0x57],
+    ['Cyc Pull Boost (4E)', h2(r(0x4E)), dec(0x4E), 0x4E],
+    ['Cyc Restore Boost (50)', h2(r(0x50)), dec(0x50), 0x50],
+    ['PID Error (60)',     h2(r(0x60)), `${sgn(s8(r(0x60)))} signed`, 0x60],
+    ['PID I Term (61)',    h2(r(0x61)), `${sgn(s8(r(0x61)))} signed`, 0x61],
+    ['PID D Term (62)',    h2(r(0x62)), `${sgn(s8(r(0x62)))} signed`, 0x62],
+    ['Feedfwd CV (68)',    h2(r(0x68)), r(0x68) != null ? `${(r(0x68) * 100 / 255).toFixed(1)}%` : '--', 0x68],
+    ['CV Duty Final (41)', h2(r(0x41)), r(0x41) != null ? `${(r(0x41) * 100 / 255).toFixed(1)}%` : '--', 0x41],
+    // knock control
+    ['Knock Integ (46)',   h2(r(0x46)), dec(0x46), 0x46],
+    ['Knock Sensor (2F)',  h2(r(0x2F)), dec(0x2F), 0x2F],
+    ['Knock Thr 7A:7B',    `${h2(r(0x7A))}:${h2(r(0x7B))}`, r(0x7A) != null && r(0x7B) != null ? `${(r(0x7A) << 8) | r(0x7B)}d` : '--', 0x7A],
+    ['Max Knock Thr (45)', h2(r(0x45)), dec(0x45), 0x45],
+    ['Knock Coeff (47)',   h2(r(0x47)), dec(0x47), 0x47],
+    ['Knock TPS Thr (48)', h2(r(0x48)), dec(0x48), 0x48],
+    ['Max Retard (4B)',    h2(r(0x4B)), deg(0x4B), 0x4B],
+    ['Cyc Restore (4A)',   h2(r(0x4A)), dec(0x4A), 0x4A],
+    ['Restore Ctr (49)',   h2(r(0x49)), dec(0x49), 0x49],
+    ...[1, 2, 3, 4].map(c => [`Retard Cyl ${c} (7${c - 1})`, h2(r(0x6F + c)), deg(0x6F + c), 0x6F + c]),
+    ...[1, 2, 3, 4].map(c => [`Knock Thr Cyl ${c} (7${c + 3})`, h2(r(0x73 + c)), dec(0x73 + c), 0x73 + c]),
+    // diagnostics
+    ['Blink Code (33)',    h2(r(0x33)), dec(0x33), 0x33],
+    ['Err Knock/MAP (30)', h2(r(0x30)), dec(0x30), 0x30],
+    ['Err Boost Hi/Lo (35)', h2(r(0x35)), dec(0x35), 0x35],
+    ['Err TPS (36)',       h2(r(0x36)), dec(0x36), 0x36],
+  ];
+  const tip = a => {
+    const k = KLR_KNOWN[a];
+    const d = { 0x49: 'counter, initialised from 4Ah, that times restoring 0.3° of timing' }[a];
+    return `ram[0x${h2(a)}] ${k?.n ?? ''}${(k?.d || d) ? ' — ' + (k?.d || d) : ''}`;
+  };
+
+  const retarding = [0x70, 0x71, 0x72, 0x73].some(a => r(a) > 0);
+  const flags = [
+    { name:'FULL_LOAD', val:st?.full_load, col:C.amber, addr:'STATUS', desc:'full-load (WOT) input to the KLR is active' },
+    { name:'CV_PWM', val:st?.CV_PWM, col:'#66ffaa', addr:'STATUS', desc:'control valve (wastegate) output pin is on' },
+    { name:'IGN_OUT', val:st?.ign_out, col:'#ff8844', addr:'STATUS', desc:'ignition output to the coil driver is asserted' },
+    { name:'IRQ', val:st?.irq, col:'#44aaff', addr:'STATUS', desc:'external interrupt (ignition trigger) input is active' },
+    { name:'KNOCK_RETARD', val:retarding ? 1 : 0, col:C.red, addr:'70h-73h', desc:'at least one cylinder has timing pulled for knock (per-cylinder timing delay is non-zero)' },
+    { name:'BOOST_PULLED', val:r(0x57) > 0 ? 1 : 0, col:C.red, addr:'57h', desc:'boost is being reduced for knock control (57h is non-zero)' },
+    { name:'BLINK_CODE', val:r(0x33) > 0 ? 1 : 0, col:C.amber, addr:'33h', desc:'a blink (fault) code is currently set' },
+  ].map(f => ({ ...f, val: f.val ? 1 : 0 }));
+
+  return (
+    <div style={{display:'grid',gridTemplateColumns:'1fr 240px',gap:'10px'}}>
+      <div style={S.panel}>
+        <div style={S.panelTitle}>ALL KEY REGISTERS &nbsp;
+          <span style={{color:C.textDim,fontSize:'8px'}}>hover a register for its description</span>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1px'}}>
+          {regs.map(([lbl,val,det,a])=>(
+            <div key={lbl} title={tip(a)} style={{display:'flex',justifyContent:'space-between',
+                                   padding:'3px 6px',borderBottom:`1px solid ${C.border}`}}>
+              <span style={{color:C.textDim,fontSize:'10px'}}>{lbl}</span>
+              <span style={{color:C.textBright}}>
+                {val} <span style={{color:C.textDim,fontWeight:'normal',fontSize:'10px'}}>({det})</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.panel}>
+        <div style={S.panelTitle}>CONTROL FLAGS &nbsp;
+          <span style={{color:C.textDim,fontSize:'8px'}}>hover any flag for full description</span>
+        </div>
+        <div style={{maxHeight:'420px',overflow:'auto'}}>
+          {flags.map(f=>(
+            <div key={f.name} title={f.desc}
+              style={{
+              display:'flex',alignItems:'center',gap:'8px',
+              padding:'4px 6px',marginBottom:'2px',
+              borderLeft:`3px solid ${f.val?f.col:'#1a2e1a'}`,
+              background:f.val?'#0a1f0a':'#070e07',
+            }}>
+              <span style={{
+                width:'10px',height:'10px',borderRadius:'50%',flexShrink:0,
+                background:f.val?f.col:'transparent',
+                border:`1px solid ${f.val?f.col:'#1a3a1a'}`,
+                boxShadow:f.val?`0 0 6px ${f.col}`:'none',
+                display:'inline-block',
+              }}/>
+              <span style={{color:f.val?f.col:'#335533',fontSize:'10px',flex:1,
+                            overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{f.name}</span>
+              <span style={{color:C.textDim,fontSize:'9px',flexShrink:0}}>{f.addr}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Older logs (no [SPARK] lines): their retard is the raw delay, which is
