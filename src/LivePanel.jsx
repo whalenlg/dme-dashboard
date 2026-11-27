@@ -313,10 +313,35 @@ function CaptureResult({ res, onClose }) {
 }
 
 // ── Run / pause / step / run-to / restart, at the top of each code window ──
+const STATUS_ROOM = 440;   // px the run bar keeps for state, time and stop reason
 function RunBar({ cpu, sim, connected, running, send, restart }) {
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const CPU = cpu.toUpperCase();
+  // Once, when the window opens: widen it if the buttons don't fit on the
+  // status line with room for a stop reason beside the time ("stopped: bp
+  // klr 0007"). Fonts differ between machines, so this is measured rather
+  // than a fixed window size. Only grows, and only up to the screen.
+  const barRef = useRef(null), ctrlRef = useRef(null);
+  useEffect(() => {
+    const bar = barRef.current, ctrl = ctrlRef.current;
+    if (!bar || !ctrl) return;
+    const win = bar.ownerDocument.defaultView;
+    if (win === window) return;   // in the main page: nothing to resize
+    let gone = false;
+    (bar.ownerDocument.fonts?.ready ?? Promise.resolve()).then(() => {
+      if (gone) return;
+      const cs = win.getComputedStyle(bar);
+      const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const grow = STATUS_ROOM + 8 + ctrl.offsetWidth + pad - bar.clientWidth;
+      if (grow <= 0) return;
+      const frame = Math.max(0, win.outerWidth - win.innerWidth);
+      const room = (win.screen?.availWidth ?? Infinity) - frame - Math.max(0, win.screenX - (win.screen?.availLeft ?? 0)) - win.innerWidth;
+      const by = Math.ceil(Math.min(grow, room));
+      if (by > 0) try { win.resizeBy(by, 0); } catch { /* the browser may refuse */ }
+    });
+    return () => { gone = true; };
+  }, []);
   // Two parts that never change width with what they show: the status
   // (state, time, why it stopped) takes the room left of the buttons and
   // cuts the reason off rather than grow, and the buttons keep their size.
@@ -324,7 +349,7 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
   // wraps (buttons under the status) when the window is narrow, not
   // because the time got a digit wider or a stop reason appeared.
   return (
-    <div style={{...panel,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+    <div ref={barRef} style={{...panel,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
       <div style={{display:'flex',gap:'8px',alignItems:'center',flex:'1 1 0',minWidth:'260px',overflow:'hidden'}}>
         <span style={{color: !connected ? C.red : running ? C.textBright : C.amber, fontSize:'11px', minWidth:'80px', flex:'none'}}>
           ● {!connected ? 'OFFLINE' : sim.state.toUpperCase()}
@@ -333,7 +358,7 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
                       minWidth:'9.5em',flex:'none',whiteSpace:'nowrap'}}>t={(sim.tNs / 1e6).toFixed(3)} ms</span>
         {!running && <StopReason reason={sim.reason} />}
       </div>
-      <div style={{display:'flex',gap:'8px',alignItems:'center',flex:'none',marginLeft:'auto'}}>
+      <div ref={ctrlRef} style={{display:'flex',gap:'8px',alignItems:'center',flex:'none',marginLeft:'auto'}}>
       <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
       <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
       <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
