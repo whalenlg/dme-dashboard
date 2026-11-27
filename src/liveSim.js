@@ -317,6 +317,21 @@ export function useLiveSim(url, onLogLines) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
+  // CAPTURE LOG: the run so far saved by the bridge as a regression-format
+  // .dash.log (POST /capture, only while not running), with its basic checks:
+  // {ok: true, ...the bridge's answer} or {ok: false, error}
+  const capture = useCallback(async name => {
+    if (!url) return { ok: false, error: 'not connected' };
+    try {
+      const r = await fetch(`${url}/capture`, { method: 'POST', body: JSON.stringify(name ? { name } : {}) });
+      if (r.status === 404) return { ok: false, error: 'this bridge has no CAPTURE LOG: update 944turbo_dme_klr and restart the bridge' };
+      if (!r.ok) return { ok: false, error: (await r.text()) || `HTTP ${r.status}` };
+      return { ok: true, ...(await r.json()) };
+    } catch {
+      return { ok: false, error: `Can't reach the simulator bridge at ${url}` };
+    }
+  }, [url]);
+
   // Load a ROM image into the DME or KLR EPROM; reset restarts the sim on it.
   // A raw .bin or Intel HEX image is sent as its bytes: the bridge saves it
   // as the .mem the sim loads
@@ -398,6 +413,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom, setupsVer,
+  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, capture, loadRom, patchRom, revertRom, setupsVer,
            snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
