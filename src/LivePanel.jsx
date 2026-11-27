@@ -86,6 +86,7 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
   const tMs = (sim.tNs / 1e6).toFixed(3);
   // CAPTURE LOG's last result (shown under the run bar until ✕)
   const [capRes, setCapRes] = useState(null);
+  const captureRef = useRef(null);   // CaptureBox's capture, for the HISTORY FULL box
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'10px'}}>
       {/* ── Run controls ───────────────────────────────────────── */}
@@ -104,9 +105,11 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
           step / breakpoints: open DME CODE or KLR CODE ↗</span>
         <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
         <ResolutionBox interval={live.interval} connected={connected} send={send} />
-        <CaptureBox capture={live.capture} enabled={connected && !running} onResult={setCapRes} />
+        <CaptureBox capture={live.capture} enabled={connected && !running} onResult={setCapRes} goRef={captureRef} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
+      {live.historyFull && connected && !running &&
+        <HistoryFull full={live.historyFull} capture={() => captureRef.current?.()} send={send} />}
       {capRes && <CaptureResult res={capRes} onClose={() => setCapRes(null)} />}
       <RomRow url={url} setupsVer={live.setupsVer} roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
               comparing={comparing} toggleCompare={toggleCompare} />
@@ -226,7 +229,7 @@ function ResolutionBox({ interval, connected, send }) {
 // Only while the sim isn't running (t=0 or paused): the bridge writes it to
 // <rom>/live_dash_logs (LOAD LOG lists it as Live) and runs the basic checks
 // (check_capture_log.py) on it
-function CaptureBox({ capture, enabled, onResult }) {
+function CaptureBox({ capture, enabled, onResult, goRef }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const go = async () => {
@@ -237,6 +240,7 @@ function CaptureBox({ capture, enabled, onResult }) {
     if (r.ok) setName('');
     onResult(r);
   };
+  useEffect(() => { if (goRef) goRef.current = go; });
   const tip = enabled ? 'Save the run so far (from t=0) as a .dash.log in the regression tests\' format, in <rom>/live_dash_logs, and run basic checks on it (snapshots, gaps, ranges, relay, ignition, ADCs). LOAD LOG lists it as a Live log'
                       : 'Pause the simulation to capture a log (it works at t=0 or paused)';
   return (
@@ -247,6 +251,23 @@ function CaptureBox({ capture, enabled, onResult }) {
       <button style={{...btn(false),opacity: enabled ? 1 : 0.5,cursor: enabled ? 'pointer' : 'default'}}
               disabled={!enabled || busy} onClick={go}>{busy ? 'CAPTURING…' : '💾 CAPTURE LOG'}</button>
     </span>
+  );
+}
+
+// The bridge paused the sim because its history (what a capture holds) is
+// full: capture now, or run on and lose the earliest data
+function HistoryFull({ full, capture, send }) {
+  return (
+    <div style={{...panel,borderColor:C.amber,fontSize:'10px',textAlign:'left',display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{color:C.amber,flex:'1 1 320px'}}>
+        <b>HISTORY FULL · PAUSED</b> — the bridge holds {full.lines.toLocaleString()} lines of this run, the most a captured log can hold.
+        {' '}Capture now to keep the run {full.trimmed ? 'as it is kept so far (its start was already dropped)' : 'from t=0'}, or continue and lose the earliest data.
+      </span>
+      <button style={btn(false)} onClick={capture}
+              title="Save the run so far as a log first (uses the name in the run bar, if any)">💾 CAPTURE LOG</button>
+      <button style={btn(false, C.amber)} onClick={() => send('run')}
+              title="Run on: the oldest half of the history is dropped, so a later capture starts partway through the run">▶ CONTINUE (EARLIEST DATA LOST)</button>
+    </div>
   );
 }
 
