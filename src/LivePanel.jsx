@@ -100,10 +100,10 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
         {!running && <StopReason reason={sim.reason} />}
         <span style={{flex:1}} />
         <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
+        <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
         <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
         <span style={{color:'#779977',fontSize:'9px'}} title="Step, RUN TO and breakpoints are in the DME CODE and KLR CODE windows">
           step / breakpoints: open DME CODE or KLR CODE ↗</span>
-        <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
         <ResolutionBox interval={live.interval} connected={connected} send={send} />
         <CaptureBox capture={live.capture} enabled={connected && !running} onResult={setCapRes} goRef={captureRef} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
@@ -311,6 +311,7 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
       {!running && <StopReason reason={sim.reason} />}
       <span style={{flex:1}} />
       <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
+      <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
       <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
       <input type="number" min={1} value={stepN} onChange={e => setStepN(Math.max(1, +e.target.value || 1))}
              style={{...inp,width:'46px'}} title={`${CPU} instructions per step`} />
@@ -320,7 +321,6 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
              onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
       <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}
               title="Run until this sim time (ms), then pause">RUN TO</button>
-      <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
     </div>
   );
 }
