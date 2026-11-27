@@ -87,6 +87,9 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
   // CAPTURE LOG's last result (shown under the run bar until ✕)
   const [capRes, setCapRes] = useState(null);
   const captureRef = useRef(null);   // CaptureBox's capture, for the HISTORY FULL box
+  // An armed capture's result arrives from the bridge (SIM: [CAPTURE] result)
+  const [seenCapRes, setSeenCapRes] = useState(live.captureResult);
+  if (live.captureResult !== seenCapRes) { setSeenCapRes(live.captureResult); if (live.captureResult) setCapRes(live.captureResult); }
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'10px'}}>
       {/* ── Run controls ───────────────────────────────────────── */}
@@ -105,7 +108,8 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
         <span style={{color:'#779977',fontSize:'9px'}} title="Step, RUN TO and breakpoints are in the DME CODE and KLR CODE windows">
           step / breakpoints: open DME CODE or KLR CODE ↗</span>
         <ResolutionBox interval={live.interval} connected={connected} send={send} />
-        <CaptureBox capture={live.capture} enabled={connected && !running} onResult={setCapRes} goRef={captureRef} />
+        <CaptureBox capture={live.capture} enabled={connected && !running} onResult={setCapRes} goRef={captureRef}
+                    armed={live.captureArmed} disarm={live.disarmCapture} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
       {live.historyFull && connected && !running &&
@@ -229,7 +233,7 @@ function ResolutionBox({ interval, connected, send }) {
 // Only while the sim isn't running (t=0 or paused): the bridge writes it to
 // <rom>/live_dash_logs (LOAD LOG lists it as Live) and runs the basic checks
 // (check_capture_log.py) on it
-function CaptureBox({ capture, enabled, onResult, goRef }) {
+function CaptureBox({ capture, enabled, onResult, goRef, armed, disarm }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const go = async () => {
@@ -238,10 +242,18 @@ function CaptureBox({ capture, enabled, onResult, goRef }) {
     const r = await capture(name.trim());
     setBusy(false);
     if (r.ok) setName('');
-    onResult(r);
+    // Armed (t=0, nothing run yet): the run bar says so; the result comes later
+    onResult(r.ok && r.armed ? null : r);
   };
   useEffect(() => { if (goRef) goRef.current = go; });
-  const tip = enabled ? 'Save the run so far (from t=0) as a .dash.log in the regression tests\' format, in <rom>/live_dash_logs, and run basic checks on it (snapshots, gaps, ranges, relay, ignition, ADCs). LOAD LOG lists it as a Live log'
+  if (armed != null) return (
+    <span style={{display:'inline-flex',gap:'6px',alignItems:'center',color:'#cc88ff',fontSize:'10px'}}
+          title="The log (from t=0) is saved by itself the next time the sim stops: PAUSE, a breakpoint, RUN TO or a full history">
+      ● ARMED: {armed}
+      <button style={btn(false)} onClick={disarm} title="Cancel the armed capture">✕</button>
+    </span>
+  );
+  const tip = enabled ? 'At t=0: arm it, so the log is saved by itself when the sim next pauses. Paused: save the run so far (from t=0) as a .dash.log in the regression tests\' format, in <rom>/live_dash_logs, and run basic checks on it (snapshots, gaps, ranges, relay, ignition, ADCs). LOAD LOG lists it as a Live log'
                       : 'Pause the simulation to capture a log (it works at t=0 or paused)';
   return (
     <span style={{display:'inline-flex',gap:'4px',alignItems:'center'}} title={tip}>

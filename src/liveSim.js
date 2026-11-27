@@ -114,6 +114,11 @@ export function useLiveSim(url, onLogLines) {
   // SIM: [HISTORY] full: the bridge's history reached its limit and it paused
   // the sim ({lines, trimmed}); cleared when the sim runs again or restarts
   const [historyFull, setHistoryFull] = useState(null);
+  // CAPTURE LOG pressed at t=0 arms it (the bridge saves it on the next
+  // pause): the armed name, and the last capture's result ({ok, ...} as
+  // capture() gives), from SIM: [CAPTURE] lines
+  const [captureArmed, setCaptureArmed] = useState(null);
+  const [captureResult, setCaptureResult] = useState(null);
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
@@ -198,6 +203,13 @@ export function useLiveSim(url, onLogLines) {
         setBps({ dme: [], klr: [] }); setBpConds({ dme: {}, klr: {} });
         setWatches(null); setWrites({ dme: {}, klr: {} }); setWriters({ dme: null, klr: null });
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
+      } else if (kind === 'CAPTURE') {
+        if (rest.startsWith('armed')) setCaptureArmed(parseKV(rest).name ?? '');
+        else if (rest.startsWith('disarmed')) setCaptureArmed(null);
+        else if (rest.startsWith('result ')) {
+          setCaptureArmed(null);
+          try { setCaptureResult(JSON.parse(rest.slice(7))); } catch { /* not JSON */ }
+        }
       } else if (kind === 'HISTORY') {
         const kv = parseKV(rest);
         if (rest.startsWith('full')) setHistoryFull({ lines: +kv.lines, trimmed: kv.trimmed === '1' });
@@ -340,6 +352,10 @@ export function useLiveSim(url, onLogLines) {
     }
   }, [url]);
 
+  const disarmCapture = useCallback(() => {
+    if (url) fetch(`${url}/capture`, { method: 'DELETE' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
+  }, [url]);
+
   // Load a ROM image into the DME or KLR EPROM; reset restarts the sim on it.
   // A raw .bin or Intel HEX image is sent as its bytes: the bridge saves it
   // as the .mem the sim loads
@@ -421,6 +437,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, historyFull, roms, send, restart, capture, loadRom, patchRom, revertRom, setupsVer,
+  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, historyFull, captureArmed, captureResult, disarmCapture, roms, send, restart, capture, loadRom, patchRom, revertRom, setupsVer,
            snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
