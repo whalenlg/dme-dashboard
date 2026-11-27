@@ -2212,20 +2212,25 @@ function PortsTab({ snap, logHasPorts, logLoaded }) {
           — legacy [STATUS] logs show pin definitions only.
         </div>
       )}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'10px',alignItems:'start'}}>
         {Object.entries(PORT_DEFS).map(([pName,bits])=>{
           const portByte = portVals[pName];
           const hasVal   = portByte !== undefined;
           return (
             <div key={pName} style={S.panel}>
-              <div style={S.panelTitle}>
-                {pName} — {portDescs[pName]}
-                {hasVal && (
-                  <span style={{marginLeft:'10px',color:C.textBright,
-                                fontFamily:"'Orbitron',monospace",fontSize:'11px'}}>
-                    0x{h2(portByte)} &nbsp; {b8(portByte)}
-                  </span>
-                )}
+              {/* One fixed-height line in every panel, so the three boxes'
+                  pin rows line up whether or not a value is shown or the
+                  description is long. */}
+              <div style={{...S.panelTitle,display:'flex',alignItems:'center',
+                           gap:'10px',height:'16px',whiteSpace:'nowrap'}}>
+                <span title={`${pName} — ${portDescs[pName]}`}
+                      style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>
+                  {pName} — {portDescs[pName]}
+                </span>
+                <span style={{flexShrink:0,color:hasVal?C.textBright:C.textDim,
+                              fontFamily:"'Orbitron',monospace",fontSize:'11px'}}>
+                  {hasVal ? <>0x{h2(portByte)} &nbsp; {b8(portByte)}</> : '0x-- --------'}
+                </span>
               </div>
               {bits.map(b=>{
                 const bitVal = hasVal ? ((portByte >> b.bit) & 1) : null;
