@@ -111,6 +111,9 @@ export function useLiveSim(url, onLogLines) {
   const [asm, setAsm]       = useState({ dme: [], klr: [] });
   const [regs, setRegs]     = useState({ dme: null, klr: null });
   const [dmeRegsHist, setDmeRegsHist] = useState([]);   // every DME [REGS] line, by t_ms
+  // SIM: [HISTORY] full: the bridge's history reached its limit and it paused
+  // the sim ({lines, trimmed}); cleared when the sim runs again or restarts
+  const [historyFull, setHistoryFull] = useState(null);
   const [warnings, setWarnings] = useState([]);   // "DME: [WARN] ..." lines, newest last
   const [ign, setIgn]       = useState({ dme: [], klr: [], inj: [] });   // [{t: ms, w: pulse ms}]
   const [roms, setRoms]     = useState({ dme: null, klr: null });   // path of the image in each EPROM
@@ -188,14 +191,19 @@ export function useLiveSim(url, onLogLines) {
         lines.current = []; reset.current = true; dirty.current = true;
         ignRef.current = { dme: [], klr: [], inj: [] }; ignDirty.current = true;
         setWarnings([]);
+        setHistoryFull(null);
         // The new sim starts with none of its own: its [BP] line (the bridge
         // adds the old ones again) says which are set, so the code windows
         // never list a breakpoint the sim doesn't have
         setBps({ dme: [], klr: [] }); setBpConds({ dme: {}, klr: {} });
         setWatches(null); setWrites({ dme: {}, klr: {} }); setWriters({ dme: null, klr: null });
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
+      } else if (kind === 'HISTORY') {
+        const kv = parseKV(rest);
+        if (rest.startsWith('full')) setHistoryFull({ lines: +kv.lines, trimmed: kv.trimmed === '1' });
       } else if (kind === 'STATE') {
         const st = rest.split(' ')[0];
+        if (st === 'running') setHistoryFull(null);
         const kv = parseKV(rest);
         setSim(s => ({ ...s, state: st, tNs: +kv.t_ns, dmePc: parseInt(kv.dme_pc, 16),
                        klrPc: parseInt(kv.klr_pc, 16), reason: rest.split('reason=')[1] ?? '' }));
@@ -317,6 +325,21 @@ export function useLiveSim(url, onLogLines) {
     if (url) fetch(`${url}/restart`, { method: 'POST' }).catch(() => setError(`Can't reach the simulator bridge at ${url}`));
   }, [url]);
 
+  // CAPTURE LOG: the run so far saved by the bridge as a regression-format
+  // .dash.log (POST /capture, only while not running), with its basic checks:
+  // {ok: true, ...the bridge's answer} or {ok: false, error}
+  const capture = useCallback(async name => {
+    if (!url) return { ok: false, error: 'not connected' };
+    try {
+      const r = await fetch(`${url}/capture`, { method: 'POST', body: JSON.stringify(name ? { name } : {}) });
+      if (r.status === 404) return { ok: false, error: 'this bridge has no CAPTURE LOG: update 944turbo_dme_klr and restart the bridge' };
+      if (!r.ok) return { ok: false, error: (await r.text()) || `HTTP ${r.status}` };
+      return { ok: true, ...(await r.json()) };
+    } catch {
+      return { ok: false, error: `Can't reach the simulator bridge at ${url}` };
+    }
+  }, [url]);
+
   // Load a ROM image into the DME or KLR EPROM; reset restarts the sim on it.
   // A raw .bin or Intel HEX image is sent as its bytes: the bridge saves it
   // as the .mem the sim loads
@@ -398,6 +421,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, roms, send, restart, loadRom, patchRom, revertRom, setupsVer,
+  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, historyFull, roms, send, restart, capture, loadRom, patchRom, revertRom, setupsVer,
            snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }

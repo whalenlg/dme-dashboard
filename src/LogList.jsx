@@ -13,7 +13,9 @@ const C = { border:'#0d2e0d', textDim:'#ccddcc', textBright:'#00ff80', text:'#00
 
 // Which simulator wrote each folder (v_run_dashboard_tests.sh: Verilator,
 // run_dashboard_tests.sh: iverilog)
-const SIM = { v_dash_logs: { name:'Verilator', color:'#44aaff' }, dash_logs: { name:'iverilog', color:'#ffaa44' } };
+// live_dash_logs: the live sim's runs saved with CAPTURE LOG (bridge.mjs /capture)
+const SIM = { v_dash_logs: { name:'Verilator', color:'#44aaff' }, dash_logs: { name:'iverilog', color:'#ffaa44' },
+              live_dash_logs: { name:'Live', color:'#cc88ff' } };
 // release_<dir>: a release's runs (release_logs.py), by the same simulator
 const baseDir = dir => String(dir).replace(/^release_/, '');
 const isRelease = l => String(l.dir).startsWith('release_');
@@ -50,8 +52,8 @@ const fmtDate = ms => {
 export default function LogList({ bridge, onOpen }) {
   const [logs, setLogs] = useState(null);   // null: loading; false: no bridge
   const [filter, setFilter] = useState('');
-  // Include Verilator / iverilog logs: both checked each time LOAD LOG opens
-  const [include, setInclude] = useState({ v_dash_logs: true, dash_logs: true, release: true });
+  // Include Verilator / iverilog / Live logs: all checked each time LOAD LOG opens
+  const [include, setInclude] = useState({ v_dash_logs: true, dash_logs: true, live_dash_logs: true, release: true });
   const toggle = dir => setInclude(i => ({ ...i, [dir]: !i[dir] }));
   // Sort: click a column heading; again to reverse. Newest first to start.
   const [sort, setSort] = useState({ key: 'mtime', dir: -1 });
@@ -160,7 +162,7 @@ export default function LogList({ bridge, onOpen }) {
           </div>
         ))}
         {!shown.length && <div style={{color:C.faint,fontSize:'10px',padding:'4px 8px'}}>{
-          !Object.keys(SIM).some(d => include[d] !== false) ? 'Both kinds of log are unchecked.'
+          !Object.keys(SIM).some(d => include[d] !== false) ? 'Every kind of log is unchecked.'
           : filter ? `No log matches “${filter}”.` : 'No logs of the checked kind.'}</div>}
       </div>
       {release}

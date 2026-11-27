@@ -84,6 +84,9 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
   const [warnsHidden, setWarnsHidden] = useState(null);
   const newWarns = live.warnings !== warnsHidden;
   const tMs = (sim.tNs / 1e6).toFixed(3);
+  // CAPTURE LOG's last result (shown under the run bar until ✕)
+  const [capRes, setCapRes] = useState(null);
+  const captureRef = useRef(null);   // CaptureBox's capture, for the HISTORY FULL box
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'10px'}}>
       {/* ── Run controls ───────────────────────────────────────── */}
@@ -102,8 +105,12 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
           step / breakpoints: open DME CODE or KLR CODE ↗</span>
         <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
         <ResolutionBox interval={live.interval} connected={connected} send={send} />
+        <CaptureBox capture={live.capture} enabled={connected && !running} onResult={setCapRes} goRef={captureRef} />
         <button style={btn(false)} onClick={onClose}>✕ DISCONNECT</button>
       </div>
+      {live.historyFull && connected && !running &&
+        <HistoryFull full={live.historyFull} capture={() => captureRef.current?.()} send={send} />}
+      {capRes && <CaptureResult res={capRes} onClose={() => setCapRes(null)} />}
       <RomRow url={url} setupsVer={live.setupsVer} roms={roms} asmSrc={asmSrc} paused={connected && sim.state === 'paused'} loadRom={loadRom}
               comparing={comparing} toggleCompare={toggleCompare} />
       <SnapshotPanel live={live} running={running} url={url} />
@@ -215,6 +222,78 @@ function ResolutionBox({ interval, connected, send }) {
              title={bad ? `${RES_MIN} to ${RES_MAX} ms` : undefined}
              style={{...inp,width:'52px',borderColor: bad ? C.red : C.border}} /> ms
     </label>
+  );
+}
+
+// ── CAPTURE LOG: the run so far as a regression-format .dash.log ──
+// Only while the sim isn't running (t=0 or paused): the bridge writes it to
+// <rom>/live_dash_logs (LOAD LOG lists it as Live) and runs the basic checks
+// (check_capture_log.py) on it
+function CaptureBox({ capture, enabled, onResult, goRef }) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    if (!enabled || busy) return;
+    setBusy(true);
+    const r = await capture(name.trim());
+    setBusy(false);
+    if (r.ok) setName('');
+    onResult(r);
+  };
+  useEffect(() => { if (goRef) goRef.current = go; });
+  const tip = enabled ? 'Save the run so far (from t=0) as a .dash.log in the regression tests\' format, in <rom>/live_dash_logs, and run basic checks on it (snapshots, gaps, ranges, relay, ignition, ADCs). LOAD LOG lists it as a Live log'
+                      : 'Pause the simulation to capture a log (it works at t=0 or paused)';
+  return (
+    <span style={{display:'inline-flex',gap:'4px',alignItems:'center'}} title={tip}>
+      <input value={name} onChange={e => setName(e.target.value.replace(/[^\w.+-]/g, '_'))} placeholder="log name"
+             disabled={!enabled || busy} onKeyDown={e => e.key === 'Enter' && go()}
+             aria-label="Name of the captured log (empty: live_<date>-<time>)" style={{...inp,width:'110px',opacity: enabled ? 1 : 0.5}} />
+      <button style={{...btn(false),opacity: enabled ? 1 : 0.5,cursor: enabled ? 'pointer' : 'default'}}
+              disabled={!enabled || busy} onClick={go}>{busy ? 'CAPTURING…' : '💾 CAPTURE LOG'}</button>
+    </span>
+  );
+}
+
+// The bridge paused the sim because its history (what a capture holds) is
+// full: capture now, or run on and lose the earliest data
+function HistoryFull({ full, capture, send }) {
+  return (
+    <div style={{...panel,borderColor:C.amber,fontSize:'10px',textAlign:'left',display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{color:C.amber,flex:'1 1 320px'}}>
+        <b>HISTORY FULL · PAUSED</b> — the bridge holds {full.lines.toLocaleString()} lines of this run, the most a captured log can hold.
+        {' '}Capture now to keep the run {full.trimmed ? 'as it is kept so far (its start was already dropped)' : 'from t=0'}, or continue and lose the earliest data.
+      </span>
+      <button style={btn(false)} onClick={capture}
+              title="Save the run so far as a log first (uses the name in the run bar, if any)">💾 CAPTURE LOG</button>
+      <button style={btn(false, C.amber)} onClick={() => send('run')}
+              title="Run on: the oldest half of the history is dropped, so a later capture starts partway through the run">▶ CONTINUE (EARLIEST DATA LOST)</button>
+    </div>
+  );
+}
+
+const CAP_COL = { PASS: C.textBright, WARN: C.amber, FAIL: C.red };
+const CHECK_COL = { info: C.textDim, warn: C.amber, fail: C.red };
+function CaptureResult({ res, onClose }) {
+  const col = res.ok ? CAP_COL[res.verdict] ?? C.amber : C.red;
+  return (
+    <div style={{...panel,borderColor:col,fontSize:'10px',textAlign:'left'}}>
+      <div style={{...title,color:col,marginBottom:'3px',display:'flex',justifyContent:'space-between',gap:'8px'}}>
+        <span>{res.ok ? `LOG CAPTURED · ${res.verdict ?? 'NOT CHECKED'}` : 'CAPTURE FAILED'}</span>
+        <button onClick={onClose} title="Close"
+                style={{background:'none',border:'none',color:col,cursor:'pointer',fontFamily:'inherit',fontSize:'12px',padding:0}}>✕</button>
+      </div>
+      {!res.ok && <div style={{color:C.red}}>{res.error}</div>}
+      {res.ok && <>
+        <div style={{color:C.textBright,marginBottom:'3px',wordBreak:'break-all'}}>
+          {res.rom}/{res.dir}/{res.name} <span style={{color:'#779977'}}>({res.lines} lines · open it with LOAD LOG, under Live)</span>
+        </div>
+        {(res.checks ?? []).map((c, i) => (
+          <div key={i} style={{color:CHECK_COL[c.level] ?? C.textDim}}>
+            {c.level === 'fail' ? '✗' : c.level === 'warn' ? '!' : '✓'} {c.text}
+          </div>
+        ))}
+      </>}
+    </div>
   );
 }
 
