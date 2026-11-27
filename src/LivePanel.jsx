@@ -176,19 +176,22 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
 }
 
 // Why the sim stopped: a breakpoint hit (with its condition), else the reason
+// One line, cut off with … when there isn't room (the whole reason is its
+// tooltip), so a long reason never pushes the run bar's buttons around
 function StopReason({ reason }) {
   if (!reason) return null;
+  const line = {color:C.amber,fontSize:'10px',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'};
   const w = watchHitOf(reason);
   if (w) return (
-    <span style={{color:C.amber,fontSize:'10px'}}>
+    <span style={line} title={`stopped: ${reason}`}>
       stopped: watch · <span style={{color:C.blue}}>{watchText(w)}</span>
       <span style={{color:C.textDim}}> changed by the instruction at {w.by} (the PC is now the next one)</span>
     </span>
   );
   const h = bpHitOf(reason);
-  if (!h) return <span style={{color:C.amber,fontSize:'10px'}}>stopped: {reason}</span>;
+  if (!h) return <span style={line} title={`stopped: ${reason}`}>stopped: {reason}</span>;
   return (
-    <span style={{color:C.amber,fontSize:'10px'}}>
+    <span style={line} title={`stopped: ${reason}`}>
       stopped: bp {h.cpu} {h.pc} · <span style={{color:C.blue}}>{hitText(h)}</span>
       <span style={{color:C.textDim}}> (condition {h.op} {h.bit != null ? h.val : `${hx(h.val)}h`})</span>
     </span>
@@ -314,14 +317,23 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
   const [stepN, setStepN]   = useState(1);
   const [untilMs, setUntil] = useState('');
   const CPU = cpu.toUpperCase();
+  // Two parts that never change width with what they show: the status
+  // (state, time, why it stopped) takes the room left of the buttons and
+  // cuts the reason off rather than grow, and the buttons keep their size.
+  // So the buttons stay put as the sim runs and stops, and the bar only
+  // wraps (buttons under the status) when the window is narrow, not
+  // because the time got a digit wider or a stop reason appeared.
   return (
     <div style={{...panel,display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
-      <span style={{color: !connected ? C.red : running ? C.textBright : C.amber, fontSize:'11px', minWidth:'80px'}}>
-        ● {!connected ? 'OFFLINE' : sim.state.toUpperCase()}
-      </span>
-      <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'13px'}}>t={(sim.tNs / 1e6).toFixed(3)} ms</span>
-      {!running && <StopReason reason={sim.reason} />}
-      <span style={{flex:1}} />
+      <div style={{display:'flex',gap:'8px',alignItems:'center',flex:'1 1 0',minWidth:'260px',overflow:'hidden'}}>
+        <span style={{color: !connected ? C.red : running ? C.textBright : C.amber, fontSize:'11px', minWidth:'80px', flex:'none'}}>
+          ● {!connected ? 'OFFLINE' : sim.state.toUpperCase()}
+        </span>
+        <span style={{color:C.textBright,fontFamily:"'Orbitron',monospace",fontSize:'13px',fontVariantNumeric:'tabular-nums',
+                      minWidth:'9.5em',flex:'none',whiteSpace:'nowrap'}}>t={(sim.tNs / 1e6).toFixed(3)} ms</span>
+        {!running && <StopReason reason={sim.reason} />}
+      </div>
+      <div style={{display:'flex',gap:'8px',alignItems:'center',flex:'none',marginLeft:'auto'}}>
       <button style={btn(running)} onClick={() => send('run')} disabled={running}>▶ RUN</button>
       <button style={btn(false, C.red)} onClick={restart} title="Kill the sim and start again at t=0">↺ RESTART</button>
       <button style={btn(!running, C.amber)} onClick={() => send('pause')} disabled={!running}>⏸ PAUSE</button>
@@ -333,6 +345,7 @@ function RunBar({ cpu, sim, connected, running, send, restart }) {
              onKeyDown={e => e.key === 'Enter' && untilMs && send(`until ${untilMs}`)} />
       <button style={btn(false)} disabled={running || !untilMs} onClick={() => send(`until ${untilMs}`)}
               title="Run until this sim time (ms), then pause">RUN TO</button>
+      </div>
     </div>
   );
 }
