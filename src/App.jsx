@@ -693,6 +693,7 @@ const tpsState = v => v == null ? null
   :            {lbl:'OFF-IDLE', code:0};
 const h4  = v => v !== undefined ? v.toString(16).toUpperCase().padStart(4,'0') : '----';
 const b8  = v => v !== undefined ? v.toString(2).padStart(8,'0') : '--------';
+const b16 = v => v !== undefined ? `${b8(v >> 8)} ${b8(v & 0xFF)}` : '-------- --------';
 const fuelMs = snap => {
   const hb = snap?.iram?.[0x4B] ?? 0, lb = snap?.iram?.[0x4A] ?? 0;
   return ((hb << 8) | lb) * 2 / 1000;
@@ -2296,17 +2297,47 @@ const IRAM_SUBTABS = [
   { key:'lambda',  label:'LAMBDA',     groups: ['lambda'] },
   { key:'flags',   label:'FLAGS',      groups: ['flags'] },
   { key:'rpm',     label:'RPM/CRANK',  groups: ['rpm','timer'] },
-  { key:'enrich',  label:'ENRICH/ISV', groups: ['enrich','isv'] },
+  { key:'enrich',  label:'ENRICH/ISV', groups: ['enrich','isv'], pair16: true },
 ];
+
+// Merge each NAME_HI / NAME_LO byte pair in `entries` into one 16-bit row
+// (named NAME, at the lower of the two addresses). Bytes without a partner
+// in the list are kept as they are.
+function pairHiLo(entries) {
+  const re = /^(.*)_(HI|LO)$/;
+  const byName = new Map(entries.map(e => [e.n, e]));
+  const done = new Set(), out = [];
+  for (const e of entries) {
+    if (done.has(e.a)) continue;
+    const m = re.exec(e.n);
+    const mate = m && byName.get(`${m[1]}_${m[2] === 'HI' ? 'LO' : 'HI'}`);
+    if (!mate) { out.push(e); continue; }
+    const hi = m[2] === 'HI' ? e : mate, lo = m[2] === 'HI' ? mate : e;
+    done.add(mate.a);
+    const what = hi.d.replace(/,?\s*high byte\.?$/i, '');
+    const hx = a => a.toString(16).toUpperCase().padStart(2, '0');
+    out.push({ a: Math.min(hi.a, lo.a), a2: Math.max(hi.a, lo.a), hi: hi.a, lo: lo.a,
+      n: m[1], g: hi.g, bits: 16,
+      d: `${what} (16-bit: ${hx(hi.a)}h high byte, ${hx(lo.a)}h low byte)` });
+  }
+  return out;
+}
+// Value of an IRAM_MAP row: one byte, or a merged 16-bit pair from pairHiLo
+const rowVal = (iram, e) => e.bits !== 16 ? iram[e.a]
+  : (iram[e.hi] === undefined || iram[e.lo] === undefined) ? undefined : (iram[e.hi] << 8) | iram[e.lo];
+const rowHex = e => e.bits === 16
+  ? `${e.hi.toString(16).toUpperCase().padStart(2,'0')}h:${e.lo.toString(16).toUpperCase().padStart(2,'0')}h`
+  : `${e.a.toString(16).toUpperCase().padStart(2,'0')}h`;
 
 function IRAMTab({ iram, tooltip, setTooltip }) {
   const [sub, setSub] = useState('all');
   const subDef  = IRAM_SUBTABS.find(t=>t.key===sub) || IRAM_SUBTABS[0];
   // FLAGS: only the bit-flag bytes 20h-25h; 26h-29h are reserved/diag
   // bytes, not flags, so their bits are left out
-  const entries = subDef.groups
+  const filtered = subDef.groups
     ? IRAM_MAP.filter(e => subDef.groups.includes(e.g) && !(sub === 'flags' && e.a >= 0x26))
     : IRAM_MAP;
+  const entries = subDef.pair16 ? pairHiLo(filtered) : filtered;
 
   const isAll = sub === 'all';
 
@@ -2461,8 +2492,9 @@ function IRAMTab({ iram, tooltip, setTooltip }) {
               </thead>
               <tbody>
                 {entries.map((entry,i)=>{
-                  const val    = iram[entry.a];
+                  const val    = rowVal(iram, entry);
                   const hasVal = val !== undefined;
+                  const w16    = entry.bits === 16;
                   const col    = GROUPS[entry.g]?.color || C.textDim;
                   const rowBg  = i%2===0 ? C.panelBg : C.panelBg2;
                   let derived = '';
@@ -2486,14 +2518,16 @@ function IRAMTab({ iram, tooltip, setTooltip }) {
                       onMouseEnter={()=>setTooltip({...entry,val})}
                       onMouseLeave={()=>setTooltip(null)}>
                       <td style={{padding:'4px 8px',color:C.textDim,whiteSpace:'nowrap'}}>
-                        <span style={{color:col}}>0x{entry.a.toString(16).toUpperCase().padStart(2,'0')}</span>
+                        <span style={{color:col}}>{w16
+                          ? `0x${entry.hi.toString(16).toUpperCase().padStart(2,'0')}:${entry.lo.toString(16).toUpperCase().padStart(2,'0')}`
+                          : `0x${entry.a.toString(16).toUpperCase().padStart(2,'0')}`}</span>
                       </td>
                       <td style={{padding:'4px 8px',color:col,fontWeight:'bold',whiteSpace:'nowrap'}}>
                         {entry.n}
                       </td>
                       <td style={{padding:'4px 8px',color:hasVal?C.textBright:'#335533',
                                   fontWeight:'bold',whiteSpace:'nowrap'}}>
-                        {hasVal ? `0x${h2(val)}` : '--'}
+                        {hasVal ? `0x${w16 ? h4(val) : h2(val)}` : '--'}
                         <span style={{color:C.textDim,fontWeight:'normal',fontSize:'10px'}}>{derived}</span>
                       </td>
                       <td style={{padding:'4px 8px',color:hasVal?C.textDim:'#224422',whiteSpace:'nowrap'}}>
@@ -2501,7 +2535,8 @@ function IRAMTab({ iram, tooltip, setTooltip }) {
                       </td>
                       <td style={{padding:'4px 8px',color:hasVal?'#336633':'#1a2e1a',
                                   fontSize:'10px',whiteSpace:'nowrap',letterSpacing:'0.05em'}}>
-                        {hasVal ? b8(val) : '--------'}
+                        {w16 ? (hasVal ? b16(val) : '-------- --------')
+                             : (hasVal ? b8(val) : '--------')}
                       </td>
                       <td style={{padding:'4px 8px',color:C.textDim,fontSize:'10px',lineHeight:'1.4'}}>
                         {entry.d}
@@ -2537,16 +2572,16 @@ function IRAMTooltip({ tip }) {
         {GROUPS[tip.g]?.label?.toUpperCase()} — {tip.g.toUpperCase()}
       </div>
       <div style={{color:C.textBright,fontSize:'14px',fontWeight:'bold',marginBottom:'4px'}}>
-        [{tip.a.toString(16).toUpperCase().padStart(2,'0')}h]&nbsp;&nbsp;{tip.n}
+        [{rowHex(tip)}]&nbsp;&nbsp;{tip.n}
       </div>
       <div style={{color:C.textDim,fontSize:'11px',lineHeight:'1.5'}}>{tip.d}</div>
       {tip.val !== undefined && (
         <div style={{color:C.textBright,fontSize:'12px',marginTop:'6px',
                      borderTop:`1px solid ${C.border}`,paddingTop:'6px',
                      display:'flex',gap:'16px'}}>
-          <span>hex: 0x{h2(tip.val)}</span>
+          <span>hex: 0x{tip.bits === 16 ? h4(tip.val) : h2(tip.val)}</span>
           <span>dec: {tip.val}</span>
-          <span>bin: {b8(tip.val)}</span>
+          <span>bin: {tip.bits === 16 ? b16(tip.val) : b8(tip.val)}</span>
         </div>
       )}
     </div>
