@@ -929,13 +929,16 @@ const MANUAL_URL = 'https://github.com/whalenlg/944turbo_dme_klr/blob/main/docs/
 // window has its own, see LiveTabWindow)
 function dmeAt(snapshots, idx) {
   const snap = snapshots[idx] || { iram:{} };
-  // T0 (P3.4) from the latest snapshot that logged the ports (the [DS]
-  // lines; STATUS snapshots in between carry none): 1 = no cat
-  let noCat = false;
+  // Port bytes from the latest snapshot that logged them (the [DS]
+  // lines; STATUS snapshots in between carry none), so the PORTS tab
+  // holds its values between [DS] lines instead of blinking to '?'.
+  // T0 (P3.4): 1 = no cat
+  let ports = null;
   for (let i = idx; i >= 0; i--) {
-    const p3 = snapshots[i]?.p3;
-    if (p3 != null) { noCat = ((p3 >> 4) & 1) === 1; break; }
+    const s = snapshots[i];
+    if (s && (s.p1 != null || s.p3 != null)) { ports = { p1:s.p1, p2:s.p2, p3:s.p3 }; break; }
   }
+  const noCat = ports?.p3 != null && ((ports.p3 >> 4) & 1) === 1;
   // Merged iram: current snap + fill gaps from nearest prior DS snapshot
   let iram = snap.iram ?? {};
   if (snapshots.length) {
@@ -948,7 +951,7 @@ function dmeAt(snapshots, idx) {
     iram = { ...base, ...(snap.iram ?? {}) };
   }
   return {
-    snap, noCat, iram,
+    snap, noCat, iram, ports,
     fuelMsV:  fuelMs(snap),
     fuelNext: (((iram[0x4F]||0)<<8)|(iram[0x4E]||0))*2/1000,
     load16:   ((iram[0x46]||0)<<8)|(iram[0x47]||0),
@@ -1390,13 +1393,13 @@ export default function DMEDashboard() {
   // v: the scrubber position it shows (dmeAt's values, klrIdx, seekTo, and
   // follow: a live window on the newest data)
   const renderTab = (t, v) => {
-    const { snap, iram, noCat, fuelMsV, fuelNext, load16, wu16, lmbd16, klrIdx, seekTo } = v;
+    const { snap, iram, noCat, ports, fuelMsV, fuelNext, load16, wu16, lmbd16, klrIdx, seekTo } = v;
     return (
     <>
     {t==='overview' && <OverviewTab snap={snap} iram={iram} isLive={!!liveUrl} noCat={noCat}
       fuelMsV={fuelMsV} fuelNext={fuelNext} load16={load16} wu16={wu16} lmbd16={lmbd16}
       minmax={minmax} clEverActive={clEverActive} />}
-    {t==='ports'    && <PortsTab snap={snap}
+    {t==='ports'    && <PortsTab ports={ports}
         logHasPorts={data.snapshots.some(s=>s.p1!==undefined)}
         logLoaded={data.snapshots.length>0} />}
     {t==='iram'     && <IRAMTab iram={{...iram, ...(snap._prevAfm!=null?{0x10:snap._prevAfm}:{}), ...(snap._prevTps!=null?{0x16:snap._prevTps}:{})}} tooltip={tooltip} setTooltip={setTooltip} />}
@@ -2195,9 +2198,9 @@ function PortPinTooltip({ tip }) {
   );
 }
 
-function PortsTab({ snap, logHasPorts, logLoaded }) {
+function PortsTab({ ports, logHasPorts, logLoaded }) {
   const [pinTip, setPinTip] = useState(null);
-  const portVals = { P1: snap?.p1, P2: snap?.p2, P3: snap?.p3 };
+  const portVals = { P1: ports?.p1, P2: ports?.p2, P3: ports?.p3 };
   const portDescs = {
     P1: 'ANALOG I/O — injector, ignition, O2 sensor',
     P2: 'ADDRESS BUS / ADC CHANNEL SELECT',
