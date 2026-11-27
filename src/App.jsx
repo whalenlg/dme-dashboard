@@ -2176,12 +2176,13 @@ function OverviewTab({ snap, iram, isLive, noCat, fuelMsV, fuelNext, load16, wu1
 function PortPinTooltip({ tip }) {
   const { pName, b, dirCol, bitVal, x, y } = tip;
   const W = 340;
-  const left = Math.max(8, Math.min(x + 14, window.innerWidth - W - 8));
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const left = Math.max(8, Math.min(x + 14, vw - W - 8));
   const below = y + 18;
   const top = below + 110 > window.innerHeight ? Math.max(8, y - 110) : below;
   return (
     <div style={{
-      position:'fixed',left,top,width:W,zIndex:60,pointerEvents:'none',textAlign:'left',
+      position:'fixed',left,top,width:W,zIndex:60,pointerEvents:'none',textAlign:'left',boxSizing:'border-box',
       background:'#060e06',border:`1px solid ${dirCol}`,borderRadius:'4px',
       padding:'8px 12px',boxShadow:`0 0 14px ${dirCol}33`,
     }}>
@@ -4235,21 +4236,30 @@ function KLRPhaseTab({ klrData, klrIdx }) {
 
 // ── KLRPortsTab ───────────────────────────────────────────────────
 function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
-  // Get port values from latest [KLR] snapshot at or before klrIdx
+  const [pinTip, setPinTip] = useState(null);
+  // Port values from the latest [KLR] snapshot at or before klrIdx that
+  // logged each port, so a snapshot without one doesn't blink it to '?'
   const phases   = klrData?.phases ?? [];
   const currentT = phases[klrIdx]?.t ?? Infinity;
   const snaps    = klrData?.snapshots ?? [];
-  const snap     = snaps.filter(s => s.t <= currentT).slice(-1)[0];
+  let snap = null, p1Snap = null, p2Snap = null;
+  for (let i = snaps.length - 1; i >= 0 && !(p1Snap && p2Snap); i--) {
+    const s = snaps[i];
+    if (s.t > currentT) continue;
+    if (!snap) snap = s;
+    if (!p1Snap && s.p1 != null) p1Snap = s;
+    if (!p2Snap && s.p2 != null) p2Snap = s;
+  }
 
   // Also check status lines
   const status   = klrData?.status ?? [];
   const stat     = status.filter(s => s.t <= currentT).slice(-1)[0];
 
   // Prefer [KLR] hex snapshot ports; fall back to STATUS ign_out/full_load
-  const p1val = snap?.p1 ?? null;
-  const p2val = snap?.p2 ?? null;
+  const p1val = p1Snap?.p1 ?? null;
+  const p2val = p2Snap?.p2 ?? null;
 
-  const hasPartial = snap?.p1partial || snap?.p2partial;
+  const hasPartial = p1Snap?.p1partial || p2Snap?.p2partial;
   const portVals   = { P1: p1val, P2: p2val };
 
   const portDescs = {
@@ -4296,20 +4306,23 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
         </div>
       )}
 
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:'10px',alignItems:'start'}}>
         {Object.entries(KLR_PORT_DEFS).map(([pName,bits])=>{
           const portByte = portVals[pName];
           const hasVal   = portByte !== null && portByte !== undefined;
           return (
             <div key={pName} style={S.panel}>
-              <div style={S.panelTitle}>
-                {pName} — {portDescs[pName]}
-                {hasVal && (
-                  <span style={{marginLeft:'10px',color:'#44aaff',
-                                fontFamily:"'Orbitron',monospace",fontSize:'11px'}}>
-                    0x{h2(portByte)} &nbsp; {b8(portByte)}
-                  </span>
-                )}
+              {/* One fixed-height header line, so both boxes' pin rows line up */}
+              <div style={{...S.panelTitle,display:'flex',alignItems:'center',
+                           gap:'10px',height:'16px',whiteSpace:'nowrap'}}>
+                <span title={`${pName} — ${portDescs[pName]}`}
+                      style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>
+                  {pName} — {portDescs[pName]}
+                </span>
+                <span style={{flexShrink:0,color:hasVal?'#44aaff':C.textDim,
+                              fontFamily:"'Orbitron',monospace",fontSize:'11px'}}>
+                  {hasVal ? <>0x{h2(portByte)} &nbsp; {b8(portByte)}</> : '0x-- --------'}
+                </span>
               </div>
               {bits.map(b=>{
                 const bitVal = hasVal ? ((portByte >> b.bit) & 1) : null;
@@ -4317,11 +4330,15 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
                 const dirCol = b.dir==='IN'  ? C.blue
                              : b.dir==='OUT' ? '#66ffaa'
                              : C.amber;
+                const showTip = e => setPinTip({pName,b,dirCol,bitVal,x:e.clientX,y:e.clientY});
                 return (
-                  <div key={b.bit} style={{
+                  <div key={b.bit}
+                    onMouseEnter={showTip} onMouseMove={showTip}
+                    onMouseLeave={()=>setPinTip(null)}
+                    style={{
                     display:'grid',
-                    gridTemplateColumns:'24px 24px 80px 1fr',
-                    gap:'6px', alignItems:'center',
+                    gridTemplateColumns:'30px 22px 36px 1fr',
+                    gap:'6px', alignItems:'center', cursor:'help',
                     padding:'4px 6px', borderBottom:`1px solid ${C.border}`,
                     background: isSet ? '#0a1a22' : 'transparent',
                   }}>
@@ -4344,14 +4361,8 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
                       background: b.dir==='IN'?'#0a1a2a':b.dir==='OUT'?'#0a1f0a':'#1a1a0a',
                       color:dirCol,textAlign:'center',whiteSpace:'nowrap',
                     }}>{b.dir}</span>
-                    <div>
-                      <span style={{color:isSet?dirCol:'#44aaff',fontSize:'10px',fontWeight:'bold'}}>
-                        {b.name}
-                      </span>
-                      <span style={{color:C.textDim,fontSize:'9px',marginLeft:'6px'}}>
-                        {b.desc}
-                      </span>
-                    </div>
+                    <span style={{color:isSet?dirCol:'#44aaff',fontSize:'10px',
+                                  fontWeight:'bold',textAlign:'left'}}>{b.name}</span>
                   </div>
                 );
               })}
@@ -4359,6 +4370,7 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
           );
         })}
       </div>
+      {pinTip && <PortPinTooltip tip={pinTip} />}
     </div>
   );
 }
