@@ -2229,7 +2229,8 @@ function PortsTab({ ports, logHasPorts, logLoaded }) {
               <div style={{...S.panelTitle,display:'flex',alignItems:'center',
                            gap:'10px',height:'16px',whiteSpace:'nowrap'}}>
                 <span title={`${pName} — ${portDescs[pName]}`}
-                      style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>
+                      style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',
+                             textAlign:'left',paddingLeft:'6px'}}>
                   {pName} — {portDescs[pName]}
                 </span>
                 <span style={{flexShrink:0,color:hasVal?C.textBright:C.textDim,
@@ -2253,7 +2254,7 @@ function PortsTab({ ports, logHasPorts, logLoaded }) {
                     padding:'4px 6px',borderBottom:`1px solid ${C.border}`,
                     background: isSet ? '#0a1a0a' : 'transparent',
                   }}>
-                    <span style={{color:C.textDim,fontSize:'9px'}}>
+                    <span style={{color:C.textDim,fontSize:'9px',textAlign:'left'}}>
                       {pName}.{b.bit}
                     </span>
                     {/* Live bit indicator */}
@@ -4316,7 +4317,8 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
               <div style={{...S.panelTitle,display:'flex',alignItems:'center',
                            gap:'10px',height:'16px',whiteSpace:'nowrap'}}>
                 <span title={`${pName} — ${portDescs[pName]}`}
-                      style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>
+                      style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',
+                             textAlign:'left',paddingLeft:'6px'}}>
                   {pName} — {portDescs[pName]}
                 </span>
                 <span style={{flexShrink:0,color:hasVal?'#44aaff':C.textDim,
@@ -4342,7 +4344,7 @@ function KLRPortsTab({ klrData, klrIdx, logHasPorts, logLoaded }) {
                     padding:'4px 6px', borderBottom:`1px solid ${C.border}`,
                     background: isSet ? '#0a1a22' : 'transparent',
                   }}>
-                    <span style={{color:C.textDim,fontSize:'9px'}}>{pName}.{b.bit}</span>
+                    <span style={{color:C.textDim,fontSize:'9px',textAlign:'left'}}>{pName}.{b.bit}</span>
                     <span style={{
                       width:'18px',height:'18px',lineHeight:'18px',
                       textAlign:'center',borderRadius:'2px',
