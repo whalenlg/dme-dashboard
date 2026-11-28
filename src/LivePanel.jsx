@@ -8,6 +8,7 @@ import { memName } from "./memDefs.js";
 import { MemSearch } from "./memSearch.jsx";
 import { Popout } from "./popout.jsx";
 import RomCompare from "./RomCompare.jsx";
+import PerfPanel from "./PerfPanel.jsx";
 import { RomName, EditsList } from "./romEdits.jsx";
 import { NewSetupForm } from "./newSetup.jsx";
 import { MODIFIED, downloadBin } from "./romNames.js";
@@ -73,6 +74,8 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
                                         : popouts.open('rom_compare', 'COMPARE ROM IMAGES — DME 951 live', 1280, 900);
   // The DME and KLR code debuggers each open in a window of their own
   const codeWin = { dme: popouts.wins.code_dme, klr: popouts.wins.code_klr };
+  // ... and so do the routine profiles (PERF)
+  const perfWin = { dme: popouts.wins.perf_dme, klr: popouts.wins.perf_klr };
   const stopKey = running ? null : `${sim.tNs}:${sim.reason}`;
 
   // Ask for the instruction trace whenever the sim stops
@@ -169,6 +172,14 @@ export default function LivePanel({ live, url, series, mem, popouts, onClose }) 
                       connected={connected}
                       onClose={() => popouts.close(`code_${cpu}`)} />
           </div>
+        </Popout>
+      ))}
+
+      {/* The routine profiles, each in its own window */}
+      {['dme', 'klr'].map(cpu => (
+        <Popout key={`perf_${cpu}`} entry={perfWin[cpu]} title={`${cpu.toUpperCase()} PERFORMANCE`}
+                sub={`time in each routine and interrupt · live simulation · ${!connected ? 'OFFLINE' : sim.state} · t=${tMs} ms`}>
+          <PerfPanel cpu={cpu} prof={live.prof?.[cpu]} listing={asm[cpu]} sim={sim} connected={connected} send={send} />
         </Popout>
       ))}
     </div>

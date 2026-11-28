@@ -1369,6 +1369,24 @@ export default function DMEDashboard() {
     else setTab(t);
   };
   const tabOn = t => liveUrl ? !!popouts.wins[t] : tab === t;
+  // Live: a routine profile's button (opens or closes its window, as the code debuggers')
+  const perfButton = cpu => {
+    const name = `perf_${cpu}`, on = !!popouts.wins[name], st = cpu === 'dme' ? S.tab : S.tabKlr;
+    if (!liveUrl) return (
+      <button key={name} aria-disabled="true" style={{...st(false),opacity:0.35,cursor:'not-allowed'}}
+        onClick={e => e.preventDefault()} title="Only valid in live mode: the profile comes from the running simulator">
+        {cpu.toUpperCase()} PERF
+      </button>
+    );
+    return (
+      <button key={name} style={st(on)}
+        onClick={()=>on ? popouts.close(name) : popouts.open(name, `${cpu.toUpperCase()} PERFORMANCE — DME 951 live`, 1100, 800)}
+        title={on ? `Close the ${cpu.toUpperCase()} performance window`
+                  : `Open ${cpu.toUpperCase()} PERFORMANCE: calls and min / avg / max time of each routine and interrupt, as the sim runs`}>
+        {cpu.toUpperCase()} PERF ↗
+      </button>
+    );
+  };
   // Live: a code debugger's button (opens or closes its window)
   // (log review: shown grayed out, so the rows look the same in both modes)
   const codeButton = cpu => {
@@ -1600,6 +1618,7 @@ export default function DMEDashboard() {
               {TAB_LABEL[t]}{liveUrl && ' ↗'}
             </button>,
             i === 0 && codeButton('dme'),
+            i === 0 && perfButton('dme'),
           ])}
         </div>
         {/* Row 2 — KLR tabs */}
@@ -1610,6 +1629,7 @@ export default function DMEDashboard() {
               {TAB_LABEL[t]}{liveUrl && ' ↗'}
             </button>,
             i === 0 && codeButton('klr'),
+            i === 0 && perfButton('klr'),
           ])}
         </div>
         {/* Row 3 — DME + KLR together */}
