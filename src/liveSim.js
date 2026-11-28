@@ -22,6 +22,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //                        the list is fetched again on SIM: [SNAP] ready|deleted
 //  SIM: [WATCH] / [WRITES] / [WRITERS]: watchpoints and the sim's write log
 //                        (who changed each RAM byte, from reset), see parseWrites
+//  SIM: [PROF]: the routine profile (calls, min / avg / max time per routine
+//                        and interrupt), see parseProf
 //  SIM: [IGN] / [INJ] lines (per-spark ignition and per-shot injector
 //  pulse widths) collect into ign.dme / ign.klr / ign.inj.
 //  DME:/KLR: lines are handed to onLogLines in batches, for the
@@ -99,6 +101,29 @@ const splitWatches = s => (s ?? '').split(',').filter(Boolean).map(t => {
   return m && { key: m[1].toUpperCase() + (m[2] != null ? `.${m[2]}` : ''), mem: parseInt(m[1], 16), bit: m[2] != null ? +m[2] : null, brk: !m[3] };
 }).filter(Boolean);
 
+// SIM: [PROF] dme t_ns=<n> since=<n> depth=<n> maxdepth=<n> unmatched=<n> dropped=<n>
+//   r=<c|i><entry>/<calls>/<min>/<sum>/<max>/<xmin>/<xsum>/<xmax>/<cmin>/<csum>/<cmax>;...
+// (the routine profile, sim_main's prof.h: times in ns, x = less the
+// interrupts taken inside, c = machine cycles)
+// → {cpu, tNs, since, depth, maxDepth, unmatched, dropped, rows: [{irq, a, n, t: {min, avg, max, sum}, x: {...}, c: {...}}]}
+export function parseProf(rest) {
+  const m = /^(dme|klr) (.*?)\s*r=(\S*)$/.exec(rest);
+  if (!m) return null;
+  const kv = parseKV(m[2]);
+  const rows = [];
+  for (const e of m[3].split(';')) {
+    const r = /^([ci])([0-9A-F]+)\/(.*)$/i.exec(e);
+    if (!r) continue;
+    const v = r[3].split('/').map(Number);
+    if (v.length < 10 || !(v[0] > 0)) continue;
+    const st = (min, sum, max) => ({ min, sum, max, avg: sum / v[0] });
+    rows.push({ irq: r[1] === 'i', a: parseInt(r[2], 16), n: v[0],
+                t: st(v[1], v[2], v[3]), x: st(v[4], v[5], v[6]), c: st(v[7], v[8], v[9]) });
+  }
+  return { cpu: m[1], tNs: +kv.t_ns, since: +kv.since, depth: +kv.depth, maxDepth: +kv.maxdepth,
+           unmatched: +kv.unmatched, dropped: +kv.dropped, rows };
+}
+
 export function useLiveSim(url, onLogLines) {
   const [connected, setConnected] = useState(false);
   const [sim, setSim]       = useState(EMPTY_SIM);
@@ -133,7 +158,9 @@ export function useLiveSim(url, onLogLines) {
   // (a build from before them doesn't)
   const [watches, setWatches] = useState(null);         // {dme: [{key, mem, bit, brk}], klr}
   const [writes, setWrites]   = useState({ dme: {}, klr: {} });   // key ('37', '21.3') → parseWrites
-  const [writers, setWriters] = useState({ dme: null, klr: null }); // parseWriters   // bumped on SIM: [SETUPS] (GET <url>/setups)
+  const [writers, setWriters] = useState({ dme: null, klr: null }); // parseWriters
+  // The routine profile, from SIM: [PROF] (null: none yet, or a sim from before it)
+  const [prof, setProf] = useState({ dme: null, klr: null });   // parseProf   // bumped on SIM: [SETUPS] (GET <url>/setups)
 
   const lines = useRef([]);         // log lines not yet handed to onLogLines
   const reset = useRef(false);      // next hand-off starts the log over
@@ -202,6 +229,7 @@ export function useLiveSim(url, onLogLines) {
         // never list a breakpoint the sim doesn't have
         setBps({ dme: [], klr: [] }); setBpConds({ dme: {}, klr: {} });
         setWatches(null); setWrites({ dme: {}, klr: {} }); setWriters({ dme: null, klr: null });
+        setProf({ dme: null, klr: null });
         setSim(EMPTY_SIM); setTrace({ dme: [], klr: [] }); setTraceCtx({ dme: [], klr: [] }); setError(null); setRegs({ dme: null, klr: null }); setDmeRegsHist([]);
       } else if (kind === 'CAPTURE') {
         if (rest.startsWith('armed')) setCaptureArmed(parseKV(rest).name ?? '');
@@ -239,6 +267,9 @@ export function useLiveSim(url, onLogLines) {
       } else if (kind === 'WRITERS') {
         const w = parseWriters(rest);
         if (w) setWriters(x => ({ ...x, [w.cpu]: w }));
+      } else if (kind === 'PROF') {
+        const p = parseProf(rest);
+        if (p) setProf(x => ({ ...x, [p.cpu]: p }));
       } else if (kind === 'TRACE') {
         const [cpu, list] = rest.split(' ');
         // Entries are pc/ctx0/ctx1/ctx2 (register context per instruction)
@@ -437,6 +468,6 @@ export function useLiveSim(url, onLogLines) {
     if (r) setError(null);
   }, [snapCall]);
 
-  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, historyFull, captureArmed, captureResult, disarmCapture, roms, send, restart, capture, loadRom, patchRom, revertRom, setupsVer,
+  return { connected, sim, inputs, bps, bpConds, watches, writes, writers, prof, trace, error, asm, asmSrc, regs, dmeRegsHist, traceCtx, ign, warnings, historyFull, captureArmed, captureResult, disarmCapture, roms, send, restart, capture, loadRom, patchRom, revertRom, setupsVer,
            snapshots, snapCfg, interval, loadedSnap, snapBusy, loadSnapshot, addTestSnapshot, deleteSnapshot, deleteSnapshots, downloadSnapshot, uploadSnapshot, snapshotDetail };
 }
