@@ -90,6 +90,9 @@ export default function PerfPanel({ cpu, prof, listing, sim, connected, send }) 
   }, [prof, listing, unit, excl, kind, q, sort, span]);
 
   const fmt = v => unit === 'cyc' ? fmtCyc(v) : fmtUs(v);
+  // TOTAL: ms (it soon runs past what µs shows well)
+  const fmtTotal = v => unit === 'cyc' ? fmtCyc(v) : v == null || !isFinite(v) ? '--' : (v / 1e6).toFixed(v < 1e7 ? 3 : 1);
+  const colUnit = k => k === 'sum' ? (unit === 'cyc' ? 'CYC' : 'ms') : unit === 'cyc' ? 'CYC' : 'µs';
   const irqLoad = prof && span > 0 ? 100 * prof.rows.filter(r => r.irq).reduce((s, r) => s + r.x.sum, 0) / span : null;
   // A column heading sorts by it (again: the other way); text ascending, numbers largest first
   const head = k => () => setSort(s => s.k === k ? { k, dir: -s.dir } : { k, dir: ['kind', 'a', 'label'].includes(k) ? 1 : -1 });
@@ -138,10 +141,10 @@ export default function PerfPanel({ cpu, prof, listing, sim, connected, send }) 
           <thead>
             <tr style={{color:C.textDim,fontSize:'9px',letterSpacing:'0.1em',borderBottom:`1px solid ${C.border2}`}}>
               {COLS.map(c => (
-                <th key={c.k} onClick={head(c.k)} title={`${c.title}${['min','avg','max','sum'].includes(c.k) ? ` (${unitName})` : ''} · click to sort`}
+                <th key={c.k} onClick={head(c.k)} title={`${c.title}${['min','avg','max','sum'].includes(c.k) ? ` (${c.k === 'sum' && unit !== 'cyc' ? 'ms' : unitName})` : ''} · click to sort`}
                     style={{...cell,textAlign:c.left ? 'left' : 'right',cursor:'pointer',userSelect:'none',fontWeight:'normal',
                             color: sort.k === c.k ? C.textBright : C.textDim}}>
-                  {c.h}{['min','avg','max','sum'].includes(c.k) ? ` ${unit === 'cyc' ? 'CYC' : 'µs'}` : ''}{sort.k === c.k ? (sort.dir < 0 ? ' ▼' : ' ▲') : ''}
+                  {c.h}{['min','avg','max','sum'].includes(c.k) ? ` ${colUnit(c.k)}` : ''}{sort.k === c.k ? (sort.dir < 0 ? ' ▼' : ' ▲') : ''}
                 </th>
               ))}
             </tr>
@@ -156,7 +159,7 @@ export default function PerfPanel({ cpu, prof, listing, sim, connected, send }) 
                 <td style={cell}>{fmt(r.min)}</td>
                 <td style={cell}>{fmt(r.avg)}</td>
                 <td style={{...cell,color: r.max > 2 * r.avg ? C.amber : undefined}}>{fmt(r.max)}</td>
-                <td style={cell}>{fmt(r.sum)}</td>
+                <td style={cell}>{fmtTotal(r.sum)}</td>
                 <td style={{...cell,minWidth:'90px'}}>
                   {r.pct == null ? '--' : (
                     <span style={{display:'inline-flex',alignItems:'center',gap:'6px',justifyContent:'flex-end',width:'100%'}}>
